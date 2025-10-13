@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build && node dist/bot.js",
-    "dev": "tsx watch bot.ts"
+    "dev": "tsx watch bot.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "mineflayer": "^4.33.0",
@@ -21,6 +22,7 @@
     "@types/node": "^20.16.5",
     "@types/ws": "^8.5.12",
     "tsx": "^4.17.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.4"
   }
 }

@@ -34,6 +34,8 @@ cd node-bot
 npm install
 npm start
 # TypeScript ソースを確認したい場合は npm run build で dist/bot.js を生成
+# ユニットテストは vitest で実行可能
+npm test
 ```
 
 ### 3.2 Python（LLM エージェント）
@@ -64,11 +66,11 @@ docker compose up --build
 * Docker Compose は `host.docker.internal` をコンテナの hosts に追加しています。Windows / WSL / macOS から Paper サーバーを起動している場合でも、ボットがホスト OS 上の `25565` ポートへ接続できます。
 * Node.js サービス用コンテナは `node:22` を採用し、`mineflayer@4.33.x` が必要とするエンジン条件を満たして `minecraft-protocol` の PartialReadError（`entity_equipment` の VarInt 解析失敗）を防止します。
 
-#### 3.3.1 1.21.5+ の PartialReadError 追加対策
+#### 3.3.1 1.21.x の PartialReadError 追加対策
 
-- Paper / Vanilla 1.21.5 以降では ItemStack (Slot 型) に optional NBT が 2 セクション追加され、旧定義のままでは `entity_equipment` パケットで 2 バイトの読み残しが発生します。
-- `node-bot/bot.ts` では `customPackets` で Slot 定義に `tailCustomData` / `tailItemData` を追加し、最新プロトコルのフィールドを解釈することで `PartialReadError: Unexpected buffer end while reading VarInt` を解消しています。
-- 1.21.4 以下ではこれらのフィールドが送られないため、option タイプの 0 バイトだけが届き互換性が維持されます。
+- Paper / Vanilla 1.21.4 以降では ItemStack (Slot 型) に optional NBT が 2 セクション追加され、旧定義のままでは `entity_equipment` パケットで 2 バイトの読み残しが発生します。
+- `node-bot/runtime/slotPatch.ts` で `customPackets` 用の Slot 定義を動的に生成し、1.21.4 系の亜種をまとめて上書きすることで `PartialReadError: Unexpected buffer end while reading VarInt` を解消しています。
+- 1.21.3 以前ではこれらのフィールドが送られないため、option タイプの 0 バイトだけが届き互換性が維持されます。
 
 ## 4. .env
 
