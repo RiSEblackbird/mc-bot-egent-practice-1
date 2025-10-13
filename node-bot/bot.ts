@@ -1,9 +1,15 @@
 // 日本語コメント：Mineflayer ボット（WSコマンド受信）
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
 import { createBot, Bot } from 'mineflayer';
-import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
+// mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
+// そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
+import mineflayerPathfinder from 'mineflayer-pathfinder';
+import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
+
+// 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
+const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -44,7 +50,7 @@ bot.loadPlugin(pathfinder);
 bot.once('spawn', () => {
   const mcData = minecraftData(bot.version);
   // 型定義上は第2引数が未定義だが、実装的には mcData を渡すのが推奨されているためコンストラクタを拡張キャストする。
-  const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => Movements;
+  const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
   const defaultMove = new MovementsWithData(bot, mcData);
   bot.pathfinder.setMovements(defaultMove);
   bot.chat('起動しました。（Mineflayer）');
