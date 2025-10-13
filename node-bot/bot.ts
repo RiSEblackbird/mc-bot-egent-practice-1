@@ -20,6 +20,56 @@ const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('
 // ---- Minecraft プロトコル差分パッチ ----
 // 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
+// ---- プロトコルバージョン制御 ----
+const DEFAULT_MC_VERSION = '1.21.8';
+const SUPPORTED_MINECRAFT_VERSIONS = new Set(
+  minecraftData.versions.pc.map((version) => version.minecraftVersion),
+);
+
+interface MinecraftVersionResolution {
+  version: string | undefined;
+  warnings: string[];
+}
+
+/**
+ * Mineflayer が接続時に利用するプロトコルバージョンを決定する。
+ * サーバーとの不整合で PartialReadError が発生しないよう、minecraft-data が認識するラベルへ正規化する。
+ */
+function resolveMinecraftVersionLabel(requestedVersionRaw: string | undefined): MinecraftVersionResolution {
+  const warnings: string[] = [];
+  const sanitized = (requestedVersionRaw ?? '').trim();
+
+  if (sanitized.length === 0) {
+    if (SUPPORTED_MINECRAFT_VERSIONS.has(DEFAULT_MC_VERSION)) {
+      warnings.push(
+        `環境変数 MC_VERSION が未設定のため、既定プロトコル ${DEFAULT_MC_VERSION} を利用します。`,
+      );
+      return { version: DEFAULT_MC_VERSION, warnings };
+    }
+
+    warnings.push(
+      `環境変数 MC_VERSION が未設定ですが、既定プロトコル ${DEFAULT_MC_VERSION} が minecraft-data へ登録されていないため Mineflayer の自動判別に委ねます。`,
+    );
+    return { version: undefined, warnings };
+  }
+
+  if (SUPPORTED_MINECRAFT_VERSIONS.has(sanitized)) {
+    return { version: sanitized, warnings };
+  }
+
+  if (SUPPORTED_MINECRAFT_VERSIONS.has(DEFAULT_MC_VERSION)) {
+    warnings.push(
+      `MC_VERSION='${sanitized}' は minecraft-data の対応一覧に存在しないため ${DEFAULT_MC_VERSION} へフォールバックします。`,
+    );
+    return { version: DEFAULT_MC_VERSION, warnings };
+  }
+
+  warnings.push(
+    `MC_VERSION='${sanitized}' は minecraft-data の対応一覧に存在せず、既定プロトコル ${DEFAULT_MC_VERSION} も見つからないため Mineflayer の自動判別にフォールバックします。`,
+  );
+  return { version: undefined, warnings };
+}
+
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
 type CommandType = 'chat' | 'moveTo';
@@ -37,6 +87,13 @@ interface CommandResponse {
 }
 
 // ---- 環境変数・定数設定 ----
+const versionResolution = resolveMinecraftVersionLabel(process.env.MC_VERSION);
+for (const warning of versionResolution.warnings) {
+  console.warn(`[Bot] ${warning}`);
+}
+
+const MC_VERSION = versionResolution.version;
+
 const dockerDetected = detectDockerRuntime();
 const hostResolution = resolveMinecraftHostValue(process.env.MC_HOST, dockerDetected);
 
@@ -63,7 +120,8 @@ let reconnectTimer: NodeJS.Timeout | null = null;
  * 失敗した場合でも再試行を継続して開発者の手戻りを防ぐ。
  */
 function startBotLifecycle(): void {
-  console.log(`[Bot] connecting to ${MC_HOST}:${MC_PORT} ...`);
+  const protocolLabel = MC_VERSION ?? 'auto-detect (mineflayer default)';
+  console.log(`[Bot] connecting to ${MC_HOST}:${MC_PORT} with protocol ${protocolLabel} ...`);
   const nextBot = createBot({
     host: MC_HOST,
     port: MC_PORT,
@@ -71,6 +129,7 @@ function startBotLifecycle(): void {
     auth: AUTH_MODE,
     // 1.21.4+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
     customPackets: CUSTOM_SLOT_PATCH,
+    ...(MC_VERSION ? { version: MC_VERSION } : {}),
   });
 
   bot = nextBot;

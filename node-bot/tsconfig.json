@@ -8,7 +8,8 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": ".",
+    "types": ["node"]
   },
   "include": ["bot.ts", "runtime/**/*.ts", "tests/**/*.ts"],
   "exclude": ["dist", "node_modules"]

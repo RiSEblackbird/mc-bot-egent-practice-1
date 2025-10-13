@@ -25,6 +25,11 @@ venv/
 .env.staging
 .env.test
 .envrc
+.npmrc
+.yarnrc
+.pypirc
+.python-version
+python/.env
 *.pem
 *.key
 *.p12
