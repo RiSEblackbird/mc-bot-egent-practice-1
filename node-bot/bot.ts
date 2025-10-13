@@ -29,40 +29,118 @@ interface CommandResponse {
 
 // ---- 環境変数・定数設定 ----
 const MC_HOST = process.env.MC_HOST ?? '127.0.0.1';
-const MC_PORT = Number.parseInt(process.env.MC_PORT ?? '25565', 10);
+const MC_PORT = parseEnvInt(process.env.MC_PORT, 25565);
 const BOT_USERNAME = process.env.BOT_USERNAME ?? 'HelperBot';
 const AUTH_MODE = (process.env.AUTH_MODE ?? 'offline') as 'offline' | 'microsoft';
 const WS_PORT = 8765; // Python から接続
+const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 5000);
 
-// ---- Mineflayer ボット本体の初期化 ----
-// Bot インスタンスを生成し、後続で Pathfinding 等の機能を付与する。
-const bot: Bot = createBot({
-  host: MC_HOST,
-  port: MC_PORT,
-  username: BOT_USERNAME,
-  auth: AUTH_MODE,
-});
+/**
+ * 数値系の環境変数を堅牢に読み込むためのユーティリティ。失敗した場合はフォールバック値を採用する。
+ */
+function parseEnvInt(rawValue: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(rawValue ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
 
-bot.loadPlugin(pathfinder);
+// ---- Mineflayer ボット本体のライフサイクル管理 ----
+// 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
+let bot: Bot | null = null;
+let reconnectTimer: NodeJS.Timeout | null = null;
 
-// ---- スポーン時の初期化 ----
-// スポーンしたら移動ロジックの初期化と起動メッセージ送信を行う。
-bot.once('spawn', () => {
-  const mcData = minecraftData(bot.version);
-  // 型定義上は第2引数が未定義だが、実装的には mcData を渡すのが推奨されているためコンストラクタを拡張キャストする。
-  const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
-  const defaultMove = new MovementsWithData(bot, mcData);
-  bot.pathfinder.setMovements(defaultMove);
-  bot.chat('起動しました。（Mineflayer）');
-});
+/**
+ * Minecraft サーバーへの接続を確立し、Mineflayer Bot を初期化する。
+ * 失敗した場合でも再試行を継続して開発者の手戻りを防ぐ。
+ */
+function startBotLifecycle(): void {
+  console.log(`[Bot] connecting to ${MC_HOST}:${MC_PORT} ...`);
+  const nextBot = createBot({
+    host: MC_HOST,
+    port: MC_PORT,
+    username: BOT_USERNAME,
+    auth: AUTH_MODE,
+  });
 
-// ---- ゲーム内チャット受信 ----
-// 現状は Python 側への転送を行っていないため、プレイヤーの発話は無視する。
-bot.on('chat', (username: string) => {
-  if (username === bot.username) return;
-  // 生のゲーム内チャット（プレイヤー発話）を Python 側に転送したい場合は、
-  // ここで WS 送信する設計にしてもよい（今回は Node 側は受信専用に留める）
-});
+  bot = nextBot;
+  nextBot.loadPlugin(pathfinder);
+  registerBotEventHandlers(nextBot);
+}
+
+/**
+ * Bot ごとに必要なイベントハンドラを登録し、切断時には再接続をスケジュールする。
+ */
+function registerBotEventHandlers(targetBot: Bot): void {
+  targetBot.once('spawn', () => {
+    const mcData = minecraftData(targetBot.version);
+    // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
+    const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
+    const defaultMove = new MovementsWithData(targetBot, mcData);
+    targetBot.pathfinder.setMovements(defaultMove);
+    targetBot.chat('起動しました。（Mineflayer）');
+  });
+
+  targetBot.on('chat', (username: string) => {
+    if (username === targetBot.username) return;
+    // 生のゲーム内チャット（プレイヤー発話）を Python 側に転送したい場合は、
+    // ここで WS 送信する設計にしてもよい（今回は Node 側は受信専用に留める）
+  });
+
+  targetBot.on('error', (error: Error & { code?: string }) => {
+    console.error('[Bot] connection error detected', error);
+    const isConnectionFailure = error.code === 'ECONNREFUSED' || !targetBot.entity;
+
+    if (isConnectionFailure) {
+      bot = null;
+      // Mineflayer は接続失敗時に error->end の順でイベントが発生するため、早期にリトライを予約する。
+      scheduleReconnect();
+    }
+  });
+
+  targetBot.once('kicked', (reason) => {
+    console.warn(`[Bot] kicked from server: ${reason}. Retrying in ${MC_RECONNECT_DELAY_MS}ms.`);
+    bot = null;
+    scheduleReconnect();
+  });
+
+  targetBot.once('end', (reason) => {
+    console.warn(`[Bot] disconnected (${String(reason ?? 'unknown reason')}). Retrying in ${MC_RECONNECT_DELAY_MS}ms.`);
+    bot = null;
+    scheduleReconnect();
+  });
+}
+
+/**
+ * Bot が切断された場合に再接続を予約する。重複予約を防ぐため、既存タイマーを考慮する。
+ */
+function scheduleReconnect(): void {
+  if (reconnectTimer) {
+    return;
+  }
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startBotLifecycle();
+  }, MC_RECONNECT_DELAY_MS);
+}
+
+// 初回接続を起動
+startBotLifecycle();
+
+/**
+ * コマンド実行時に利用可能な Bot インスタンスを取得する。未接続の場合は null を返す。
+ */
+function getActiveBot(): Bot | null {
+  if (!bot) {
+    return null;
+  }
+
+  // entity が未定義の間はまだスポーン完了前なので、チャットや移動を実行しない。
+  if (!bot.entity) {
+    return null;
+  }
+
+  return bot;
+}
 
 // ---- WebSocket サーバ（Python -> Node） ----
 const wss = new WebSocketServer({ port: WS_PORT });
@@ -111,7 +189,13 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
 // 指定されたテキストをゲーム内チャットで送信する。
 function handleChatCommand(args: Record<string, unknown>): CommandResponse {
   const text = typeof args.text === 'string' ? args.text : '';
-  bot.chat(text);
+  const activeBot = getActiveBot();
+
+  if (!activeBot) {
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
+  activeBot.chat(text);
   return { ok: true };
 }
 
@@ -126,9 +210,15 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
     return { ok: false, error: 'Invalid coordinates' };
   }
 
+  const activeBot = getActiveBot();
+
+  if (!activeBot) {
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
   const goal = new goals.GoalBlock(x, y, z);
   try {
-    await bot.pathfinder.goto(goal);
+    await activeBot.pathfinder.goto(goal);
     return { ok: true };
   } catch (error) {
     console.error('[Pathfinder] failed to move', error);
