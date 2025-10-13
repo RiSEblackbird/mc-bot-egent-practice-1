@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  node-bot:
+    # TypeScript ソースをウォッチしながら Mineflayer ボットを再起動する開発用サービス
+    image: node:20
+    working_dir: /app
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    command:
+      - bash
+      - -lc
+      - |
+        cd node-bot \
+        && npm install \
+        && npm run dev
+    ports:
+      - "8765:8765"
+    stdin_open: true
+    tty: true
+
+  python-agent:
+    # Python エージェントを watchfiles で自動再実行する開発用サービス
+    image: python:3.11
+    working_dir: /app
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+    command:
+      - bash
+      - -lc
+      - |
+        pip install --no-cache-dir -r requirements.txt \
+        && cd python \
+        && watchfiles --filter python --ignore-paths .venv -- python agent.py
+    stdin_open: true
+    tty: true

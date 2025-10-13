@@ -1,0 +1,36 @@
+# Node.js dependencies and build artifacts
+node_modules/
+node-bot/dist/
+node-bot/*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Python artifacts and virtual environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.venv/
+venv/
+
+# Environment and secret files
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+.env.test
+.envrc
+*.pem
+*.key
+*.p12
+
+# Editor and OS artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
