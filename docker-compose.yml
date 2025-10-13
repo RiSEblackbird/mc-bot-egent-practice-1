@@ -12,6 +12,9 @@ services:
       - "host.docker.internal:host-gateway" # Windows/macOS/WSL 環境から Paper サーバーへ接続するための名前解決
     env_file:
       - .env
+    environment:
+      WS_HOST: ${WS_HOST:-0.0.0.0}
+      WS_PORT: ${WS_PORT:-8765}
     command:
       - bash
       - -lc
@@ -34,6 +37,8 @@ services:
       - "host.docker.internal:host-gateway" # Python 側が Paper と通信する可能性に備え、同様に名前解決を登録
     env_file:
       - .env
+    environment:
+      WS_URL: ${WS_URL:-ws://node-bot:8765}
     command:
       - bash
       - -lc
