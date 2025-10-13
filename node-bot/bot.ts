@@ -1,6 +1,5 @@
 // 日本語コメント：Mineflayer ボット（WSコマンド受信）
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
-import { existsSync, readFileSync } from 'node:fs';
 import { createBot, Bot } from 'mineflayer';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
 // そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
@@ -8,64 +7,18 @@ import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
+import {
+  detectDockerRuntime,
+  parseEnvInt,
+  resolveMinecraftHostValue,
+} from './runtime/env.js';
+import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
 const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
 
 // ---- Minecraft プロトコル差分パッチ ----
-// 1.21.5 以降の Paper / Vanilla では、ItemStack (Slot) 構造体の末尾に
-// 2 つの optional NBT セクション（custom_data / item_data）が追加された。
-// mineflayer@4.33.0 が内包する minecraft-data@3.99.1 にはまだ反映されておらず、
-// entity_equipment パケット解析時に 2 バイト読み残しが発生して PartialReadError が出続ける。
-// createBot に customPackets を渡して Slot 定義を上書きし、追加フィールドを安全に解釈できるようにする。
-const CUSTOM_SLOT_PATCH = {
-  '1.21': {
-    types: {
-      // TypeScript 側からは JSON 互換構造として扱うため、リテラル記述で渡す。
-      Slot: [
-        'container',
-        [
-          { name: 'itemCount', type: 'varint' },
-          {
-            anon: true,
-            type: [
-              'switch',
-              {
-                compareTo: 'itemCount',
-                fields: { '0': 'void' },
-                default: [
-                  'container',
-                  [
-                    { name: 'itemId', type: 'varint' },
-                    { name: 'addedComponentCount', type: 'varint' },
-                    { name: 'removedComponentCount', type: 'varint' },
-                    {
-                      name: 'components',
-                      type: ['array', { count: 'addedComponentCount', type: 'SlotComponent' }],
-                    },
-                    {
-                      name: 'removeComponents',
-                      type: [
-                        'array',
-                        {
-                          count: 'removedComponentCount',
-                          type: ['container', [{ name: 'type', type: 'SlotComponentType' }]],
-                        },
-                      ],
-                    },
-                    // ここからが 1.21.5+ の追加分。存在しない場合は option の 0 バイトのみが送られる。
-                    { name: 'tailCustomData', type: ['option', 'anonymousNbt'] },
-                    { name: 'tailItemData', type: ['option', 'anonymousNbt'] },
-                  ],
-                ],
-              },
-            ],
-          },
-        ],
-      ],
-    },
-  },
-} as const satisfies Record<string, unknown>;
+// 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -84,58 +37,21 @@ interface CommandResponse {
 }
 
 // ---- 環境変数・定数設定 ----
-const MC_HOST = resolveMinecraftHost();
+const dockerDetected = detectDockerRuntime();
+const hostResolution = resolveMinecraftHostValue(process.env.MC_HOST, dockerDetected);
+
+if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {
+  console.warn(
+    '[Bot] MC_HOST points to localhost inside Docker. Falling back to host.docker.internal so the Paper server is reachable.',
+  );
+}
+
+const MC_HOST = hostResolution.host;
 const MC_PORT = parseEnvInt(process.env.MC_PORT, 25565);
 const BOT_USERNAME = process.env.BOT_USERNAME ?? 'HelperBot';
 const AUTH_MODE = (process.env.AUTH_MODE ?? 'offline') as 'offline' | 'microsoft';
 const WS_PORT = 8765; // Python から接続
 const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 5000);
-
-/**
- * 数値系の環境変数を堅牢に読み込むためのユーティリティ。失敗した場合はフォールバック値を採用する。
- */
-function parseEnvInt(rawValue: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(rawValue ?? '', 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-/**
- * Docker コンテナ内で実行されているかを判定するヘルパー。
- * Mineflayer から Paper サーバーへ接続する際のホスト名フォールバックに利用する。
- */
-function isRunningInsideDocker(): boolean {
-  if (existsSync('/.dockerenv')) {
-    return true;
-  }
-
-  try {
-    const cgroupInfo = readFileSync('/proc/1/cgroup', 'utf8');
-    return cgroupInfo.includes('docker') || cgroupInfo.includes('kubepods');
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Docker 開発環境では 127.0.0.1 がホスト OS を指さないため、必要に応じて host.docker.internal へ差し替える。
- * なお環境変数で明示的にホストが指定されている場合は、その値を最優先する。
- */
-function resolveMinecraftHost(): string {
-  const envHost = (process.env.MC_HOST ?? '').trim();
-  const dockerDetected = isRunningInsideDocker();
-
-  if (envHost.length > 0) {
-    if (dockerDetected && (envHost === '127.0.0.1' || envHost === 'localhost')) {
-      console.warn(
-        '[Bot] MC_HOST points to localhost inside Docker. Falling back to host.docker.internal so the Paper server is reachable.'
-      );
-      return 'host.docker.internal';
-    }
-    return envHost;
-  }
-
-  return dockerDetected ? 'host.docker.internal' : '127.0.0.1';
-}
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
 // 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
@@ -153,7 +69,7 @@ function startBotLifecycle(): void {
     port: MC_PORT,
     username: BOT_USERNAME,
     auth: AUTH_MODE,
-    // 1.21.5+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
+    // 1.21.4+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
     customPackets: CUSTOM_SLOT_PATCH,
   });
 

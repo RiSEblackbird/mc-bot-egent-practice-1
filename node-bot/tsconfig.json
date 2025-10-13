@@ -10,6 +10,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["bot.ts"],
+  "include": ["bot.ts", "runtime/**/*.ts", "tests/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }
