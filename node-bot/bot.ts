@@ -12,6 +12,61 @@ import { WebSocketServer, WebSocket, RawData } from 'ws';
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
 const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
 
+// ---- Minecraft プロトコル差分パッチ ----
+// 1.21.5 以降の Paper / Vanilla では、ItemStack (Slot) 構造体の末尾に
+// 2 つの optional NBT セクション（custom_data / item_data）が追加された。
+// mineflayer@4.33.0 が内包する minecraft-data@3.99.1 にはまだ反映されておらず、
+// entity_equipment パケット解析時に 2 バイト読み残しが発生して PartialReadError が出続ける。
+// createBot に customPackets を渡して Slot 定義を上書きし、追加フィールドを安全に解釈できるようにする。
+const CUSTOM_SLOT_PATCH = {
+  '1.21': {
+    types: {
+      // TypeScript 側からは JSON 互換構造として扱うため、リテラル記述で渡す。
+      Slot: [
+        'container',
+        [
+          { name: 'itemCount', type: 'varint' },
+          {
+            anon: true,
+            type: [
+              'switch',
+              {
+                compareTo: 'itemCount',
+                fields: { '0': 'void' },
+                default: [
+                  'container',
+                  [
+                    { name: 'itemId', type: 'varint' },
+                    { name: 'addedComponentCount', type: 'varint' },
+                    { name: 'removedComponentCount', type: 'varint' },
+                    {
+                      name: 'components',
+                      type: ['array', { count: 'addedComponentCount', type: 'SlotComponent' }],
+                    },
+                    {
+                      name: 'removeComponents',
+                      type: [
+                        'array',
+                        {
+                          count: 'removedComponentCount',
+                          type: ['container', [{ name: 'type', type: 'SlotComponentType' }]],
+                        },
+                      ],
+                    },
+                    // ここからが 1.21.5+ の追加分。存在しない場合は option の 0 バイトのみが送られる。
+                    { name: 'tailCustomData', type: ['option', 'anonymousNbt'] },
+                    { name: 'tailItemData', type: ['option', 'anonymousNbt'] },
+                  ],
+                ],
+              },
+            ],
+          },
+        ],
+      ],
+    },
+  },
+} as const satisfies Record<string, unknown>;
+
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
 type CommandType = 'chat' | 'moveTo';
@@ -98,6 +153,8 @@ function startBotLifecycle(): void {
     port: MC_PORT,
     username: BOT_USERNAME,
     auth: AUTH_MODE,
+    // 1.21.5+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
+    customPackets: CUSTOM_SLOT_PATCH,
   });
 
   bot = nextBot;
