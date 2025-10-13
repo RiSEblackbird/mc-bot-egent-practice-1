@@ -11,7 +11,8 @@ logger = setup_logger("bridge")
 class BotBridge:
     """Python→Node WebSocket ブリッジ（単純な送信ユーティリティ）"""
     def __init__(self, ws_url: str | None = None) -> None:
-        self.ws_url = ws_url or os.getenv("WS_URL", "ws://127.0.0.1:8765")
+        # Docker Compose 実行時はサービス名でルーティングできるよう、node-bot ホストを既定とする。
+        self.ws_url = ws_url or os.getenv("WS_URL", "ws://node-bot:8765")
 
     async def send(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.debug(f"WS send: {payload}")

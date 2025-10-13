@@ -107,7 +107,9 @@ const MC_HOST = hostResolution.host;
 const MC_PORT = parseEnvInt(process.env.MC_PORT, 25565);
 const BOT_USERNAME = process.env.BOT_USERNAME ?? 'HelperBot';
 const AUTH_MODE = (process.env.AUTH_MODE ?? 'offline') as 'offline' | 'microsoft';
-const WS_PORT = 8765; // Python から接続
+// WebSocket 接続に関する構成。Docker ネットワーク上でも受信できるよう 0.0.0.0 を既定にする。
+const WS_HOST = process.env.WS_HOST ?? '0.0.0.0';
+const WS_PORT = parseEnvInt(process.env.WS_PORT, 8765);
 const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 5000);
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
@@ -214,8 +216,9 @@ function getActiveBot(): Bot | null {
 }
 
 // ---- WebSocket サーバ（Python -> Node） ----
-const wss = new WebSocketServer({ port: WS_PORT });
-console.log(`[WS] listening on ws://127.0.0.1:${WS_PORT}`);
+// Docker ブリッジ越しの Python エージェントが接続できるよう、host/port を明示的に指定する。
+const wss = new WebSocketServer({ host: WS_HOST, port: WS_PORT });
+console.log(`[WS] listening on ws://${WS_HOST}:${WS_PORT}`);
 
 // ---- WebSocket コマンド処理 ----
 // 1 接続につき 1 コマンドというシンプル設計。必要に応じて永続接続へ拡張予定。
