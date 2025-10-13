@@ -59,6 +59,7 @@ docker compose up --build
 * Node サービスは `npm run dev`（`tsx` を利用）で TypeScript ソースの変更を検知し、自動的に再起動します。
 * Python サービスは `watchfiles` を用いて `.py` ファイルの変更を検知し、`agent.py` を再実行します。
 * ホットリロード環境では依存ライブラリをコンテナ起動時に自動インストールするため、初回起動時は少し時間がかかります。
+* Docker Compose は `host.docker.internal` をコンテナの hosts に追加しています。Windows / WSL / macOS から Paper サーバーを起動している場合でも、ボットがホスト OS 上の `25565` ポートへ接続できます。
 
 ## 4. .env
 
@@ -68,7 +69,7 @@ docker compose up --build
 * `OPENAI_BASE_URL`（任意）
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://127.0.0.1:8765`）
-* `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`）
+* `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`、Docker 実行時は自動で `host.docker.internal` へフォールバック）
 * `MC_RECONNECT_DELAY_MS`: 接続失敗時に Mineflayer ボットが再接続を試みるまでの待機時間（ミリ秒、既定 `5000`）
 * `BOT_USERNAME`: ボットの表示名（例 `HelperBot`）
 * `AUTH_MODE`: `offline`（開発時推奨）/ `microsoft`

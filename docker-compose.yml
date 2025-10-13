@@ -7,6 +7,8 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Windows/macOS/WSL 環境から Paper サーバーへ接続するための名前解決
     env_file:
       - .env
     command:
@@ -27,6 +29,8 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Python 側が Paper と通信する可能性に備え、同様に名前解決を登録
     env_file:
       - .env
     command:

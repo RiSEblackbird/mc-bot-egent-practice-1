@@ -1,5 +1,6 @@
 // 日本語コメント：Mineflayer ボット（WSコマンド受信）
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
+import { existsSync, readFileSync } from 'node:fs';
 import { createBot, Bot } from 'mineflayer';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
 // そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
@@ -28,7 +29,7 @@ interface CommandResponse {
 }
 
 // ---- 環境変数・定数設定 ----
-const MC_HOST = process.env.MC_HOST ?? '127.0.0.1';
+const MC_HOST = resolveMinecraftHost();
 const MC_PORT = parseEnvInt(process.env.MC_PORT, 25565);
 const BOT_USERNAME = process.env.BOT_USERNAME ?? 'HelperBot';
 const AUTH_MODE = (process.env.AUTH_MODE ?? 'offline') as 'offline' | 'microsoft';
@@ -41,6 +42,44 @@ const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 500
 function parseEnvInt(rawValue: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(rawValue ?? '', 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * Docker コンテナ内で実行されているかを判定するヘルパー。
+ * Mineflayer から Paper サーバーへ接続する際のホスト名フォールバックに利用する。
+ */
+function isRunningInsideDocker(): boolean {
+  if (existsSync('/.dockerenv')) {
+    return true;
+  }
+
+  try {
+    const cgroupInfo = readFileSync('/proc/1/cgroup', 'utf8');
+    return cgroupInfo.includes('docker') || cgroupInfo.includes('kubepods');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Docker 開発環境では 127.0.0.1 がホスト OS を指さないため、必要に応じて host.docker.internal へ差し替える。
+ * なお環境変数で明示的にホストが指定されている場合は、その値を最優先する。
+ */
+function resolveMinecraftHost(): string {
+  const envHost = (process.env.MC_HOST ?? '').trim();
+  const dockerDetected = isRunningInsideDocker();
+
+  if (envHost.length > 0) {
+    if (dockerDetected && (envHost === '127.0.0.1' || envHost === 'localhost')) {
+      console.warn(
+        '[Bot] MC_HOST points to localhost inside Docker. Falling back to host.docker.internal so the Paper server is reachable.'
+      );
+      return 'host.docker.internal';
+    }
+    return envHost;
+  }
+
+  return dockerDetected ? 'host.docker.internal' : '127.0.0.1';
 }
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
