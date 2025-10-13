@@ -71,6 +71,7 @@ docker compose up --build
 - Paper / Vanilla 1.21.4 以降では ItemStack (Slot 型) に optional NBT が 2 セクション追加され、旧定義のままでは `entity_equipment` パケットで 2 バイトの読み残しが発生します。
 - `node-bot/runtime/slotPatch.ts` で `customPackets` 用の Slot 定義を動的に生成し、1.21 ～ 1.21.8 系の亜種をまとめて上書きすることで `PartialReadError: Unexpected buffer end while reading VarInt` を解消しています。minecraft-data のバージョン一覧から自動検出しているため、新しい 1.21.x がリリースされても追従漏れを起こしません。
 - 1.21.3 以前ではこれらのフィールドが送られないため、option タイプの 0 バイトだけが届き互換性が維持されます。
+- `.env` で `MC_VERSION=1.21.8` のように **minecraft-data が認識するプロトコルラベル** を指定すると、Mineflayer がサーバーと同じ定義で通信を開始するため、`PartialReadError` の再発リスクを減らせます。未設定時は既定で 1.21.8 を採用し、未知の値が入力された場合は対応可能なバージョンへ自動フォールバックします。
 
 ## 4. .env
 
@@ -81,6 +82,7 @@ docker compose up --build
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://127.0.0.1:8765`）
 * `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`、Docker 実行時は自動で `host.docker.internal` へフォールバック）
+* `MC_VERSION`: Mineflayer が利用する Minecraft プロトコルのバージョン。Paper 1.21.8 を想定した既定値 `1.21.8` を含め、minecraft-data が対応するラベルを指定してください。
 * `MC_RECONNECT_DELAY_MS`: 接続失敗時に Mineflayer ボットが再接続を試みるまでの待機時間（ミリ秒、既定 `5000`）
 * `BOT_USERNAME`: ボットの表示名（例 `HelperBot`）
 * `AUTH_MODE`: `offline`（開発時推奨）/ `microsoft`
