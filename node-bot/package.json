@@ -9,10 +9,10 @@
     "dev": "tsx watch bot.ts"
   },
   "dependencies": {
-    "mineflayer": "^4.20.1",
+    "mineflayer": "^4.33.0",
     "mineflayer-pathfinder": "^2.3.1",
     "ws": "^8.17.0",
-    "minecraft-data": "^3.59.0"
+    "minecraft-data": "^3.99.1"
   },
   "devDependencies": {
     "@types/node": "^20.16.5",

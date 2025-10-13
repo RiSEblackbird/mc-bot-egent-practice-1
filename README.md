@@ -26,6 +26,7 @@ java -Xms4G -Xmx4G -jar paper-1.21.8-60.jar --nogui
 ### 3.1 Node（Mineflayer ボット）
 
 Node 側のボット実装は TypeScript 化しており、`npm start` を実行すると自動的にビルドと起動を行います。
+なお Mineflayer v4.33 系は Node.js 22 以降を要求するため、開発環境の Node バージョンが古い場合は `nvm` などでのアップデートを推奨します。
 
 ```bash
 cd node-bot
