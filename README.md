@@ -69,6 +69,7 @@ docker compose up --build
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://127.0.0.1:8765`）
 * `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`）
+* `MC_RECONNECT_DELAY_MS`: 接続失敗時に Mineflayer ボットが再接続を試みるまでの待機時間（ミリ秒、既定 `5000`）
 * `BOT_USERNAME`: ボットの表示名（例 `HelperBot`）
 * `AUTH_MODE`: `offline`（開発時推奨）/ `microsoft`
 
