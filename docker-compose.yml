@@ -1,9 +1,10 @@
-version: "3.9"
-
 services:
   node-bot:
     # TypeScript ソースをウォッチしながら Mineflayer ボットを再起動する開発用サービス
-    image: node:20
+    image: node:22
+    # ↑ Mineflayer v4.33.0 以降が要求する Node.js 22 系をベースイメージで確保し、
+    #    古い Node.js で互換バージョン（4.25.0 など）がインストールされることによる
+    #    プロトコル解析失敗（PartialReadError）を防止する。
     working_dir: /app
     volumes:
       - ./:/app

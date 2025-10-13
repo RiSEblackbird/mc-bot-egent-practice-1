@@ -26,7 +26,8 @@ java -Xms4G -Xmx4G -jar paper-1.21.8-60.jar --nogui
 ### 3.1 Node（Mineflayer ボット）
 
 Node 側のボット実装は TypeScript 化しており、`npm start` を実行すると自動的にビルドと起動を行います。
-なお Mineflayer v4.33 系は Node.js 22 以降を要求するため、開発環境の Node バージョンが古い場合は `nvm` などでのアップデートを推奨します。
+なお Mineflayer v4.33 系は Node.js 22 以降を要求するため、開発環境の Node バージョンが古い場合は `nvm` などでのアップデートを強く推奨します。
+本リポジトリ直下の `.nvmrc` は 22 系を指しているので、`nvm use` でバージョンを切り替えられます。
 
 ```bash
 cd node-bot
@@ -61,6 +62,7 @@ docker compose up --build
 * Python サービスは `watchfiles` を用いて `.py` ファイルの変更を検知し、`agent.py` を再実行します。
 * ホットリロード環境では依存ライブラリをコンテナ起動時に自動インストールするため、初回起動時は少し時間がかかります。
 * Docker Compose は `host.docker.internal` をコンテナの hosts に追加しています。Windows / WSL / macOS から Paper サーバーを起動している場合でも、ボットがホスト OS 上の `25565` ポートへ接続できます。
+* Node.js サービス用コンテナは `node:22` を採用し、`mineflayer@4.33.x` が必要とするエンジン条件を満たして `minecraft-protocol` の PartialReadError（`entity_equipment` の VarInt 解析失敗）を防止します。
 
 ## 4. .env
 
