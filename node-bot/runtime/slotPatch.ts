@@ -38,6 +38,10 @@ export function collectSlotProtocolVersions(
 
 /**
  * 追加フィールドを考慮した Slot 定義を生成する。
+ *
+ * 注意点：Paper 1.21.1 では tailCustomData/tailItemData のような末尾フィールドは送信されない。
+ * これらを誤って追加すると、Mineflayer 側で itemCount 読み取り時に巨大な配列長を解釈して
+ * `array size is abnormally large` エラーが発生するため、公式プロトコル定義と同じ構造を厳守する。
  * オブジェクトは Mineflayer 側で書き換えられる可能性があるため、都度新しい参照を返す。
  */
 function createSlotOverride(): { types: Record<string, unknown> } {
@@ -74,8 +78,6 @@ function createSlotOverride(): { types: Record<string, unknown> } {
                         },
                       ],
                     },
-                    { name: 'tailCustomData', type: ['option', 'anonymousNbt'] },
-                    { name: 'tailItemData', type: ['option', 'anonymousNbt'] },
                   ],
                 ],
               },

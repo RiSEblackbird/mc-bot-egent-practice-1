@@ -30,6 +30,34 @@ describe('buildCustomSlotPatch', () => {
     const patch = buildCustomSlotPatch(['1.21', '1.21.1']);
     expect(patch['1.21']).not.toBe(patch['1.21.1']);
   });
+
+  it('Slot 定義へ未対応の末尾フィールドを追加しない', () => {
+    const patch = buildCustomSlotPatch(['1.21.1']);
+    const slotDefinition = patch['1.21.1'].types.Slot as [string, unknown[]];
+    const [, slotEntries] = slotDefinition;
+    const switchDescriptor = slotEntries.find(
+      (entry): entry is { type: unknown[] } =>
+        typeof entry === 'object' && entry !== null && 'type' in (entry as Record<string, unknown>),
+    );
+
+    expect(switchDescriptor).toBeDefined();
+
+    const switchPayload = switchDescriptor!.type as unknown[];
+    const switchConfig = switchPayload[1] as { default: unknown[] };
+    const defaultContainer = switchConfig.default as unknown[];
+    const defaultEntries = defaultContainer[1] as Array<Record<string, unknown>>;
+    const fieldNames = defaultEntries
+      .filter((entry) => typeof entry === 'object' && entry !== null && 'name' in entry)
+      .map((entry) => entry.name as string);
+
+    expect(fieldNames).toEqual([
+      'itemId',
+      'addedComponentCount',
+      'removedComponentCount',
+      'components',
+      'removeComponents',
+    ]);
+  });
 });
 
 describe('CUSTOM_SLOT_PATCH', () => {
