@@ -99,7 +99,7 @@ docker compose up --build
 `env.example` を `.env` にコピーし、中身を設定します（Python側で読み込み）。
 
 * `OPENAI_API_KEY`: OpenAI の API キー
-* `OPENAI_BASE_URL`（任意）
+* `OPENAI_BASE_URL`（任意。例: `https://api.openai.com/v1` のようにスキーム付きで指定。スキームを省いた場合は `http://` が自動補完され、実行時ログへ警告が出力されます）
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://node-bot:8765`。Docker Compose ではサービス名解決で疎通）
 * `WS_HOST` / `WS_PORT`: Node 側 WebSocket サーバーのバインド先（既定 `0.0.0.0:8765`）
