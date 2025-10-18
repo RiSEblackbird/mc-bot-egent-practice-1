@@ -1,6 +1,6 @@
 # Minecraft 自律ボット（Python + gpt-5-mini + Mineflayer）
 
-本プロジェクトは、Minecraft Java Edition 1.21.8 + Paper 上で動作する **日本語対応の LLM 自律ボット** です。  
+本プロジェクトは、Minecraft Java Edition 1.21.1 + Paper 上で動作する **日本語対応の LLM 自律ボット** です。
 Python 側が LLM（OpenAI **gpt-5-mini**）でチャット意図を解釈し、Node.js 側の Mineflayer ボットへ行動コマンドを送ります。
 
 ## 1. できること（初期）
@@ -12,11 +12,19 @@ Python 側が LLM（OpenAI **gpt-5-mini**）でチャット意図を解釈し、
 - 簡易建築：小屋/倉庫などの原始的建築
 - プレイヤー随伴：「ついてきて」で追尾モード
 
+## バージョン方針
+
+本プロジェクトは既定で **Minecraft Java / Paper 1.21.1** を使用します。Paper サーバーの JAR は `paper-1.21.1-*.jar` を取得して `paper.jar` にリネームし、`C:\mc\paper\paper.jar` など任意の配置先で保守してください。Bot 側の既定プロトコルも `MC_VERSION=1.21.1` を参照するため、サーバーとクライアントの齟齬を防ぎます。将来的に別バージョンを試す場合は `.env` の `MC_VERSION` や `paper.jar` を差し替えるだけで移行できます。
+
+### クライアントとの互換性
+
+原則として Minecraft クライアントも 1.21.1 を利用してください。1.21.1 以外のクライアントから接続する必要がある場合は、Paper サーバーに ViaVersion / ViaBackwards などの互換プラグインを導入して調整します（完全互換ではない点に留意）。
+
 ## 2. Paper サーバーの起動（前提）
 Windows 例：
 ```powershell
 cd C:\mc\paper
-java -Xms4G -Xmx4G -jar paper-1.21.8-60.jar --nogui
+java -Xms4G -Xmx4G -jar .\paper.jar --nogui
 ```
 
 開発中は `server.properties` の `online-mode=false` を推奨。
@@ -69,9 +77,9 @@ docker compose up --build
 #### 3.3.1 1.21.x の PartialReadError 追加対策
 
 - Paper / Vanilla 1.21.4 以降では ItemStack (Slot 型) に optional NBT が 2 セクション追加され、旧定義のままでは `entity_equipment` パケットで 2 バイトの読み残しが発生します。
-- `node-bot/runtime/slotPatch.ts` で `customPackets` 用の Slot 定義を動的に生成し、1.21 ～ 1.21.8 系の亜種をまとめて上書きすることで `PartialReadError: Unexpected buffer end while reading VarInt` を解消しています。minecraft-data のバージョン一覧から自動検出しているため、新しい 1.21.x がリリースされても追従漏れを起こしません。
+- `node-bot/runtime/slotPatch.ts` で `customPackets` 用の Slot 定義を動的に生成し、1.21 ～ 1.21.x 系の亜種をまとめて上書きすることで `PartialReadError: Unexpected buffer end while reading VarInt` を解消しています。minecraft-data のバージョン一覧から自動検出しているため、新しい 1.21.x がリリースされても追従漏れを起こしません。
 - 1.21.3 以前ではこれらのフィールドが送られないため、option タイプの 0 バイトだけが届き互換性が維持されます。
-- `.env` で `MC_VERSION=1.21.8` のように **minecraft-data が認識するプロトコルラベル** を指定すると、Mineflayer がサーバーと同じ定義で通信を開始するため、`PartialReadError` の再発リスクを減らせます。未設定時は既定で 1.21.8 を採用し、未知の値が入力された場合は対応可能なバージョンへ自動フォールバックします。
+- `.env` で `MC_VERSION=1.21.1` のように **minecraft-data が認識するプロトコルラベル** を指定すると、Mineflayer がサーバーと同じ定義で通信を開始するため、`PartialReadError` の再発リスクを減らせます。未設定時は既定で 1.21.1 を採用し、未知の値が入力された場合は対応可能なバージョンへ自動フォールバックします。
 
 ## 4. .env
 
@@ -83,7 +91,7 @@ docker compose up --build
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://node-bot:8765`。Docker Compose ではサービス名解決で疎通）
 * `WS_HOST` / `WS_PORT`: Node 側 WebSocket サーバーのバインド先（既定 `0.0.0.0:8765`）
 * `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`、Docker 実行時は自動で `host.docker.internal` へフォールバック）
-* `MC_VERSION`: Mineflayer が利用する Minecraft プロトコルのバージョン。Paper 1.21.8 を想定した既定値 `1.21.8` を含め、minecraft-data が対応するラベルを指定してください。
+* `MC_VERSION`: Mineflayer が利用する Minecraft プロトコルのバージョン。Paper 1.21.1 を想定した既定値 `1.21.1` を含め、minecraft-data が対応するラベルを指定してください。
 * `MC_RECONNECT_DELAY_MS`: 接続失敗時に Mineflayer ボットが再接続を試みるまでの待機時間（ミリ秒、既定 `5000`）
 * `BOT_USERNAME`: ボットの表示名（例 `HelperBot`）
 * `AUTH_MODE`: `offline`（開発時推奨）/ `microsoft`
