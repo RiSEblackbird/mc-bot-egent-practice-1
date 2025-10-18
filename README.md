@@ -71,6 +71,10 @@ Python 側で LLM プランニングとアクション実行が行われます�
 は、直前に検出した座標付きステップを記憶し、直後に続く「移動」「向かう」などの抽象ステップでは同じ目的地を
 再利用するため、計画途中で座標の記述が省略されても同じ地点へ向かい続けます。
 
+Python エージェントが呼び出す LLM は **OpenAI Responses API** を利用しています。従来の Chat Completions API では
+`reasoning` パラメータが拒否されるため、Responses API の `reasoning.effort` と `text.verbosity` を併用し、
+gpt-5 系モデルに対して安定した JSON 応答と推論強度の指定を両立させています。
+
 ### 3.3 Docker Compose（Python + Node 同時ホットリロード）
 
 開発時に Python エージェントと Node ボットの両方をホットリロードで動かしたい場合は、プロジェクトルートに追加した `docker-compose.yml` を利用できます。

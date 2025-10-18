@@ -26,6 +26,10 @@ python/.openai/
 python/.secrets/
 python/.tokens/
 
+# OpenAI SDK が生成する可能性のある API 呼び出しログ（秘匿情報混入リスク）
+openai.log
+python/openai.log
+
 # Cursor エディタのセッション情報（秘匿情報が混入する恐れがあるため除外）
 .cursor/
 python/.cursor/
