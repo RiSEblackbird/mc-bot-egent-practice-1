@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -99,15 +100,32 @@ class AgentOrchestrator:
 
         task = ChatTask(username=username, message=message)
         await self.queue.put(task)
-        self.logger.info("chat task enqueued username=%s message=%s", username, message)
+        self.logger.info(
+            "chat task enqueued username=%s message=%s queue_size=%d",
+            username,
+            message,
+            self.queue.qsize(),
+        )
 
     async def worker(self) -> None:
         """チャットキューを逐次処理するバックグラウンドタスク。"""
 
         while True:
+            queue_before = self.queue.qsize()
+            self.logger.info(
+                "worker awaiting task queue_size_before_get=%d", queue_before
+            )
             task = await self.queue.get()
             try:
+                started_at = time.perf_counter()
                 await self._process_chat(task)
+                elapsed = time.perf_counter() - started_at
+                self.logger.info(
+                    "worker processed username=%s duration=%.3fs remaining_queue=%d",
+                    task.username,
+                    elapsed,
+                    self.queue.qsize(),
+                )
             except Exception:
                 self.logger.exception("failed to process chat task username=%s", task.username)
             finally:
@@ -117,13 +135,28 @@ class AgentOrchestrator:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
         context = self._build_context_snapshot()
-        self.logger.info("creating plan for message='%s' context=%s", task.message, context)
+        self.logger.info(
+            "creating plan for username=%s message='%s' context=%s",
+            task.username,
+            task.message,
+            context,
+        )
 
         plan_out = await plan(task.message, context)
-        self.logger.info("plan generated plan=%s resp=%s", plan_out.plan, plan_out.resp)
+        self.logger.info(
+            "plan generated steps=%d plan=%s resp=%s",
+            len(plan_out.plan),
+            plan_out.plan,
+            plan_out.resp,
+        )
 
         # LLM の丁寧な応答をそのままプレイヤーへ relay する。
         if plan_out.resp:
+            self.logger.info(
+                "relaying llm response to player username=%s resp='%s'",
+                task.username,
+                plan_out.resp,
+            )
             await self.actions.say(plan_out.resp)
 
         await self._execute_plan(plan_out)
@@ -132,35 +165,62 @@ class AgentOrchestrator:
     def _build_context_snapshot(self) -> Dict[str, Any]:
         """LLM へ渡す簡易コンテキストを生成する。"""
 
-        return {
+        snapshot = {
             "player_pos": self.memory.get("player_pos", "不明"),
             "inventory_summary": self.memory.get("inventory", "不明"),
             "last_chat": self.memory.get("last_chat", "未記録"),
         }
+        self.logger.info("context snapshot built=%s", snapshot)
+        return snapshot
 
     async def _execute_plan(self, plan_out: PlanOut) -> None:
         """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。"""
 
-        for step in plan_out.plan:
+        total_steps = len(plan_out.plan)
+        for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
+            self.logger.info(
+                "plan_step index=%d/%d raw='%s' normalized='%s'",
+                index,
+                total_steps,
+                step,
+                normalized,
+            )
             if not normalized:
                 continue
 
-            self.logger.info("executing plan step='%s'", normalized)
             coords = self._extract_coordinates(normalized)
             if coords:
+                self.logger.info(
+                    "plan_step index=%d classified as coordinate_move coords=%s",
+                    index,
+                    coords,
+                )
                 await self._move_to_coordinates(coords)
                 continue
 
             if any(keyword in normalized for keyword in ("移動", "向かう", "歩く")):
+                self.logger.info(
+                    "plan_step index=%d fallback_move keywords_detected default_target=%s",
+                    index,
+                    self.default_move_target,
+                )
                 await self._move_to_coordinates(self.default_move_target)
                 continue
 
             if "報告" in normalized or "伝える" in normalized:
+                self.logger.info(
+                    "plan_step index=%d issuing status_report",
+                    index,
+                )
                 await self.actions.say("進捗を確認しています。続報をお待ちください。")
                 continue
 
-            self.logger.info("no direct action mapping for step='%s'", normalized)
+            self.logger.info(
+                "plan_step index=%d no_direct_mapping step='%s'",
+                index,
+                normalized,
+            )
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
@@ -177,6 +237,7 @@ class AgentOrchestrator:
         x, y, z = coords
         self.logger.info("requesting moveTo to (%d, %d, %d)", x, y, z)
         resp = await self.actions.move_to(x, y, z)
+        self.logger.info("moveTo response=%s", resp)
         if resp.get("ok"):
             self.memory.set("last_destination", {"x": x, "y": y, "z": z})
         else:
