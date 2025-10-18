@@ -101,6 +101,7 @@ docker compose up --build
 * `OPENAI_API_KEY`: OpenAI の API キー
 * `OPENAI_BASE_URL`（任意。例: `https://api.openai.com/v1` のようにスキーム付きで指定。スキームを省いた場合は `http://` が自動補完され、実行時ログへ警告が出力されます）
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
+* `OPENAI_TEMPERATURE`: 0.0～2.0 の範囲で温度を調整。**温度固定モデル（例: gpt-5-mini）では無視され、ログに警告が出力されます。**
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://node-bot:8765`。Docker Compose ではサービス名解決で疎通）
 * `WS_HOST` / `WS_PORT`: Node 側 WebSocket サーバーのバインド先（既定 `0.0.0.0:8765`）
 * `AGENT_WS_HOST` / `AGENT_WS_PORT`: Python エージェントが Node からのチャットを受け付ける WebSocket サーバーのバインド先（既定 `0.0.0.0:9000`）
@@ -137,6 +138,17 @@ Paper サーバーでチャットを送信した際に「何も起こらない�
 
 これらのログを突き合わせることで、「チャットが受信されたか」「Python 側がコマンドを送ったか」「Mineflayer が応答したか」を
 時系列で把握でき、問題の切り分けが容易になります。
+
+### 5.2 OpenAI 設定で温度を変更したい場合
+
+一部の OpenAI モデル（特に gpt-5-mini 系）は API 側で温度が固定されており、`temperature` パラメータを送信するとリクエストが拒否されます。
+本リポジトリでは `OPENAI_TEMPERATURE` を設定しても、そのモデルが温度変更不可であれば自動的に送信を抑止し、警告ログを出力します。
+
+- **温度変更が許可されているモデルに切り替える**: `OPENAI_MODEL` を温度可変モデルに変更すると、`OPENAI_TEMPERATURE` の値が 0.0～2.0 の範囲で反映されます。
+- **無効な温度指定をした場合**: 数値以外や範囲外の値を設定すると、INFO/ WARNING ログにフォールバックの旨が表示され、既定値 `0.3` が自動的に利用されます。
+- **デバッグ方法**: `python/planner.py` のログに `OPENAI_TEMPERATURE` を無視した理由や、フォールバックが発生した詳細が記録されるため、再発防止に活用してください。
+
+温度変更に失敗する場合は、まずログに出力される警告メッセージを確認し、`OPENAI_MODEL` と `OPENAI_TEMPERATURE` の組み合わせがサポート対象か見直してください。
 
 ## 6. 参考理論（READMEにURLを**必ず**記載）
 
