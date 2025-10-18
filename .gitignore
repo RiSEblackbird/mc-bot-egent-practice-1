@@ -22,6 +22,7 @@ __pycache__/
 venv/
 python/.cache/
 python/.openai/
+python/.secrets/
 
 # Environment and secret files
 .env
