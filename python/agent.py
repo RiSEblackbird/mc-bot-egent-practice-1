@@ -102,6 +102,29 @@ class AgentOrchestrator:
             re.IGNORECASE,
         ),
     )
+    # 移動関連の表現を追加で保持して、指示待ちに陥らないようヒューリスティックで
+    # 取り扱う。Mineflayer 側の pathfinder が段差や足場を自律的に処理できるため、
+    # LLM の文章が抽象的でも移動を継続させる。
+    _MOVE_KEYWORDS = (
+        "移動",
+        "向かう",
+        "歩く",
+        "進む",
+        "到達",
+        "到着",
+        "目指す",
+    )
+    _MOVE_HINT_KEYWORDS = (
+        "段差",
+        "足場",
+        "はしご",
+        "登",
+        "降",
+        "経路",
+        "通路",
+        "迂回",
+        "高さ",
+    )
 
     def __init__(self, actions: Actions, memory: Memory) -> None:
         self.actions = actions
@@ -245,15 +268,7 @@ class AgentOrchestrator:
                 await self._move_to_coordinates(coords)
                 continue
 
-            if any(
-                keyword in normalized
-                for keyword in (
-                    "現在位置",
-                    "座標表示",
-                    "位置を確認",
-                    "所持品を確認",
-                )
-            ):
+            if self._is_status_check_step(normalized):
                 # 状況確認系のメタ指示は Mineflayer の直接操作に該当しないため、
                 # 障壁扱いにせず静かに無視して実行フローを前に進める。
                 self.logger.info(
@@ -263,7 +278,7 @@ class AgentOrchestrator:
                 )
                 continue
 
-            if any(keyword in normalized for keyword in ("移動", "向かう", "歩く")):
+            if self._is_move_step(normalized):
                 target_coords = last_target_coords or self.default_move_target
                 # LLM が座標を明示しなかった場合は既定値を採用するが、その事実を
                 # プレイヤーに共有しないと問題分析が難しいため別途通知する。
@@ -293,6 +308,9 @@ class AgentOrchestrator:
                     )
                 continue
 
+            if await self._attempt_proactive_progress(normalized, last_target_coords):
+                continue
+
             if "報告" in normalized or "伝える" in normalized:
                 self.logger.info(
                     "plan_step index=%d issuing status_report",
@@ -310,6 +328,47 @@ class AgentOrchestrator:
                 normalized,
                 "対応可能なアクションが見つからず停滞しています。計画ステップの表現を見直してください。",
             )
+
+    def _is_status_check_step(self, text: str) -> bool:
+        """位置・所持品確認など実際の操作が不要なステップかを判定する。"""
+
+        status_keywords = (
+            "現在位置",
+            "座標表示",
+            "位置を確認",
+            "所持品を確認",
+            "状況を確認",
+        )
+        return any(keyword in text for keyword in status_keywords)
+
+    def _is_move_step(self, text: str) -> bool:
+        """ステップが明示的に移動を要求しているかを判定する。"""
+
+        return any(keyword in text for keyword in self._MOVE_KEYWORDS)
+
+    def _should_continue_move(self, text: str) -> bool:
+        """段差調整など移動継続で吸収できるステップかどうかを推測する。"""
+
+        return any(keyword in text for keyword in self._MOVE_HINT_KEYWORDS)
+
+    async def _attempt_proactive_progress(
+        self, step: str, last_target_coords: Optional[Tuple[int, int, int]]
+    ) -> bool:
+        """未対応ステップでも移動継続で処理できる場合は実行し True を返す。"""
+
+        if not last_target_coords:
+            return False
+
+        if self._should_continue_move(step):
+            self.logger.info(
+                "interpreting step='%s' as continue_move coords=%s",
+                step,
+                last_target_coords,
+            )
+            await self._move_to_coordinates(last_target_coords)
+            return True
+
+        return False
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
