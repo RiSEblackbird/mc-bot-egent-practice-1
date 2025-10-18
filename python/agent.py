@@ -24,7 +24,7 @@ from websockets.server import serve
 from actions import Actions
 from bridge_ws import BotBridge
 from memory import Memory
-from planner import PlanOut, plan
+from planner import PlanOut, compose_barrier_notification, plan
 from utils import setup_logger
 
 logger = setup_logger("agent")
@@ -177,6 +177,7 @@ class AgentOrchestrator:
             "player_pos": self.memory.get("player_pos", "不明"),
             "inventory_summary": self.memory.get("inventory", "不明"),
             "last_chat": self.memory.get("last_chat", "未記録"),
+            "last_destination": self.memory.get("last_destination", "未記録"),
         }
         self.logger.info("context snapshot built=%s", snapshot)
         return snapshot
@@ -304,16 +305,35 @@ class AgentOrchestrator:
     async def _report_execution_barrier(self, step: str, reason: str) -> None:
         """処理を継続できない障壁を検知した際にチャットとログで即時共有する。"""
 
-        short_step = self._shorten_text(step, limit=40)
-        short_reason = self._shorten_text(reason, limit=60)
         self.logger.warning(
             "execution barrier detected step='%s' reason='%s'",
             step,
             reason,
         )
-        await self.actions.say(
-            f"手順「{short_step}」で問題が発生しました: {short_reason}"
-        )
+        message = await self._compose_barrier_message(step, reason)
+        await self.actions.say(message)
+
+    async def _compose_barrier_message(self, step: str, reason: str) -> str:
+        """障壁内容を LLM に渡して、プレイヤー向けの確認メッセージを生成する。"""
+
+        try:
+            context = self._build_context_snapshot()
+            context.update({"queue_backlog": self.queue.qsize()})
+            llm_message = await compose_barrier_notification(step, reason, context)
+            if llm_message:
+                self.logger.info(
+                    "barrier message composed via LLM step='%s' message='%s'",
+                    step,
+                    llm_message,
+                )
+                return llm_message
+        except Exception:
+            self.logger.exception("failed to compose barrier message via LLM")
+
+        # LLM 連携に失敗した場合は従来通り短縮メッセージを返す。
+        short_step = self._shorten_text(step, limit=40)
+        short_reason = self._shorten_text(reason, limit=60)
+        return f"手順「{short_step}」で問題が発生しました: {short_reason}"
 
     @staticmethod
     def _shorten_text(text: str, *, limit: int) -> str:

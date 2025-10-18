@@ -96,7 +96,13 @@ def resolve_request_temperature(model: str) -> Optional[float]:
 # 期待する出力スキーマ（簡易）
 class PlanOut(BaseModel):
     plan: List[str] = Field(default_factory=list)  # 実行ステップ（高レベル）
-    resp: str = ""                                 # プレイヤー向け日本語応答
+    resp: str = ""  # プレイヤー向け日本語応答
+
+
+class BarrierNotification(BaseModel):
+    """障壁通知用のメッセージをパースするためのスキーマ。"""
+
+    message: str = ""
 
 SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然文指示を、
 現在の状況を考慮して実行可能な高レベルのステップ列に分解し、同時に
@@ -104,6 +110,27 @@ SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然�
 
 出力は必ず JSON で、キーは "plan": string[], "resp": string とする。
 推論の思考過程は出力に含めないこと。
+"""
+
+BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞している作業の概要を理解し、
+プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
+必要な確認事項や追加指示の依頼を 2 文程度で伝えてください。"""
+
+
+def build_barrier_prompt(step: str, reason: str, context: Dict[str, Any]) -> str:
+    """障壁情報と補助コンテキストを LLM へ渡すためのプロンプトを生成する。"""
+
+    ctx_lines = [f"- {key}: {value}" for key, value in context.items()]
+    ctx_block = "\n".join(ctx_lines)
+    return f"""# 現在発生している問題
+手順: {step}
+原因: {reason}
+
+# 参考情報
+{ctx_block}
+
+# 出力要件
+状況を説明し、プレイヤーに確認したい事項を丁寧に尋ねてください。
 """
 
 def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
@@ -148,3 +175,41 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
         # 最低限のフォールバック
         data = PlanOut(plan=[], resp="了解しました。")
     return data
+
+
+async def compose_barrier_notification(
+    step: str, reason: str, context: Dict[str, Any]
+) -> str:
+    """障壁発生時にプレイヤーへ送る確認メッセージを LLM によって生成する。"""
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI()
+    prompt = build_barrier_prompt(step, reason, context)
+    logger.info(f"Barrier prompt: {prompt}")
+
+    temperature = resolve_request_temperature(MODEL)
+    request_payload: Dict[str, Any] = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": BARRIER_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    if temperature is not None:
+        request_payload["temperature"] = temperature
+
+    resp = await client.chat.completions.create(**request_payload)
+    content = resp.choices[0].message.content
+    logger.info(f"Barrier raw: {content}")
+
+    try:
+        parsed = BarrierNotification.model_validate_json(content)
+        if parsed.message.strip():
+            return parsed.message.strip()
+    except Exception:
+        logger.exception("failed to parse barrier notification JSON")
+
+    # LLM 応答がパースできない場合は従来の短縮メッセージを返す。
+    return "問題を確認しました。状況を共有いただけますか？"
