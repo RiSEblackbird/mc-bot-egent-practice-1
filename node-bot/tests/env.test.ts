@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import {
   detectDockerRuntime,
   parseEnvInt,
+  resolveAgentWebSocketEndpoint,
   resolveMinecraftHostValue,
+  resolveMoveGoalTolerance,
   type DockerDetectionDeps,
 } from '../runtime/env.js';
 
@@ -84,5 +86,99 @@ describe('detectDockerRuntime', () => {
       },
     };
     expect(detectDockerRuntime(deps)).toBe(false);
+  });
+});
+
+describe('resolveMoveGoalTolerance', () => {
+  it('未設定の場合は既定値 3 と警告なしを返す', () => {
+    expect(resolveMoveGoalTolerance(undefined)).toEqual({ tolerance: 3, warnings: [] });
+  });
+
+  it('有効な数値はそのまま採用し警告を出さない', () => {
+    expect(resolveMoveGoalTolerance('5')).toEqual({ tolerance: 5, warnings: [] });
+  });
+
+  it('数値化できない入力はフォールバックし警告を追加する', () => {
+    const result = resolveMoveGoalTolerance('abc');
+    expect(result.tolerance).toBe(3);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('下限未満の値は 1 へ丸める', () => {
+    const result = resolveMoveGoalTolerance('0');
+    expect(result.tolerance).toBe(1);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('上限を超える値は 30 へ丸める', () => {
+    const result = resolveMoveGoalTolerance('100');
+    expect(result.tolerance).toBe(30);
+    expect(result.warnings).toHaveLength(1);
+  });
+});
+
+describe('resolveAgentWebSocketEndpoint', () => {
+  it('URL が明示されていればそのまま利用する', () => {
+    const result = resolveAgentWebSocketEndpoint('wss://example.local/ws', undefined, undefined, false);
+    expect(result).toMatchObject({
+      url: 'wss://example.local/ws',
+      host: '127.0.0.1',
+      port: 9000,
+      usedExplicitUrl: true,
+      usedDefaultHost: true,
+      usedDefaultPort: true,
+    });
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('Docker 環境では既定で python-agent:9000 を指す', () => {
+    const result = resolveAgentWebSocketEndpoint(undefined, undefined, undefined, true);
+    expect(result).toMatchObject({
+      url: 'ws://python-agent:9000',
+      host: 'python-agent',
+      port: 9000,
+      usedExplicitUrl: false,
+      usedDefaultHost: true,
+      usedDefaultPort: true,
+    });
+  });
+
+  it('ホストとポートの明示指定を尊重する', () => {
+    const result = resolveAgentWebSocketEndpoint(undefined, 'agent.example.com', '9100', false);
+    expect(result).toMatchObject({
+      url: 'ws://agent.example.com:9100',
+      host: 'agent.example.com',
+      port: 9100,
+      usedExplicitUrl: false,
+      usedDefaultHost: false,
+      usedDefaultPort: false,
+    });
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('ポートが数値化できない場合は既定値へフォールバックする', () => {
+    const result = resolveAgentWebSocketEndpoint(undefined, 'agent', 'abc', false);
+    expect(result.port).toBe(9000);
+    expect(result.usedDefaultPort).toBe(true);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('URL にスキームが含まれていなければ ws:// を補完する', () => {
+    const result = resolveAgentWebSocketEndpoint('python-agent:9100', undefined, undefined, false);
+    expect(result.url).toBe('ws://python-agent:9100');
+    expect(result.usedExplicitUrl).toBe(true);
+    expect(result.warnings).toContain(
+      "AGENT_WS_URL='python-agent:9100' にスキームが含まれていないため ws:// を補完しました。",
+    );
+  });
+
+  it('0.0.0.0 が指定された場合は警告付きで既定ホストへフォールバックする', () => {
+    const result = resolveAgentWebSocketEndpoint(undefined, '0.0.0.0', undefined, false);
+    expect(result.host).toBe('127.0.0.1');
+    expect(result.url).toBe('ws://127.0.0.1:9000');
+    expect(result.usedDefaultHost).toBe(true);
+    expect(result.warnings).toContain(
+      "AGENT_WS_HOST='0.0.0.0' は接続先として利用できないため 127.0.0.1 へフォールバックします。",
+    );
   });
 });
