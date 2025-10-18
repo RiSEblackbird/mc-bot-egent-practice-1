@@ -104,6 +104,8 @@ docker compose up --build
 * `OPENAI_BASE_URL`（任意。例: `https://api.openai.com/v1` のようにスキーム付きで指定。スキームを省いた場合は `http://` が自動補完され、実行時ログへ警告が出力されます）
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
 * `OPENAI_TEMPERATURE`: 0.0～2.0 の範囲で温度を調整。**温度固定モデル（例: gpt-5-mini）では無視され、ログに警告が出力されます。**
+* `OPENAI_VERBOSITY`: gpt-5 系モデル専用の応答詳細度。`low` / `medium` / `high` のいずれかを設定します（未設定なら API 既定値を利用）。
+* `OPENAI_REASONING_EFFORT`: gpt-5 系モデル専用の推論強度。`low` / `medium` / `high` のいずれかを指定し、空欄の場合は OpenAI 側の既定値に従います。
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://node-bot:8765`。Docker Compose ではサービス名解決で疎通）
 * `WS_HOST` / `WS_PORT`: Node 側 WebSocket サーバーのバインド先（既定 `0.0.0.0:8765`）
 * `AGENT_WS_HOST` / `AGENT_WS_PORT`: Python エージェントが Node からのチャットを受け付ける WebSocket サーバーのバインド先（既定 `0.0.0.0:9000`）
@@ -124,6 +126,7 @@ docker compose up --build
 * 「鉄が足りない」 → ツール確認→採掘計画→ブランチマイニング
 * 「ついてきて」 → 追尾モード
 * 「ここに小屋を建てて」 → 建材確認→不足なら収集→建築
+* 「現在値教えて」 → Mineflayer が現在位置 (X/Y/Z) をチャットで即座に報告
 
 ボットは進捗を日本語で逐次報告します。
 
@@ -178,6 +181,12 @@ Paper サーバーでチャットを送信した際に「何も起こらない�
 - 位置確認やインベントリ確認だけを行うメタ的なステップは自動でスキップし、移動や採取などの実行ステップを優先するため、チャットへの応答が冗長にならずテンポよく行動を開始できます。
 - 段差や足場の処理を促す抽象的な文でも「移動継続」のヒントとして扱い、既知の座標へ向かう行動を止めないヒューリスティックを導入しました。Mineflayer の pathfinder が吸収できる範囲は確認待ちを挟まずに処理されるため、「具体的な段差処理方法を教えてほしい」といった追加質問が大幅に減ります。
 
+
+### 5.5 Paper サーバーの警告 (`HelperBot moved wrongly!` / `minecraft:movement_speed`) への対策
+
+- Mineflayer の移動制御でパルクールやダッシュを無効化し、Paper 側の移動検知に引っかからないよう歩行速度へ抑制しました。サーバーが強制的に位置補正を行った場合でも、直近の目的地を再セットして移動を継続します。
+- OpenAI からの移動命令が継続している際に `forcedMove` が発生した場合は、1 秒以内の連続補正を無視しつつログへ警告を残します。これによりプレイヤーはサーバーが移動を補正した事実を把握できます。
+- 1.21.1 以降で属性名が `minecraft:generic.movement_speed` へ統一されたため、Mineflayer が旧名 `minecraft:movement_speed` を送出しても自動で置き換え、Paper 側の `Ignoring unknown attribute` 警告を防ぎます。
 ## 6. 参考理論（READMEにURLを**必ず**記載）
 
 本プロジェクトは以下の理論/手法を採用します。**各論文のURLを本節に列挙してください。**

@@ -4,6 +4,7 @@ node-bot/dist/
 node-bot/*.tsbuildinfo
 node-bot/.env
 node-bot/.env.local
+node-bot/.env.*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
