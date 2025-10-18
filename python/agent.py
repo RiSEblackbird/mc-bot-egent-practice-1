@@ -177,6 +177,9 @@ class AgentOrchestrator:
         """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。"""
 
         total_steps = len(plan_out.plan)
+        # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
+        # された場合でも同じ目的地へ移動し続けられるようにする。
+        last_target_coords: Optional[Tuple[int, int, int]] = None
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -196,16 +199,25 @@ class AgentOrchestrator:
                     index,
                     coords,
                 )
+                last_target_coords = coords
                 await self._move_to_coordinates(coords)
                 continue
 
             if any(keyword in normalized for keyword in ("移動", "向かう", "歩く")):
-                self.logger.info(
-                    "plan_step index=%d fallback_move keywords_detected default_target=%s",
-                    index,
-                    self.default_move_target,
-                )
-                await self._move_to_coordinates(self.default_move_target)
+                target_coords = last_target_coords or self.default_move_target
+                if last_target_coords:
+                    self.logger.info(
+                        "plan_step index=%d fallback_move reuse_last_target=%s",
+                        index,
+                        target_coords,
+                    )
+                else:
+                    self.logger.info(
+                        "plan_step index=%d fallback_move keywords_detected default_target=%s",
+                        index,
+                        self.default_move_target,
+                    )
+                await self._move_to_coordinates(target_coords)
                 continue
 
             if "報告" in normalized or "伝える" in normalized:
