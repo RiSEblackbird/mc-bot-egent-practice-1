@@ -1,57 +1,256 @@
 # -*- coding: utf-8 -*-
-# 起動エントリ：WS接続→チャット入力（暫定: 標準入力）→ LLM 計画 → 行動
+"""Python エージェントのエントリポイント。
+
+プレイヤーのチャットを Node.js 側から WebSocket で受信し、LLM による計画生成と
+Mineflayer へのアクション実行を統合する。従来の標準入力デモから脱却し、
+実運用に耐える自律フローへ移行するための実装。"""
+
+from __future__ import annotations
+
 import asyncio
+import contextlib
+import json
 import os
+import re
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Optional, Tuple
+
 from dotenv import load_dotenv
-from utils import setup_logger
-from bridge_ws import BotBridge
+from websockets import WebSocketServerProtocol
+from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
+from websockets.server import serve
+
 from actions import Actions
+from bridge_ws import BotBridge
 from memory import Memory
-from planner import plan
+from planner import PlanOut, plan
+from utils import setup_logger
 
 logger = setup_logger("agent")
 
 load_dotenv()
-WS_URL = os.getenv("WS_URL", "ws://127.0.0.1:8765")
 
-async def main():
+# --- 環境変数の読み込み ----------------------------------------------------
+
+WS_URL = os.getenv("WS_URL", "ws://127.0.0.1:8765")
+AGENT_WS_HOST = os.getenv("AGENT_WS_HOST", "0.0.0.0")
+DEFAULT_MOVE_TARGET_RAW = os.getenv("DEFAULT_MOVE_TARGET", "0,64,0")
+
+
+def _parse_port(raw: Optional[str], default: int) -> int:
+    """環境変数からポート番号を安全に読み取る。"""
+
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+        if value <= 0 or value > 65535:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("環境変数のポート値 '%s' が不正なため %d を使用します。", raw, default)
+        return default
+
+
+AGENT_WS_PORT = _parse_port(os.getenv("AGENT_WS_PORT"), 9000)
+
+
+def _parse_default_move_target(raw: str) -> Tuple[int, int, int]:
+    """環境変数から読み込んだ座標文字列を整数タプルへ変換する。"""
+
+    try:
+        parts = [int(part.strip()) for part in raw.split(",")]
+        if len(parts) != 3:
+            raise ValueError
+        return parts[0], parts[1], parts[2]
+    except Exception:
+        logger.warning(
+            "DEFAULT_MOVE_TARGET='%s' の解析に失敗したため (0, 64, 0) を採用します。",
+            raw,
+        )
+        return (0, 64, 0)
+
+
+DEFAULT_MOVE_TARGET = _parse_default_move_target(DEFAULT_MOVE_TARGET_RAW)
+
+
+@dataclass
+class ChatTask:
+    """Node 側から渡されるチャット指示をキュー化する際のデータ構造。"""
+
+    username: str
+    message: str
+
+
+class AgentOrchestrator:
+    """受信チャットを順次処理し、LLM プラン→Mineflayer 操作を遂行する中核クラス。"""
+
+    _COORD_PATTERN = re.compile(r"(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)")
+
+    def __init__(self, actions: Actions, memory: Memory) -> None:
+        self.actions = actions
+        self.memory = memory
+        self.queue: asyncio.Queue[ChatTask] = asyncio.Queue()
+        self.default_move_target = DEFAULT_MOVE_TARGET
+        self.logger = setup_logger("agent.orchestrator")
+
+    async def enqueue_chat(self, username: str, message: str) -> None:
+        """WebSocket から受け取ったチャットをワーカーに積む。"""
+
+        task = ChatTask(username=username, message=message)
+        await self.queue.put(task)
+        self.logger.info("chat task enqueued username=%s message=%s", username, message)
+
+    async def worker(self) -> None:
+        """チャットキューを逐次処理するバックグラウンドタスク。"""
+
+        while True:
+            task = await self.queue.get()
+            try:
+                await self._process_chat(task)
+            except Exception:
+                self.logger.exception("failed to process chat task username=%s", task.username)
+            finally:
+                self.queue.task_done()
+
+    async def _process_chat(self, task: ChatTask) -> None:
+        """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
+
+        context = self._build_context_snapshot()
+        self.logger.info("creating plan for message='%s' context=%s", task.message, context)
+
+        plan_out = await plan(task.message, context)
+        self.logger.info("plan generated plan=%s resp=%s", plan_out.plan, plan_out.resp)
+
+        # LLM の丁寧な応答をそのままプレイヤーへ relay する。
+        if plan_out.resp:
+            await self.actions.say(plan_out.resp)
+
+        await self._execute_plan(plan_out)
+        self.memory.set("last_chat", {"username": task.username, "message": task.message})
+
+    def _build_context_snapshot(self) -> Dict[str, Any]:
+        """LLM へ渡す簡易コンテキストを生成する。"""
+
+        return {
+            "player_pos": self.memory.get("player_pos", "不明"),
+            "inventory_summary": self.memory.get("inventory", "不明"),
+            "last_chat": self.memory.get("last_chat", "未記録"),
+        }
+
+    async def _execute_plan(self, plan_out: PlanOut) -> None:
+        """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。"""
+
+        for step in plan_out.plan:
+            normalized = step.strip()
+            if not normalized:
+                continue
+
+            self.logger.info("executing plan step='%s'", normalized)
+            coords = self._extract_coordinates(normalized)
+            if coords:
+                await self._move_to_coordinates(coords)
+                continue
+
+            if any(keyword in normalized for keyword in ("移動", "向かう", "歩く")):
+                await self._move_to_coordinates(self.default_move_target)
+                continue
+
+            if "報告" in normalized or "伝える" in normalized:
+                await self.actions.say("進捗を確認しています。続報をお待ちください。")
+                continue
+
+            self.logger.info("no direct action mapping for step='%s'", normalized)
+
+    def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
+        """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
+
+        match = self._COORD_PATTERN.search(text)
+        if not match:
+            return None
+        x, y, z = (int(match.group(i)) for i in range(1, 4))
+        return x, y, z
+
+    async def _move_to_coordinates(self, coords: Iterable[int]) -> None:
+        """Mineflayer の移動アクションを発行し、結果をログに残す。"""
+
+        x, y, z = coords
+        self.logger.info("requesting moveTo to (%d, %d, %d)", x, y, z)
+        resp = await self.actions.move_to(x, y, z)
+        if resp.get("ok"):
+            self.memory.set("last_destination", {"x": x, "y": y, "z": z})
+        else:
+            self.logger.error("moveTo command rejected resp=%s", resp)
+
+
+class AgentWebSocketServer:
+    """Node -> Python のチャット転送を受け付ける WebSocket サーバー。"""
+
+    def __init__(self, orchestrator: AgentOrchestrator) -> None:
+        self.orchestrator = orchestrator
+        self.logger = setup_logger("agent.ws")
+
+    async def handler(self, websocket: WebSocketServerProtocol) -> None:
+        """各接続ごとに JSON コマンドを受信・処理する。"""
+
+        peer = f"{websocket.remote_address}" if websocket.remote_address else "unknown"
+        self.logger.info("connection opened from %s", peer)
+        try:
+            async for raw in websocket:
+                response = await self._handle_message(raw)
+                await websocket.send(json.dumps(response, ensure_ascii=False))
+        except (ConnectionClosedOK, ConnectionClosedError):
+            self.logger.info("connection closed from %s", peer)
+        except Exception:
+            self.logger.exception("unexpected error while handling connection from %s", peer)
+
+    async def _handle_message(self, raw: str) -> Dict[str, Any]:
+        """受信文字列を解析し、サポートするコマンドへ振り分ける。"""
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            self.logger.error("invalid JSON payload=%s", raw)
+            return {"ok": False, "error": "invalid json"}
+
+        if payload.get("type") != "chat":
+            self.logger.error("unsupported payload type=%s", payload.get("type"))
+            return {"ok": False, "error": "unsupported type"}
+
+        args = payload.get("args") or {}
+        username = str(args.get("username", "")).strip() or "Player"
+        message = str(args.get("message", "")).strip()
+
+        if not message:
+            self.logger.warning("empty chat message received username=%s", username)
+            return {"ok": False, "error": "empty message"}
+
+        await self.orchestrator.enqueue_chat(username, message)
+        return {"ok": True}
+
+
+async def main() -> None:
+    """エージェントを起動し、WebSocket サーバーとワーカーを開始する。"""
+
     bridge = BotBridge(WS_URL)
     actions = Actions(bridge)
     mem = Memory()
+    orchestrator = AgentOrchestrator(actions, mem)
+    ws_server = AgentWebSocketServer(orchestrator)
 
-    logger.info("Python agent started. Type a Japanese instruction (simulating in-game chat).")
-    logger.info("例: パンが無い / 鉄が足りない / ついてきて")
+    worker_task = asyncio.create_task(orchestrator.worker(), name="agent-worker")
 
-    # ここではまず標準入力で疑似チャット。後で Paper 側→Node→Python の実受信に差し替え可。
-    while True:
-        user_msg = input("> ").strip()
-        logger.info(f"received pseudo-chat input: '{user_msg}'")
+    async with serve(ws_server.handler, AGENT_WS_HOST, AGENT_WS_PORT):
+        logger.info("Python agent is listening on ws://%s:%s", AGENT_WS_HOST, AGENT_WS_PORT)
+        try:
+            await asyncio.Future()  # 実行を継続
+        except asyncio.CancelledError:
+            logger.info("main loop cancelled")
+        finally:
+            worker_task.cancel()
+            with contextlib.suppress(Exception):
+                await worker_task
 
-        if not user_msg:
-            logger.info("input was empty after stripping; waiting for next message")
-            continue
-
-        # （暫定）プレイヤー位置などの状況は mem から渡す（実装中は空）
-        context = {
-            "player_pos": mem.get("player_pos", "不明"),
-            "inventory_summary": mem.get("inventory", "不明"),
-        }
-
-        logger.info(f"building execution plan for message='{user_msg}' with context={context}")
-        plan_out = await plan(user_msg, context)
-        # プレイヤーへ応答
-        logger.info(f"LLM responded with plan={plan_out.plan} resp='{plan_out.resp}'")
-        await actions.say(plan_out.resp)
-
-        # ごく簡単な PLAN 実行デモ： "移動" っぽいテキストがあれば固定座標に移動
-        for step in plan_out.plan:
-            if "移動" in step:
-                logger.info(f"auto-move triggered by plan step='{step}' -> destination=(0, 64, 0)")
-                # デモ用：スポーン近くへ移動（座標は適宜変更）
-                await actions.move_to(0, 64, 0)
-
-        # TODO: step の語彙に応じて dig / craft 等の実アクションにマッピングしていく
-        # 例: if "小麦" in step and "収穫" in step: -> dig wheat; etc.
 
 if __name__ == "__main__":
     asyncio.run(main())

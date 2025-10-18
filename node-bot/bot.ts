@@ -114,6 +114,18 @@ const WS_HOST = process.env.WS_HOST ?? '0.0.0.0';
 const WS_PORT = parseEnvInt(process.env.WS_PORT, 8765);
 const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 5000);
 
+// Python 側のエージェント WebSocket サーバーへチャットを転送するための接続設定。
+const rawAgentUrl = (process.env.AGENT_WS_URL ?? '').trim();
+const rawAgentHost = (process.env.AGENT_WS_HOST ?? '').trim();
+const rawAgentPort = (process.env.AGENT_WS_PORT ?? '').trim();
+const agentPort = parseEnvInt(rawAgentPort, 9000);
+const defaultAgentHost = rawAgentHost && rawAgentHost !== '0.0.0.0'
+  ? rawAgentHost
+  : dockerDetected
+    ? 'python-agent'
+    : '127.0.0.1';
+const AGENT_WS_URL = rawAgentUrl.length > 0 ? rawAgentUrl : `ws://${defaultAgentHost}:${agentPort}`;
+
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
 // 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
 let bot: Bot | null = null;
@@ -159,9 +171,7 @@ function registerBotEventHandlers(targetBot: Bot): void {
     // 受信したチャット内容を詳細ログへ出力し、
     // 「チャットは届いているが自動処理は未実装」である点を開発者へ明示する。
     console.info(`[Chat] <${username}> ${message}`);
-    console.info(
-      '[Chat] 自動処理ルーティングは未実装のため、Node 側で受信ログのみを記録しました。',
-    );
+    void forwardChatToAgent(username, message);
   });
 
   targetBot.on('error', (error: Error & { code?: string }) => {
@@ -330,4 +340,60 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
     console.error('[Pathfinder] failed to move', error);
     return { ok: false, error: 'Pathfinding failed' };
   }
+}
+
+/**
+ * Python エージェントへチャットを転送し、処理キューへ積ませる補助関数。
+ * 接続失敗時にはエラーログを残しつつボットのメインループを継続する。
+ */
+async function forwardChatToAgent(username: string, message: string): Promise<void> {
+  return new Promise((resolve) => {
+    const payload = {
+      type: 'chat',
+      args: { username, message },
+    } satisfies CommandPayload;
+
+    const ws = new WebSocket(AGENT_WS_URL);
+    const timeout = setTimeout(() => {
+      console.warn('[ChatBridge] agent did not respond within 10s');
+      ws.terminate();
+      resolve();
+    }, 10_000);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.removeAllListeners();
+      resolve();
+    };
+
+    ws.once('open', () => {
+      ws.send(JSON.stringify(payload));
+    });
+
+    ws.once('message', (data) => {
+      const text = data.toString();
+      console.info(`[ChatBridge] agent response: ${text}`);
+      try {
+        const parsed = JSON.parse(text) as CommandResponse;
+        if (!parsed.ok) {
+          console.warn('[ChatBridge] agent reported failure', parsed);
+        }
+      } catch (error) {
+        console.warn('[ChatBridge] failed to parse agent response', error);
+      }
+      ws.close();
+      cleanup();
+    });
+
+    ws.once('close', () => {
+      cleanup();
+    });
+
+    ws.once('error', (error) => {
+      console.error('[ChatBridge] failed to reach agent', error);
+      cleanup();
+    });
+  }).catch((error) => {
+    console.error('[ChatBridge] unexpected error', error);
+  });
 }
