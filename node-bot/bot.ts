@@ -21,7 +21,8 @@ const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('
 // 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
 // ---- プロトコルバージョン制御 ----
-const DEFAULT_MC_VERSION = '1.21.8';
+// Paper サーバーと Mineflayer の既定バージョン整合性を保つため、ここで既定値を一元管理する。
+const DEFAULT_MC_VERSION = '1.21.1';
 const SUPPORTED_MINECRAFT_VERSIONS = new Set(
   minecraftData.versions.pc.map((version) => version.minecraftVersion),
 );

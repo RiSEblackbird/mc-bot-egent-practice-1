@@ -13,6 +13,8 @@ services:
     env_file:
       - .env
     environment:
+      # Mineflayer が Paper と揃った既定バージョンで起動するよう docker-compose 側でもフォールバックを指定する。
+      MC_VERSION: ${MC_VERSION:-1.21.1}
       WS_HOST: ${WS_HOST:-0.0.0.0}
       WS_PORT: ${WS_PORT:-8765}
     command:
@@ -38,7 +40,8 @@ services:
     env_file:
       - .env
     environment:
-      WS_URL: ${WS_URL:-ws://node-bot:8765}
+      # Node 側が公開する WebSocket ポートを 1 箇所で可変化し、複数環境での疎通設定を単純化する。
+      WS_URL: ${WS_URL:-ws://node-bot:${WS_PORT:-8765}}
     command:
       - bash
       - -lc
