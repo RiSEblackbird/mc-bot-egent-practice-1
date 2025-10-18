@@ -39,9 +39,60 @@ if raw_base_url:
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 DEFAULT_TEMPERATURE = 0.3
 
+GPT5_MODEL_PREFIX = "gpt-5"
+ALLOWED_VERBOSITY_LEVELS = {"low", "medium", "high"}
+ALLOWED_REASONING_EFFORT = {"low", "medium", "high"}
+
 # gpt-5-mini をはじめとした一部のモデルは温度固定で API が受け付けないため、
 # 送信時には temperature フィールドを省略する必要がある。
 TEMPERATURE_LOCKED_MODELS = {"gpt-5-mini"}
+
+
+def is_gpt5_family(model: str) -> bool:
+    """モデル名が gpt-5 系統かどうかを判定する。"""
+
+    return model.startswith(GPT5_MODEL_PREFIX)
+
+
+def resolve_gpt5_verbosity(model: str) -> Optional[str]:
+    """gpt-5 系モデル向けの verbosity パラメータを環境変数から決定する。"""
+
+    if not is_gpt5_family(model):
+        return None
+
+    raw = os.getenv("OPENAI_VERBOSITY")
+    if not raw:
+        return None
+
+    value = raw.strip().lower()
+    if value not in ALLOWED_VERBOSITY_LEVELS:
+        logger.warning(
+            "OPENAI_VERBOSITY=%s はサポート対象 (low/medium/high) 外のため送信しません。", raw
+        )
+        return None
+
+    return value
+
+
+def resolve_gpt5_reasoning_effort(model: str) -> Optional[str]:
+    """gpt-5 系モデル向けの reasoning.effort を環境変数から決定する。"""
+
+    if not is_gpt5_family(model):
+        return None
+
+    raw = os.getenv("OPENAI_REASONING_EFFORT")
+    if not raw:
+        return None
+
+    value = raw.strip().lower()
+    if value not in ALLOWED_REASONING_EFFORT:
+        logger.warning(
+            "OPENAI_REASONING_EFFORT=%s はサポート対象 (low/medium/high) 外のため送信しません。",
+            raw,
+        )
+        return None
+
+    return value
 
 
 def resolve_request_temperature(model: str) -> Optional[float]:
@@ -174,6 +225,14 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
     if temperature is not None:
         request_payload["temperature"] = temperature
 
+    verbosity = resolve_gpt5_verbosity(MODEL)
+    if verbosity:
+        request_payload["verbosity"] = verbosity
+
+    reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
+    if reasoning_effort:
+        request_payload["reasoning"] = {"effort": reasoning_effort}
+
     resp = await client.chat.completions.create(**request_payload)
     content = resp.choices[0].message.content
     logger.info(f"LLM raw: {content}")
@@ -207,6 +266,14 @@ async def compose_barrier_notification(
     }
     if temperature is not None:
         request_payload["temperature"] = temperature
+
+    verbosity = resolve_gpt5_verbosity(MODEL)
+    if verbosity:
+        request_payload["verbosity"] = verbosity
+
+    reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
+    if reasoning_effort:
+        request_payload["reasoning"] = {"effort": reasoning_effort}
 
     resp = await client.chat.completions.create(**request_payload)
     content = resp.choices[0].message.content

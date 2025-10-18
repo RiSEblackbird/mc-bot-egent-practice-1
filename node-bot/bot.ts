@@ -21,6 +21,10 @@ import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
 const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
 
+// ---- チャット応答用の補助定数 ----
+// 「現在値」など位置確認に関する質問を検知するためのキーワード集合。
+const CURRENT_POSITION_KEYWORDS = ['現在値', '現在地', '現在位置', '今どこ', 'いまどこ'];
+
 // ---- Minecraft プロトコル差分パッチ ----
 // 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
@@ -152,6 +156,8 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 let cachedFoodsByName: FoodDictionary = {};
 let isConsumingFood = false;
 let lastHungerWarningAt = 0;
+let lastMoveTarget: { x: number; y: number; z: number } | null = null;
+let lastForcedMoveHandledAt = 0;
 
 const STARVATION_FOOD_LEVEL = 0;
 const HUNGER_WARNING_COOLDOWN_MS = 30_000;
@@ -182,12 +188,41 @@ function startBotLifecycle(): void {
  * Bot ごとに必要なイベントハンドラを登録し、切断時には再接続をスケジュールする。
  */
 function registerBotEventHandlers(targetBot: Bot): void {
+  const client = targetBot._client;
+  const originalWrite: typeof client.write = client.write.bind(client);
+  // 1.21.1 以降の Paper では属性名が `minecraft:generic.movement_speed` に統一されたため、
+  // 旧来の `minecraft:movement_speed` を送信するとサーバー側で警告が出る。Mineflayer が
+  // まだ古い識別子を用いるケースに備えて、送信前に名称を置き換えて互換性を保つ。
+  client.write = ((name: string, params: any) => {
+    if (name === 'update_attributes' && params && Array.isArray(params.attributes)) {
+      let mutated = false;
+      const patchedAttributes = params.attributes.map((attr: any) => {
+        if (attr && attr.key === 'minecraft:movement_speed') {
+          mutated = true;
+          return { ...attr, key: 'minecraft:generic.movement_speed' };
+        }
+        return attr;
+      });
+
+      if (mutated) {
+        params = { ...params, attributes: patchedAttributes };
+      }
+    }
+
+    return originalWrite(name, params);
+  }) as typeof client.write;
+
   targetBot.once('spawn', () => {
     const mcData = minecraftData(targetBot.version);
     cachedFoodsByName = ((mcData as unknown as { foodsByName?: FoodDictionary }).foodsByName) ?? {};
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
     const defaultMove = new MovementsWithData(targetBot, mcData);
+    // Paper 1.21.x ではパルクールやダッシュを多用すると "moved wrongly" 警告が増えるが、
+    // 危険地帯での生存性を優先して俊敏な動きを維持したいので、敢えて高機動モードを有効化する。
+    // ※警告は出力される場合があるが、アクロバットな行動を阻害しないことを重視するため許容する。
+    defaultMove.allowParkour = true;
+    defaultMove.allowSprinting = true;
     targetBot.pathfinder.setMovements(defaultMove);
     targetBot.chat('起動しました。（Mineflayer）');
   });
@@ -196,11 +231,32 @@ function registerBotEventHandlers(targetBot: Bot): void {
     void monitorCriticalHunger(targetBot);
   });
 
+  targetBot.on('forcedMove', () => {
+    const now = Date.now();
+    if (now - lastForcedMoveHandledAt < 1_000) {
+      return;
+    }
+    lastForcedMoveHandledAt = now;
+    console.warn('[Bot] server corrected our position (forcedMove). Re-evaluating active path.');
+    if (lastMoveTarget) {
+      const retryGoal = new goals.GoalNear(
+        lastMoveTarget.x,
+        lastMoveTarget.y,
+        lastMoveTarget.z,
+        MOVE_GOAL_TOLERANCE,
+      );
+      targetBot.pathfinder.setGoal(retryGoal, true);
+    }
+  });
+
   targetBot.on('chat', (username: string, message: string) => {
     if (username === targetBot.username) return;
     // 受信したチャット内容を詳細ログへ出力し、
     // 「チャットは届いているが自動処理は未実装」である点を開発者へ明示する。
     console.info(`[Chat] <${username}> ${message}`);
+    if (shouldReportCurrentPosition(message)) {
+      reportCurrentPosition(targetBot);
+    }
     void forwardChatToAgent(username, message);
   });
 
@@ -370,6 +426,7 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
     return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
   }
 
+  lastMoveTarget = { x, y, z };
   const goal = new goals.GoalNear(x, y, z, MOVE_GOAL_TOLERANCE);
   try {
     await activeBot.pathfinder.goto(goal);
@@ -432,6 +489,34 @@ function findEdibleItem(targetBot: Bot): Item | undefined {
     .inventory
     .items()
     .find((item) => Boolean(cachedFoodsByName[item.name]));
+}
+
+/**
+ * プレイヤーのチャットが現在位置照会かどうかを判定する。
+ *
+ * 余分な空白や大文字小文字を除去して検索し、誤検出を防ぎながら柔軟にマッチングする。
+ */
+function shouldReportCurrentPosition(message: string): boolean {
+  const normalized = message.replace(/\s+/g, '').toLowerCase();
+  return CURRENT_POSITION_KEYWORDS.some((keyword) => normalized.includes(keyword));
+}
+
+/**
+ * Bot の現在位置を日本語でチャットへ報告する。
+ *
+ * Mineflayer の entity 情報が未初期化の場合は警告を残し、誤情報を送らないようにする。
+ */
+function reportCurrentPosition(targetBot: Bot): void {
+  if (!targetBot.entity) {
+    console.warn('[Chat] position requested but bot entity is not ready yet.');
+    targetBot.chat('まだワールドに完全に参加していません。しばらくお待ちください。');
+    return;
+  }
+
+  const { x, y, z } = targetBot.entity.position;
+  const formatted = `現在位置は X=${Math.floor(x)} / Y=${Math.floor(y)} / Z=${Math.floor(z)} です。`;
+  targetBot.chat(formatted);
+  console.info(`[Chat] reported current position ${formatted}`);
 }
 
 /**
