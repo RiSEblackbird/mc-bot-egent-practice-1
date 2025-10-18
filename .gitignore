@@ -25,6 +25,10 @@ python/.openai/
 python/.secrets/
 python/.tokens/
 
+# Cursor エディタのセッション情報（秘匿情報が混入する恐れがあるため除外）
+.cursor/
+python/.cursor/
+
 # Local runtime artifacts created while 検証・デバッグした際に生成される履歴ファイル
 python/.python_history
 
