@@ -61,6 +61,9 @@ python/.envrc
 # Local Paper server binaries（バージョン固定の jar を誤コミットしないための安全策）
 paper.jar
 paper-*.jar
+bridge-plugin/.gradle/
+bridge-plugin/build/
+bridge-plugin/libs/*.jar
 
 # Editor and OS artifacts
 .DS_Store
