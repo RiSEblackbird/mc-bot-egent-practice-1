@@ -23,6 +23,10 @@ venv/
 python/.cache/
 python/.openai/
 python/.secrets/
+python/.tokens/
+
+# Local runtime artifacts created while 検証・デバッグした際に生成される履歴ファイル
+python/.python_history
 
 # Environment and secret files
 .env
