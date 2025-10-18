@@ -3,7 +3,7 @@
 
 import itertools
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from bridge_ws import BotBridge
 from utils import setup_logger
@@ -30,6 +30,21 @@ class Actions:
 
         payload = {"type": "moveTo", "args": {"x": x, "y": y, "z": z}}
         return await self._dispatch("moveTo", payload)
+
+    async def mine_blocks(self, positions: List[Dict[str, int]]) -> Dict[str, Any]:
+        """断面で破壊すべき座標群を Mineflayer へ渡す。
+
+        Node 側では positions 配列を順次破壊する実装を想定し、ここでは
+        Mineflayer 向けのシンプルなメッセージを送るだけに留める。"""
+
+        payload = {"type": "mineBlocks", "args": {"positions": positions}}
+        return await self._dispatch("mineBlocks", payload)
+
+    async def place_torch(self, position: Dict[str, int]) -> Dict[str, Any]:
+        """たいまつを指定位置に設置するコマンドを送信する。"""
+
+        payload = {"type": "placeTorch", "args": position}
+        return await self._dispatch("placeTorch", payload)
 
     async def _dispatch(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """共通の送信処理: 付番、送信時間、レスポンスを詳細に記録する。"""

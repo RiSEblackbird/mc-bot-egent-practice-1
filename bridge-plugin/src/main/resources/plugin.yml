@@ -1,0 +1,17 @@
+name: AgentBridge
+main: com.example.bridge.AgentBridgePlugin
+version: 0.1.0
+api-version: 1.20
+softdepend:
+  - WorldGuard
+  - CoreProtect
+description: "HTTP bridge exposing Paper data for the frontier mining bot"
+commands:
+  agentbridge:
+    description: Reload the AgentBridge configuration
+    usage: /agentbridge reload
+    permission: agentbridge.admin
+permissions:
+  agentbridge.admin:
+    description: Allows management of the AgentBridge plugin
+    default: op

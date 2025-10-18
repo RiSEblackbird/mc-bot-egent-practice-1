@@ -1,0 +1,17 @@
+bind: 127.0.0.1
+port: 19071
+api_key: "CHANGE_ME"
+timeouts:
+  http_ms: 3000
+coreprotect:
+  lookup_seconds: 315360000
+frontier:
+  region_name_prefix: "bot_job_"
+  region_buffer: 1
+  window_length: 8
+safety:
+  functional_near_radius: 4
+  liquids_stop: true
+  max_positions_per_request: 1024
+logging:
+  debug: false

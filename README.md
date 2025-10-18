@@ -104,6 +104,26 @@ docker compose up --build
 - 1.21.3 以前ではこれらのフィールドが送られないため、option タイプの 0 バイトだけが届き互換性が維持されます。
 - `.env` で `MC_VERSION=1.21.1` のように **minecraft-data が認識するプロトコルラベル** を指定すると、Mineflayer がサーバーと同じ定義で通信を開始するため、`PartialReadError` の再発リスクを減らせます。未設定時は既定で 1.21.1 を採用し、未知の値が入力された場合は対応可能なバージョンへ自動フォールバックします。
 
+### 3.4 AgentBridge HTTP プラグイン
+
+`bridge-plugin/` ディレクトリに Paper 用の HTTP ブリッジプラグイン（AgentBridge）を追加しました。WorldGuard・CoreProtect と連携して継続採掘ジョブのリージョン管理やバルク環境評価を提供します。
+
+1. `bridge-plugin/libs/` に CoreProtect の jar を配置します（`.gitkeep` のみコミット済み）。
+2. Java 21 + Gradle を用意し、プラグイン直下で `./gradlew shadowJar` を実行すると `build/libs/AgentBridge-0.1.0.jar` が生成されます。
+3. Paper サーバーの `plugins/` へ配置し、初回起動後に生成される `plugins/AgentBridge/config.yml` の `api_key` を `.env` の `BRIDGE_API_KEY` と一致させます。
+
+HTTP サーバーは `config.yml` の `bind` / `port` で調整でき、`GET /v1/health` にアクセスすると WorldGuard/CoreProtect の有効状態を確認できます。`POST /v1/jobs/*` 系エンドポイントは必ず `X-API-Key` ヘッダーで保護してください。
+
+### 3.5 継続採掘モード CLI
+
+Python 側に `python/cli.py` を追加し、継続採掘ジョブを CLI から起動できるようにしました。
+
+```bash
+python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --section 2x2 --len 64 --owner Taishi
+```
+
+`--dir` はカードinal方向ベクトル（例: `1 0 0`）を指定します。今後 `auto` 推定を実装予定のため、現時点では必須引数です。ジョブ開始後は AgentBridge 経由でバルク環境評価と CoreProtect チェックを行い、Mineflayer には `mineBlocks` / `placeTorch` コマンドを送信します。`.env` に追加した `BRIDGE_URL` などの変数で接続先やたいまつ間隔を調整できます。
+
 ## 4. .env
 
 `env.example` を `.env` にコピーし、中身を設定します（Python側で読み込み）。
