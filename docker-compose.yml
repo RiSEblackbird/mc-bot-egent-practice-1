@@ -17,6 +17,7 @@ services:
       MC_VERSION: ${MC_VERSION:-1.21.1}
       WS_HOST: ${WS_HOST:-0.0.0.0}
       WS_PORT: ${WS_PORT:-8765}
+      AGENT_WS_URL: ${AGENT_WS_URL:-ws://python-agent:${AGENT_WS_PORT:-9000}}
     command:
       - bash
       - -lc
@@ -42,6 +43,8 @@ services:
     environment:
       # Node 側が公開する WebSocket ポートを 1 箇所で可変化し、複数環境での疎通設定を単純化する。
       WS_URL: ${WS_URL:-ws://node-bot:${WS_PORT:-8765}}
+      AGENT_WS_HOST: ${AGENT_WS_HOST:-0.0.0.0}
+      AGENT_WS_PORT: ${AGENT_WS_PORT:-9000}
     command:
       - bash
       - -lc

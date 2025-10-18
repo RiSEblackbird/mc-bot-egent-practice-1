@@ -64,6 +64,11 @@ cp ../env.example ../.env
 python agent.py
 ```
 
+Python エージェントは `AGENT_WS_HOST` / `AGENT_WS_PORT` で指定したポートに WebSocket サーバーを公開します。
+Mineflayer 側（Node.js）がチャットを受信すると、自動的にこのサーバーへ `type=chat` の JSON を送信し、
+Python 側で LLM プランニングとアクション実行が行われます。`DEFAULT_MOVE_TARGET` を変更すると、
+「移動」系のステップで座標が指定されなかった場合のフォールバック座標を調整できます。
+
 ### 3.3 Docker Compose（Python + Node 同時ホットリロード）
 
 開発時に Python エージェントと Node ボットの両方をホットリロードで動かしたい場合は、プロジェクトルートに追加した `docker-compose.yml` を利用できます。
@@ -78,6 +83,7 @@ docker compose up --build
 * ホットリロード環境では依存ライブラリをコンテナ起動時に自動インストールするため、初回起動時は少し時間がかかります。
 * Docker Compose は `host.docker.internal` をコンテナの hosts に追加しています。Windows / WSL / macOS から Paper サーバーを起動している場合でも、ボットがホスト OS 上の `25565` ポートへ接続できます。
 * Node.js サービス用コンテナは `node:22` を採用し、最新の Mineflayer 系ライブラリが要求するエンジン条件を満たして `minecraft-protocol` の PartialReadError（`entity_equipment` の VarInt 解析失敗）を防止します。
+* Python エージェントが `AGENT_WS_PORT` をリッスンし、Node 側が `AGENT_WS_URL` で指定した経路からチャットを転送します。Docker Compose では既定で `ws://python-agent:9000` に接続します。
 
 #### 3.3.1 1.21.x の PartialReadError 追加対策
 
@@ -95,6 +101,9 @@ docker compose up --build
 * `OPENAI_MODEL`: 既定 `gpt-5-mini`
 * `WS_URL`: Python→Node の WebSocket（既定 `ws://node-bot:8765`。Docker Compose ではサービス名解決で疎通）
 * `WS_HOST` / `WS_PORT`: Node 側 WebSocket サーバーのバインド先（既定 `0.0.0.0:8765`）
+* `AGENT_WS_HOST` / `AGENT_WS_PORT`: Python エージェントが Node からのチャットを受け付ける WebSocket サーバーのバインド先（既定 `0.0.0.0:9000`）
+* `AGENT_WS_URL`: Node 側が Python へ接続するための URL。Docker Compose では `ws://python-agent:9000` を既定とし、ローカル実行時は `ws://127.0.0.1:9000` などへ変更します。
+* `DEFAULT_MOVE_TARGET`: LLM プラン内で座標が省略された移動ステップ用のフォールバック座標（例 `0,64,0`）
 * `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`、Docker 実行時は自動で `host.docker.internal` へフォールバック）
 * `MC_VERSION`: Mineflayer が利用する Minecraft プロトコルのバージョン。Paper 1.21.1 を想定した既定値 `1.21.1` を含め、minecraft-data が対応するラベルを指定してください。
 * `MC_RECONNECT_DELAY_MS`: 接続失敗時に Mineflayer ボットが再接続を試みるまでの待機時間（ミリ秒、既定 `5000`）
@@ -118,8 +127,9 @@ Paper サーバーでチャットを送信した際に「何も起こらない�
 次の観点でフローを把握できます。
 
 1. **Node（Mineflayer）**: `node-bot` の標準出力に `[Chat] <player> メッセージ` が記録され、
-   チャットを受信した事実と自動処理がまだ未実装である旨を表示します。WebSocket 経由のコマンド受信時は
-   `id=...` 付きの詳細ログが表示され、どの負荷元からどのコマンドが届き、どのレスポンスを返したか追跡できます。
+   直後に `[ChatBridge] ...` ログが続き、Python エージェントへチャットを転送した結果を確認できます。
+   WebSocket 経由のコマンド受信時は `id=...` 付きの詳細ログが表示され、どの負荷元からどのコマンドが届き、
+   どのレスポンスを返したか追跡できます。
 2. **Python エージェント**: `python-agent-1` のログに `WS send/recv`、`queue chat`、`moveTo` などの INFO ログが出力され、
    LLM からの計画生成と Mineflayer への指示送出の成否を即座に確認できます。
 
