@@ -2,7 +2,10 @@
 # gpt-5-mini を用いたプランニング：自然文→PLAN/RESP の二分出力
 import os
 from typing import Dict, Any, List
+from urllib.parse import urlparse
+
 from pydantic import BaseModel, Field
+
 from utils import setup_logger
 from dotenv import load_dotenv
 import openai
@@ -10,9 +13,28 @@ import openai
 logger = setup_logger("planner")
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
-base_url = os.getenv("OPENAI_BASE_URL") or None
-if base_url:
-    openai.base_url = base_url
+
+# OPENAI_BASE_URL を安全に正規化する。
+#   - スキームが欠けていれば http:// を補完して警告を表示
+#   - 期待される形式: https://api.openai.com/v1 のような完全な URL
+raw_base_url = os.getenv("OPENAI_BASE_URL")
+if raw_base_url:
+    normalized_base_url = raw_base_url.strip()
+    if normalized_base_url:
+        parsed_url = urlparse(normalized_base_url)
+        if not parsed_url.scheme:
+            auto_prefixed_url = f"http://{normalized_base_url}"
+            parsed_auto_prefixed = urlparse(auto_prefixed_url)
+            if not parsed_auto_prefixed.scheme:
+                raise ValueError(
+                    "OPENAI_BASE_URL にはスキームを含めた完全な URL を指定してください (例: https://api.openai.com/v1)"
+                )
+            logger.warning(
+                "OPENAI_BASE_URL にスキームが指定されていなかったため http:// を補完しました。"
+                " 期待される形式の例: https://api.openai.com/v1"
+            )
+            normalized_base_url = auto_prefixed_url
+        openai.base_url = normalized_base_url
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 

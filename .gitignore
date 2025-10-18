@@ -32,6 +32,7 @@ venv/
 .pypirc
 .python-version
 python/.env
+python/.env.*
 *.pem
 *.key
 *.p12
