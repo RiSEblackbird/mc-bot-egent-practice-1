@@ -25,6 +25,7 @@ python/.cache/
 python/.openai/
 python/.secrets/
 python/.tokens/
+python/action_backlog*.json
 
 # OpenAI SDK が生成する可能性のある API 呼び出しログ（秘匿情報混入リスク）
 openai.log

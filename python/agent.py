@@ -14,7 +14,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from websockets import WebSocketServerProtocol
@@ -83,6 +83,16 @@ class ChatTask:
     message: str
 
 
+@dataclass(frozen=True)
+class ActionTaskRule:
+    """行動系タスクをカテゴリ別に整理するためのルール定義。"""
+
+    keywords: Tuple[str, ...]
+    hints: Tuple[str, ...] = ()
+    label: str = ""
+    implemented: bool = False
+
+
 class AgentOrchestrator:
     """受信チャットを順次処理し、LLM プラン→Mineflayer 操作を遂行する中核クラス。"""
 
@@ -102,29 +112,118 @@ class AgentOrchestrator:
             re.IGNORECASE,
         ),
     )
-    # 移動関連の表現を追加で保持して、指示待ちに陥らないようヒューリスティックで
-    # 取り扱う。Mineflayer 側の pathfinder が段差や足場を自律的に処理できるため、
-    # LLM の文章が抽象的でも移動を継続させる。
-    _MOVE_KEYWORDS = (
-        "移動",
-        "向かう",
-        "歩く",
-        "進む",
-        "到達",
-        "到着",
-        "目指す",
-    )
-    _MOVE_HINT_KEYWORDS = (
-        "段差",
-        "足場",
-        "はしご",
-        "登",
-        "降",
-        "経路",
-        "通路",
-        "迂回",
-        "高さ",
-    )
+    # 行動系タスクをカテゴリごとに整理し、未実装アクションでも丁寧に扱えるようにする。
+    # keywords は分類、hints は移動継続など暗黙の補助に利用する。
+    _ACTION_TASK_RULES: Dict[str, ActionTaskRule] = {
+        "move": ActionTaskRule(
+            keywords=(
+                "移動",
+                "向かう",
+                "歩く",
+                "進む",
+                "到達",
+                "到着",
+                "目指す",
+            ),
+            hints=(
+                "段差",
+                "足場",
+                "はしご",
+                "登",
+                "降",
+                "経路",
+                "通路",
+                "迂回",
+                "高さ",
+            ),
+            label="指定地点への移動",
+            implemented=True,
+        ),
+        "mine": ActionTaskRule(
+            keywords=(
+                "採掘",
+                "採鉱",
+                "鉱石",
+                "掘る",
+                "ブランチ",
+            ),
+            label="採掘作業",
+        ),
+        "farm": ActionTaskRule(
+            keywords=(
+                "収穫",
+                "畑",
+                "農",
+                "植え",
+                "耕す",
+            ),
+            label="農作業",
+        ),
+        "craft": ActionTaskRule(
+            keywords=(
+                "クラフト",
+                "作成",
+                "作る",
+                "製作",
+            ),
+            label="クラフト処理",
+        ),
+        "follow": ActionTaskRule(
+            keywords=(
+                "ついて",
+                "追尾",
+                "同行",
+                "付いて",
+            ),
+            label="追従行動",
+        ),
+        "build": ActionTaskRule(
+            keywords=(
+                "建て",
+                "建築",
+                "建造",
+                "組み立て",
+            ),
+            label="建築作業",
+        ),
+        "fight": ActionTaskRule(
+            keywords=(
+                "戦う",
+                "迎撃",
+                "戦闘",
+                "倒す",
+                "守る",
+            ),
+            label="戦闘行動",
+        ),
+        "deliver": ActionTaskRule(
+            keywords=(
+                "渡す",
+                "届ける",
+                "受け渡し",
+                "納品",
+            ),
+            label="アイテム受け渡し",
+        ),
+        "storage": ActionTaskRule(
+            keywords=(
+                "チェスト",
+                "収納",
+                "保管",
+                "しまう",
+            ),
+            label="保管操作",
+        ),
+        "gather": ActionTaskRule(
+            keywords=(
+                "集め",
+                "確保",
+                "調達",
+                "集める",
+            ),
+            label="素材収集",
+        ),
+    }
     # 現在位置や所持品などを確認してチャットへ報告するだけのステップは、
     # 移動や採取といったアクションとは別系統の「検出報告タスク」として扱い、
     # 進捗報告のテンプレートに流れ込まないように専用の分類を用意する。
@@ -275,7 +374,8 @@ class AgentOrchestrator:
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
-        detection_reports: list[Dict[str, str]] = []
+        detection_reports: List[Dict[str, str]] = []
+        action_backlog: List[Dict[str, str]] = []
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -308,8 +408,18 @@ class AgentOrchestrator:
                     index,
                     coords,
                 )
-                last_target_coords = coords
-                await self._move_to_coordinates(coords)
+                handled, last_target_coords = await self._handle_action_task(
+                    "move",
+                    normalized,
+                    last_target_coords=coords,
+                    backlog=action_backlog,
+                    explicit_coords=coords,
+                )
+                if not handled:
+                    await self._report_execution_barrier(
+                        normalized,
+                        "座標移動の処理に失敗しました。ログを確認してください。",
+                    )
                 continue
 
             if self._is_status_check_step(normalized):
@@ -322,38 +432,24 @@ class AgentOrchestrator:
                 )
                 continue
 
-            if self._is_move_step(normalized):
-                target_coords = last_target_coords or self.default_move_target
-                # LLM が座標を明示しなかった場合は既定値を採用するが、その事実を
-                # プレイヤーに共有しないと問題分析が難しいため別途通知する。
-                used_default_target = last_target_coords is None
-                if last_target_coords:
-                    self.logger.info(
-                        "plan_step index=%d fallback_move reuse_last_target=%s",
-                        index,
-                        target_coords,
-                    )
-                else:
-                    self.logger.info(
-                        "plan_step index=%d fallback_move keywords_detected default_target=%s",
-                        index,
-                        self.default_move_target,
-                    )
-                move_ok = await self._move_to_coordinates(target_coords)
-                if used_default_target:
-                    await self._report_execution_barrier(
-                        normalized,
-                        "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
-                    )
-                if not move_ok:
-                    await self._report_execution_barrier(
-                        normalized,
-                        "フォールバック移動が Mineflayer に拒否されました。ログの moveTo 応答内容を確認してください。",
-                    )
-                continue
-
             if await self._attempt_proactive_progress(normalized, last_target_coords):
                 continue
+
+            action_category = self._classify_action_task(normalized)
+            if action_category:
+                self.logger.info(
+                    "plan_step index=%d classified as action_task category=%s",
+                    index,
+                    action_category,
+                )
+                handled, last_target_coords = await self._handle_action_task(
+                    action_category,
+                    normalized,
+                    last_target_coords=last_target_coords,
+                    backlog=action_backlog,
+                )
+                if handled:
+                    continue
 
             if "報告" in normalized or "伝える" in normalized:
                 self.logger.info(
@@ -379,6 +475,12 @@ class AgentOrchestrator:
                 already_responded=bool(plan_out.resp.strip()),
             )
 
+        if action_backlog:
+            await self._handle_action_backlog(
+                action_backlog,
+                already_responded=bool(plan_out.resp.strip()),
+            )
+
     def _is_status_check_step(self, text: str) -> bool:
         """位置・所持品確認など実際の操作が不要なステップかを判定する。"""
 
@@ -394,12 +496,14 @@ class AgentOrchestrator:
     def _is_move_step(self, text: str) -> bool:
         """ステップが明示的に移動を要求しているかを判定する。"""
 
-        return any(keyword in text for keyword in self._MOVE_KEYWORDS)
+        rule = self._ACTION_TASK_RULES.get("move")
+        return bool(rule and self._match_keywords(text, rule.keywords))
 
     def _should_continue_move(self, text: str) -> bool:
         """段差調整など移動継続で吸収できるステップかどうかを推測する。"""
 
-        return any(keyword in text for keyword in self._MOVE_HINT_KEYWORDS)
+        rule = self._ACTION_TASK_RULES.get("move")
+        return bool(rule and self._match_keywords(text, rule.hints))
 
     def _classify_detection_task(self, text: str) -> Optional[str]:
         """検出報告タスク（位置・所持品などの確認系ステップ）を分類する。"""
@@ -429,6 +533,123 @@ class AgentOrchestrator:
             return True
 
         return False
+
+    def _classify_action_task(self, text: str) -> Optional[str]:
+        """行動系タスクのカテゴリを判定し、保留リスト整理に利用する。"""
+
+        normalized = text.replace(" ", "").replace("　", "")
+        for category, rule in self._ACTION_TASK_RULES.items():
+            if self._match_keywords(normalized, rule.keywords):
+                return category
+        return None
+
+    def _match_keywords(self, text: str, keywords: Tuple[str, ...]) -> bool:
+        """任意のキーワードが文中に含まれるかを評価するヘルパー。"""
+
+        return any(keyword and keyword in text for keyword in keywords)
+
+    async def _handle_action_task(
+        self,
+        category: str,
+        step: str,
+        *,
+        last_target_coords: Optional[Tuple[int, int, int]],
+        backlog: List[Dict[str, str]],
+        explicit_coords: Optional[Tuple[int, int, int]] = None,
+    ) -> Tuple[bool, Optional[Tuple[int, int, int]]]:
+        """行動タスクを処理し、必要に応じて保留一覧を更新する。"""
+
+        rule = self._ACTION_TASK_RULES.get(category)
+        if not rule:
+            backlog.append({"category": category, "step": step, "label": category})
+            self.logger.warning(
+                "action category=%s missing rule so queued to backlog step='%s'",
+                category,
+                step,
+            )
+            return False, last_target_coords
+
+        if category == "move":
+            target = explicit_coords or self._extract_coordinates(step)
+            updated_target = target or last_target_coords
+            used_default_target = False
+            if updated_target is None:
+                updated_target = self.default_move_target
+                used_default_target = True
+
+            self.logger.info(
+                "handling move step='%s' target=%s used_default=%s",
+                step,
+                updated_target,
+                used_default_target,
+            )
+            move_ok = await self._move_to_coordinates(updated_target)
+            if used_default_target:
+                await self._report_execution_barrier(
+                    step,
+                    "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
+                )
+            if not move_ok:
+                await self._report_execution_barrier(
+                    step,
+                    "フォールバック移動が Mineflayer に拒否されました。ログの moveTo 応答内容を確認してください。",
+                )
+            return True, updated_target
+
+        if rule.implemented:
+            self.logger.info(
+                "action category=%s has implemented flag but no handler step='%s'",
+                category,
+                step,
+            )
+            return False, last_target_coords
+
+        backlog.append({
+            "category": category,
+            "step": step,
+            "label": rule.label or category,
+        })
+        self.logger.info(
+            "action category=%s queued to backlog (unimplemented) step='%s'",
+            category,
+            step,
+        )
+        return True, last_target_coords
+
+    async def _handle_action_backlog(
+        self,
+        backlog: Iterable[Dict[str, str]],
+        *,
+        already_responded: bool,
+    ) -> None:
+        """未実装アクションの backlog をメモリとチャットへ整理する。"""
+
+        backlog_list = list(backlog)
+        if not backlog_list:
+            return
+
+        self.memory.set("last_pending_actions", backlog_list)
+
+        unique_labels: List[str] = []
+        for item in backlog_list:
+            label = item.get("label") or item.get("category") or "未分類の行動"
+            if label not in unique_labels:
+                unique_labels.append(label)
+
+        if already_responded:
+            self.logger.info(
+                "skip action backlog follow-up because initial response already sent backlog=%s",
+                backlog_list,
+            )
+            return
+
+        summary = "、".join(unique_labels)
+        await self.actions.say(
+            (
+                f"{summary}の行動リクエストを検知しましたが、Mineflayer 側の下位アクションが未実装のため待機中です。"
+                "追加の指示や優先順位があればお知らせください。"
+            )
+        )
 
     async def _handle_detection_reports(
         self,
