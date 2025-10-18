@@ -231,7 +231,11 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
 
     reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
     if reasoning_effort:
-        request_payload["reasoning"] = {"effort": reasoning_effort}
+        # Chat Completions API (async) は top-level reasoning 引数を受け付けない。
+        # extra_body へネストすることで互換性を保ちつつ、対応モデルでは推論強度を伝える。
+        request_payload.setdefault("extra_body", {})["reasoning"] = {
+            "effort": reasoning_effort
+        }
 
     resp = await client.chat.completions.create(**request_payload)
     content = resp.choices[0].message.content
@@ -273,7 +277,10 @@ async def compose_barrier_notification(
 
     reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
     if reasoning_effort:
-        request_payload["reasoning"] = {"effort": reasoning_effort}
+        # 上記 plan() と同様に extra_body を介して reasoning パラメータを付与する。
+        request_payload.setdefault("extra_body", {})["reasoning"] = {
+            "effort": reasoning_effort
+        }
 
     resp = await client.chat.completions.create(**request_payload)
     content = resp.choices[0].message.content
