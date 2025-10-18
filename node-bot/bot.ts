@@ -1,6 +1,7 @@
 // 日本語コメント：Mineflayer ボット（WSコマンド受信）
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
 import { createBot, Bot } from 'mineflayer';
+import type { Item } from 'prismarine-item';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
 // そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
 import mineflayerPathfinder from 'mineflayer-pathfinder';
@@ -88,6 +89,15 @@ interface CommandResponse {
   error?: string;
 }
 
+interface FoodInfo {
+  // minecraft-data 側の構造体では foodPoints / saturation 等が格納されている。
+  // 本エージェントでは存在確認のみ行うため、詳細なフィールド定義は必須ではない。
+  foodPoints?: number;
+  saturation?: number;
+}
+
+type FoodDictionary = Record<string, FoodInfo>;
+
 // ---- 環境変数・定数設定 ----
 const versionResolution = resolveMinecraftVersionLabel(process.env.MC_VERSION);
 for (const warning of versionResolution.warnings) {
@@ -130,6 +140,12 @@ const AGENT_WS_URL = rawAgentUrl.length > 0 ? rawAgentUrl : `ws://${defaultAgent
 // 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
 let bot: Bot | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
+let cachedFoodsByName: FoodDictionary = {};
+let isConsumingFood = false;
+let lastHungerWarningAt = 0;
+
+const STARVATION_FOOD_LEVEL = 0;
+const HUNGER_WARNING_COOLDOWN_MS = 30_000;
 
 /**
  * Minecraft サーバーへの接続を確立し、Mineflayer Bot を初期化する。
@@ -159,11 +175,16 @@ function startBotLifecycle(): void {
 function registerBotEventHandlers(targetBot: Bot): void {
   targetBot.once('spawn', () => {
     const mcData = minecraftData(targetBot.version);
+    cachedFoodsByName = ((mcData as unknown as { foodsByName?: FoodDictionary }).foodsByName) ?? {};
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
     const defaultMove = new MovementsWithData(targetBot, mcData);
     targetBot.pathfinder.setMovements(defaultMove);
     targetBot.chat('起動しました。（Mineflayer）');
+  });
+
+  targetBot.on('health', () => {
+    void monitorCriticalHunger(targetBot);
   });
 
   targetBot.on('chat', (username: string, message: string) => {
@@ -314,6 +335,15 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
 
 // ---- moveTo コマンド処理 ----
 // 指定座標へ pathfinder を使って移動する。
+const MOVE_GOAL_TOLERANCE = 10;
+
+/**
+ * moveTo コマンドで利用する到達許容距離（ブロック数）。
+ *
+ * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
+ * ブロックの段差や水流の影響で「目的地に着いたのに失敗扱い」になるケースが多い。
+ * GoalNear を用いることで ±10 ブロックの範囲を許容し、柔軟に到着完了判定を行う。
+ */
 async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
   const x = Number(args.x);
   const y = Number(args.y);
@@ -331,15 +361,68 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
     return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
   }
 
-  const goal = new goals.GoalBlock(x, y, z);
+  const goal = new goals.GoalNear(x, y, z, MOVE_GOAL_TOLERANCE);
   try {
     await activeBot.pathfinder.goto(goal);
-    console.log(`[MoveToCommand] pathfinder completed to (${x}, ${y}, ${z})`);
+    const { position } = activeBot.entity;
+    console.log(
+      `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(
+        2,
+      )}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE}`,
+    );
     return { ok: true };
   } catch (error) {
     console.error('[Pathfinder] failed to move', error);
     return { ok: false, error: 'Pathfinding failed' };
   }
+}
+
+/**
+ * 空腹が限界に達した際の自動対応を実行する。
+ *
+ * - 食料が存在しない場合はプレイヤーへチャットで不足を通知
+ * - 食料が存在する場合は手元へ装備して摂取し、スタミナ低下を抑制
+ */
+async function monitorCriticalHunger(targetBot: Bot): Promise<void> {
+  if (targetBot.food > STARVATION_FOOD_LEVEL) {
+    return;
+  }
+
+  if (isConsumingFood) {
+    return;
+  }
+
+  const edible = findEdibleItem(targetBot);
+
+  if (!edible) {
+    const now = Date.now();
+    if (now - lastHungerWarningAt >= HUNGER_WARNING_COOLDOWN_MS) {
+      targetBot.chat('空腹ですが食料を所持していません。補給をお願いします。');
+      lastHungerWarningAt = now;
+    }
+    return;
+  }
+
+  isConsumingFood = true;
+  try {
+    await targetBot.equip(edible, 'hand');
+    await targetBot.consume();
+    targetBot.chat('空腹のため手持ちの食料を食べました。');
+  } catch (error) {
+    console.error('[Hunger] failed to consume food', error);
+  } finally {
+    isConsumingFood = false;
+  }
+}
+
+/**
+ * インベントリ内から食料アイテムを探索し、最初に見つかったアイテムを返す。
+ */
+function findEdibleItem(targetBot: Bot): Item | undefined {
+  return targetBot
+    .inventory
+    .items()
+    .find((item) => Boolean(cachedFoodsByName[item.name]));
 }
 
 /**
