@@ -27,6 +27,11 @@ cd C:\mc\paper
 java -Xms4G -Xmx4G -jar .\paper.jar --nogui
 ```
 
+```powershell
+cd C:\mc\paper-1.21.1
+java -Xms4G -Xmx4G -jar .\paper-1.21.1.jar --nogui
+```
+
 開発中は `server.properties` の `online-mode=false` を推奨。
 
 ## 3. セットアップ
