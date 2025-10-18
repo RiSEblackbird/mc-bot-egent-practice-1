@@ -9,6 +9,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.log
+logs/
+python/logs/
 
 # Python artifacts and virtual environments
 __pycache__/

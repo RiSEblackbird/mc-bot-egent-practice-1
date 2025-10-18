@@ -1,31 +1,62 @@
 # -*- coding: utf-8 -*-
-# 高レベルアクション名を Node 側の JSON コマンドに変換
-from typing import Dict, Any
+"""アクション実行の WebSocket コマンドをラップするモジュール。"""
+
+import itertools
+import time
+from typing import Any, Dict
+
 from bridge_ws import BotBridge
 from utils import setup_logger
 
+
 class Actions:
+    """LLM が選択した高レベルアクションを Mineflayer コマンドへ変換するユーティリティ。"""
+
     def __init__(self, bridge: BotBridge) -> None:
         self.bridge = bridge
         # アクション実行のトレースを残して、Mineflayer 側での挙動と突き合わせできるようにする。
         self.logger = setup_logger("actions")
+        # command_id を付番して、Node 側のログと相互参照しやすくする。
+        self._command_seq = itertools.count(1)
 
     async def say(self, text: str) -> Dict[str, Any]:
-        self.logger.info(f"queue chat -> '{text}'")
-        resp = await self.bridge.send({"type": "chat", "args": {"text": text}})
-        if resp.get("ok"):
-            self.logger.info("chat command succeeded")
-        else:
-            self.logger.error(f"chat command failed: {resp}")
-        return resp
+        """チャット送信コマンドを Mineflayer へ中継する。"""
+
+        payload = {"type": "chat", "args": {"text": text}}
+        return await self._dispatch("chat", payload)
 
     async def move_to(self, x: int, y: int, z: int) -> Dict[str, Any]:
-        self.logger.info(f"queue moveTo -> ({x}, {y}, {z})")
-        resp = await self.bridge.send({"type": "moveTo", "args": {"x": x, "y": y, "z": z}})
+        """指定座標への移動を要求するコマンドを送信する。"""
+
+        payload = {"type": "moveTo", "args": {"x": x, "y": y, "z": z}}
+        return await self._dispatch("moveTo", payload)
+
+    async def _dispatch(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """共通の送信処理: 付番、送信時間、レスポンスを詳細に記録する。"""
+
+        command_id = next(self._command_seq)
+        started_at = time.perf_counter()
+        self.logger.info(
+            "command[%03d] dispatch=%s payload=%s", command_id, command, payload
+        )
+        resp = await self.bridge.send(payload)
+        elapsed = time.perf_counter() - started_at
         if resp.get("ok"):
-            self.logger.info("moveTo command succeeded")
+            self.logger.info(
+                "command[%03d] %s succeeded duration=%.3fs resp=%s",
+                command_id,
+                command,
+                elapsed,
+                resp,
+            )
         else:
-            self.logger.error(f"moveTo command failed: {resp}")
+            self.logger.error(
+                "command[%03d] %s failed duration=%.3fs resp=%s",
+                command_id,
+                command,
+                elapsed,
+                resp,
+            )
         return resp
 
     # TODO: 採掘・設置・追従・戦闘・クラフト等を順次追加
