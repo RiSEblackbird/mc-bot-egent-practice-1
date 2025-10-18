@@ -217,7 +217,22 @@ def _build_responses_input(system_prompt: str, user_prompt: str) -> List[Dict[st
         EasyInputMessageParam(role="system", content=system_prompt),
         EasyInputMessageParam(role="user", content=user_prompt),
     ]
-    return [msg.model_dump(mode="json", exclude_none=True) for msg in messages]
+
+    serialized: List[Dict[str, Any]] = []
+    for msg in messages:
+        # OpenAI SDK で EasyInputMessageParam の実装が変化した場合でも、
+        # Responses API へ渡す辞書構造を破綻させないための安全策。
+        if hasattr(msg, "model_dump"):
+            serialized.append(msg.model_dump(mode="json", exclude_none=True))
+        elif isinstance(msg, dict):
+            serialized.append({k: v for k, v in msg.items() if v is not None})
+        else:
+            serialized.append({
+                "role": getattr(msg, "role", ""),
+                "content": getattr(msg, "content", ""),
+            })
+
+    return serialized
 
 
 def _build_responses_payload(system_prompt: str, user_prompt: str) -> Dict[str, Any]:

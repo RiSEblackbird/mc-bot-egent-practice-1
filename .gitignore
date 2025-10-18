@@ -29,6 +29,8 @@ python/.tokens/
 # OpenAI SDK が生成する可能性のある API 呼び出しログ（秘匿情報混入リスク）
 openai.log
 python/openai.log
+# Responses API のデバッグ時に生成されるキャッシュファイル（API 応答に秘匿情報が含まれる場合がある）
+python/responses_cache.json
 
 # Cursor エディタのセッション情報（秘匿情報が混入する恐れがあるため除外）
 .cursor/
