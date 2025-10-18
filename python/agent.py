@@ -89,10 +89,17 @@ class AgentOrchestrator:
     # Mineflayer へ渡す座標はプレイヤーの指示の表記揺れが多いため、複数の正規表現
     # を用意して柔軟に抽出する。スラッシュ区切り（-36 / 73 / -66）や全角スラッシュ、
     # カンマ区切り、XYZ: -36 / 73 / -66 などを一括で処理できるようにしている。
+    # プレイヤーは座標を多彩な表記で共有するため、ここでは代表的な揺れを広くカバー
+    # する正規表現を複数用意する。スラッシュ／カンマ区切りに加え、XYZ ラベル付き
+    # 表記や波括弧を伴う書き方も解析できるようにし、座標の再確認を最小化する。
     _COORD_PATTERNS = (
         re.compile(r"(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)"),
         re.compile(
             r"XYZ[:：]?\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)"
+        ),
+        re.compile(
+            r"X\s*[:＝=]?\s*(-?\d+)[^\d-]+Y\s*[:＝=]?\s*(-?\d+)[^\d-]+Z\s*[:＝=]?\s*(-?\d+)",
+            re.IGNORECASE,
         ),
     )
 
@@ -150,6 +157,14 @@ class AgentOrchestrator:
             context,
         )
 
+        # 元チャットに含まれる座標を先に解析し、LLM の計画が座標を省略しても
+        # 直ちに移動へ移れるようヒントとして保持する。
+        user_hint_coords = self._extract_coordinates(task.message)
+        if user_hint_coords:
+            self.logger.info(
+                "user message provided coordinates=%s", user_hint_coords
+            )
+
         plan_out = await plan(task.message, context)
         self.logger.info(
             "plan generated steps=%d plan=%s resp=%s",
@@ -167,7 +182,7 @@ class AgentOrchestrator:
             )
             await self.actions.say(plan_out.resp)
 
-        await self._execute_plan(plan_out)
+        await self._execute_plan(plan_out, initial_target=user_hint_coords)
         self.memory.set("last_chat", {"username": task.username, "message": task.message})
 
     def _build_context_snapshot(self) -> Dict[str, Any]:
@@ -182,8 +197,17 @@ class AgentOrchestrator:
         self.logger.info("context snapshot built=%s", snapshot)
         return snapshot
 
-    async def _execute_plan(self, plan_out: PlanOut) -> None:
-        """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。"""
+    async def _execute_plan(
+        self, plan_out: PlanOut, *, initial_target: Optional[Tuple[int, int, int]] = None
+    ) -> None:
+        """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。
+
+        Args:
+            plan_out: LLM から取得した行動計画と応答文。
+            initial_target: プレイヤーが元のチャットで直接指定した座標。LLM の
+                ステップに座標が含まれなくても直ちに移動へ移れるよう、初期値
+                として利用する。
+        """
 
         total_steps = len(plan_out.plan)
         # プラン生成が空配列で戻るケースでは行動開始前から停滞するため、
@@ -197,7 +221,7 @@ class AgentOrchestrator:
 
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
-        last_target_coords: Optional[Tuple[int, int, int]] = None
+        last_target_coords: Optional[Tuple[int, int, int]] = initial_target
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -219,6 +243,24 @@ class AgentOrchestrator:
                 )
                 last_target_coords = coords
                 await self._move_to_coordinates(coords)
+                continue
+
+            if any(
+                keyword in normalized
+                for keyword in (
+                    "現在位置",
+                    "座標表示",
+                    "位置を確認",
+                    "所持品を確認",
+                )
+            ):
+                # 状況確認系のメタ指示は Mineflayer の直接操作に該当しないため、
+                # 障壁扱いにせず静かに無視して実行フローを前に進める。
+                self.logger.info(
+                    "plan_step index=%d ignored introspection step='%s'",
+                    index,
+                    normalized,
+                )
                 continue
 
             if any(keyword in normalized for keyword in ("移動", "向かう", "歩く")):
