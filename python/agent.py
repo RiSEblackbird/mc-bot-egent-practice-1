@@ -86,7 +86,15 @@ class ChatTask:
 class AgentOrchestrator:
     """受信チャットを順次処理し、LLM プラン→Mineflayer 操作を遂行する中核クラス。"""
 
-    _COORD_PATTERN = re.compile(r"(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)")
+    # Mineflayer へ渡す座標はプレイヤーの指示の表記揺れが多いため、複数の正規表現
+    # を用意して柔軟に抽出する。スラッシュ区切り（-36 / 73 / -66）や全角スラッシュ、
+    # カンマ区切り、XYZ: -36 / 73 / -66 などを一括で処理できるようにしている。
+    _COORD_PATTERNS = (
+        re.compile(r"(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)"),
+        re.compile(
+            r"XYZ[:：]?\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)"
+        ),
+    )
 
     def __init__(self, actions: Actions, memory: Memory) -> None:
         self.actions = actions
@@ -180,6 +188,8 @@ class AgentOrchestrator:
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = None
+        # 同一ステップが複数回検出された際に同じ警告を連投しないための記録領域。
+        reported_blockers: set[str] = set()
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -233,15 +243,22 @@ class AgentOrchestrator:
                 index,
                 normalized,
             )
+            if normalized not in reported_blockers:
+                reported_blockers.add(normalized)
+                await self._report_execution_barrier(
+                    normalized,
+                    "対応可能なアクションが見つからず停滞しています。",
+                )
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
 
-        match = self._COORD_PATTERN.search(text)
-        if not match:
-            return None
-        x, y, z = (int(match.group(i)) for i in range(1, 4))
-        return x, y, z
+        for pattern in self._COORD_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                x, y, z = (int(match.group(i)) for i in range(1, 4))
+                return x, y, z
+        return None
 
     async def _move_to_coordinates(self, coords: Iterable[int]) -> None:
         """Mineflayer の移動アクションを発行し、結果をログに残す。"""
@@ -254,6 +271,32 @@ class AgentOrchestrator:
             self.memory.set("last_destination", {"x": x, "y": y, "z": z})
         else:
             self.logger.error("moveTo command rejected resp=%s", resp)
+            error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
+            await self._report_execution_barrier(
+                f"座標 ({x}, {y}, {z}) への移動",
+                f"Mineflayer からエラー応答を受け取りました（{error_detail}）。",
+            )
+
+    async def _report_execution_barrier(self, step: str, reason: str) -> None:
+        """処理を継続できない障壁を検知した際にチャットとログで即時共有する。"""
+
+        short_step = self._shorten_text(step, limit=40)
+        short_reason = self._shorten_text(reason, limit=60)
+        self.logger.warning(
+            "execution barrier detected step='%s' reason='%s'",
+            step,
+            reason,
+        )
+        await self.actions.say(
+            f"手順「{short_step}」で問題が発生しました: {short_reason}"
+        )
+
+    @staticmethod
+    def _shorten_text(text: str, *, limit: int) -> str:
+        """チャット送信用にテキストを安全な長さへ丸めるユーティリティ。"""
+
+        text = text.strip()
+        return text if len(text) <= limit else f"{text[:limit]}…"
 
 
 class AgentWebSocketServer:
