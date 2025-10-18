@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # gpt-5-mini を用いたプランニング：自然文→PLAN/RESP の二分出力
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -37,6 +37,61 @@ if raw_base_url:
         openai.base_url = normalized_base_url
 
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+DEFAULT_TEMPERATURE = 0.3
+
+# gpt-5-mini をはじめとした一部のモデルは温度固定で API が受け付けないため、
+# 送信時には temperature フィールドを省略する必要がある。
+TEMPERATURE_LOCKED_MODELS = {"gpt-5-mini"}
+
+
+def resolve_request_temperature(model: str) -> Optional[float]:
+    """LLM へ渡す温度パラメータをモデル仕様に合わせて決定する。
+
+    * gpt-5-mini など温度固定モデルの場合は `None` を返し、API 呼び出し時に
+      temperature フィールドを送信しないようにする。
+    * `OPENAI_TEMPERATURE` が設定された場合は 0.0～2.0 の範囲に正規化し、
+      無効値は既定値へフォールバックする。
+
+    Args:
+        model: 利用する OpenAI モデル名。
+
+    Returns:
+        API へ渡す温度 (float) または送信不要な場合は None。
+    """
+
+    raw_temperature = os.getenv("OPENAI_TEMPERATURE")
+
+    if model in TEMPERATURE_LOCKED_MODELS:
+        if raw_temperature:
+            logger.warning(
+                "OPENAI_TEMPERATURE=%s が設定されていますが、%s は温度固定モデルのため無視します。",
+                raw_temperature,
+                model,
+            )
+        return None
+
+    if not raw_temperature:
+        return DEFAULT_TEMPERATURE
+
+    try:
+        requested = float(raw_temperature)
+    except ValueError:
+        logger.warning(
+            "OPENAI_TEMPERATURE=%s は数値として解釈できません。既定値 %.2f にフォールバックします。",
+            raw_temperature,
+            DEFAULT_TEMPERATURE,
+        )
+        return DEFAULT_TEMPERATURE
+
+    if not 0.0 <= requested <= 2.0:
+        logger.warning(
+            "OPENAI_TEMPERATURE=%.3f はサポート範囲 (0.0～2.0) 外のため、既定値 %.2f にフォールバックします。",
+            requested,
+            DEFAULT_TEMPERATURE,
+        )
+        return DEFAULT_TEMPERATURE
+
+    return requested
 
 # 期待する出力スキーマ（簡易）
 class PlanOut(BaseModel):
@@ -72,15 +127,19 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
     prompt = build_user_prompt(user_msg, context)
     logger.info(f"LLM prompt: {prompt}")
 
-    resp = await client.chat.completions.create(
-        model=MODEL,
-        messages=[
+    temperature = resolve_request_temperature(MODEL)
+    request_payload: Dict[str, Any] = {
+        "model": MODEL,
+        "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.3,
-        response_format={"type": "json_object"},
-    )
+        "response_format": {"type": "json_object"},
+    }
+    if temperature is not None:
+        request_payload["temperature"] = temperature
+
+    resp = await client.chat.completions.create(**request_payload)
     content = resp.choices[0].message.content
     logger.info(f"LLM raw: {content}")
     try:
