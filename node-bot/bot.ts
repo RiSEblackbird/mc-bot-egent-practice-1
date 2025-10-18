@@ -157,7 +157,13 @@ let cachedFoodsByName: FoodDictionary = {};
 let isConsumingFood = false;
 let lastHungerWarningAt = 0;
 let lastMoveTarget: { x: number; y: number; z: number } | null = null;
-let lastForcedMoveHandledAt = 0;
+let lastForcedMoveAt = 0;
+let lastForcedMoveLoggedAt = 0;
+
+// forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
+const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
+const FORCED_MOVE_MAX_RETRIES = 2;
+const FORCED_MOVE_RETRY_DELAY_MS = 300;
 
 const STARVATION_FOOD_LEVEL = 0;
 const HUNGER_WARNING_COOLDOWN_MS = 30_000;
@@ -231,21 +237,15 @@ function registerBotEventHandlers(targetBot: Bot): void {
     void monitorCriticalHunger(targetBot);
   });
 
+  // サーバーから強制移動が通知された場合はタイムスタンプを更新し、
+  // moveTo コマンド側で直近発生の有無を基準にリトライを判断する。
   targetBot.on('forcedMove', () => {
     const now = Date.now();
-    if (now - lastForcedMoveHandledAt < 1_000) {
-      return;
-    }
-    lastForcedMoveHandledAt = now;
-    console.warn('[Bot] server corrected our position (forcedMove). Re-evaluating active path.');
-    if (lastMoveTarget) {
-      const retryGoal = new goals.GoalNear(
-        lastMoveTarget.x,
-        lastMoveTarget.y,
-        lastMoveTarget.z,
-        MOVE_GOAL_TOLERANCE,
-      );
-      targetBot.pathfinder.setGoal(retryGoal, true);
+    lastForcedMoveAt = now;
+
+    if (now - lastForcedMoveLoggedAt >= 1_000) {
+      console.warn('[Bot] server corrected our position (forcedMove). Monitoring for retries.');
+      lastForcedMoveLoggedAt = now;
     }
   });
 
@@ -402,6 +402,18 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
 // 指定座標へ pathfinder を使って移動する。
 
 /**
+ * 指定時間だけ待機して非同期処理のタイミングを調整する汎用ユーティリティ。
+ *
+ * Mineflayer の pathfinder は連続した再探索を短時間で要求すると負荷が高くなるため、
+ * リトライ前に短い休止を挟んでサーバーの位置補正完了を待つ目的で利用する。
+ */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
  * moveTo コマンドで利用する到達許容距離（ブロック数）。
  *
  * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
@@ -409,6 +421,22 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
  * GoalNear を用いることで ±3 ブロックの範囲を許容し、柔軟に到着完了判定を行う。
 
  */
+
+/**
+ * forcedMove 発生直後に GoalChanged 例外が出た場合は再試行可能と判断するヘルパー。
+ *
+ * GoalChanged は pathfinder.goto 実行中に別のゴール設定が入ったときにも出るため、
+ * 強制移動が直近で起きたかどうかをタイムスタンプで確認し誤検出を防ぐ。
+ */
+function shouldRetryDueToForcedMove(error: unknown): boolean {
+  if (Date.now() - lastForcedMoveAt > FORCED_MOVE_RETRY_WINDOW_MS) {
+    return false;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('GoalChanged');
+}
+
 async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
   const x = Number(args.x);
   const y = Number(args.y);
@@ -428,19 +456,31 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
 
   lastMoveTarget = { x, y, z };
   const goal = new goals.GoalNear(x, y, z, MOVE_GOAL_TOLERANCE);
-  try {
-    await activeBot.pathfinder.goto(goal);
-    const { position } = activeBot.entity;
-    console.log(
-      `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(
-        2,
-      )}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE}`,
-    );
-    return { ok: true };
-  } catch (error) {
-    console.error('[Pathfinder] failed to move', error);
-    return { ok: false, error: 'Pathfinding failed' };
+
+  for (let attempt = 0; attempt <= FORCED_MOVE_MAX_RETRIES; attempt++) {
+    try {
+      await activeBot.pathfinder.goto(goal);
+      const { position } = activeBot.entity;
+      console.log(
+        `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE}`,
+      );
+      return { ok: true };
+    } catch (error) {
+      if (shouldRetryDueToForcedMove(error) && attempt < FORCED_MOVE_MAX_RETRIES) {
+        console.warn(
+          `[MoveToCommand] retrying due to forcedMove correction (attempt ${attempt + 1}/${FORCED_MOVE_MAX_RETRIES})`,
+        );
+        await delay(FORCED_MOVE_RETRY_DELAY_MS);
+        continue;
+      }
+
+      console.error('[Pathfinder] failed to move', error);
+      return { ok: false, error: 'Pathfinding failed' };
+    }
   }
+
+  console.error('[Pathfinder] exhausted forcedMove retries without success');
+  return { ok: false, error: 'Pathfinding failed' };
 }
 
 /**
