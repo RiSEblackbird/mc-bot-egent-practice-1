@@ -104,17 +104,21 @@ class BarrierNotification(BaseModel):
 
     message: str = ""
 
+# OpenAI Chat Completions API は response_format=json_object を利用する際、
+# "json" という語がプロンプト内に含まれている必要がある。
+# システムメッセージに明示することで、推論モデルに json 形式での応答を
+# 強制しつつ API 要件を満たす。
 SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然文指示を、
 現在の状況を考慮して実行可能な高レベルのステップ列に分解し、同時に
 プレイヤーへ返す丁寧な日本語メッセージを用意してください。
 
-出力は必ず JSON で、キーは "plan": string[], "resp": string とする。
+出力は必ず json 形式のオブジェクトで、キーは "plan": string[], "resp": string とする。
 推論の思考過程は出力に含めないこと。
 """
-
 BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞している作業の概要を理解し、
 プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
-必要な確認事項や追加指示の依頼を 2 文程度で伝えてください。"""
+必要な確認事項や追加指示の依頼を 2 文程度で伝えてください。出力は必ず
+json オブジェクトで、キーは "message": string のみを含めてください。"""
 
 
 def build_barrier_prompt(step: str, reason: str, context: Dict[str, Any]) -> str:
@@ -131,6 +135,7 @@ def build_barrier_prompt(step: str, reason: str, context: Dict[str, Any]) -> str
 
 # 出力要件
 状況を説明し、プレイヤーに確認したい事項を丁寧に尋ねてください。
+応答は {{"message": "..."}} 形式の json オブジェクトで出力してください。
 """
 
 def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
@@ -144,7 +149,7 @@ def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
 {ctx}
 
 # 出力フォーマット
-JSON のみ。例：
+json のみ。例：
 {{"plan": ["畑へ移動", "小麦を収穫", "パンを作る"], "resp": "了解しました。小麦を収穫してパンを作りますね。"}}
 """
 
