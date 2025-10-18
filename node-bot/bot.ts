@@ -344,14 +344,14 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
 
 // ---- moveTo コマンド処理 ----
 // 指定座標へ pathfinder を使って移動する。
+
 /**
  * moveTo コマンドで利用する到達許容距離（ブロック数）。
  *
  * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
  * ブロックの段差や水流の影響で「目的地に着いたのに失敗扱い」になるケースが多い。
- * GoalNear を用いることで ±MOVE_GOAL_TOLERANCE ブロックの範囲を許容し、
- * 柔軟に到着完了判定を行う。環境変数で調整可能にしたため、用途に応じて
- * 1 ～ 30 の範囲でしきい値をカスタマイズできる。
+ * GoalNear を用いることで ±3 ブロックの範囲を許容し、柔軟に到着完了判定を行う。
+
  */
 async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
   const x = Number(args.x);
