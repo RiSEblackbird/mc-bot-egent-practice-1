@@ -12,6 +12,7 @@ import { WebSocketServer, WebSocket, RawData } from 'ws';
 import {
   detectDockerRuntime,
   parseEnvInt,
+  resolveAgentWebSocketEndpoint,
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
 } from './runtime/env.js';
@@ -126,16 +127,16 @@ const WS_PORT = parseEnvInt(process.env.WS_PORT, 8765);
 const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 5000);
 
 // Python 側のエージェント WebSocket サーバーへチャットを転送するための接続設定。
-const rawAgentUrl = (process.env.AGENT_WS_URL ?? '').trim();
-const rawAgentHost = (process.env.AGENT_WS_HOST ?? '').trim();
-const rawAgentPort = (process.env.AGENT_WS_PORT ?? '').trim();
-const agentPort = parseEnvInt(rawAgentPort, 9000);
-const defaultAgentHost = rawAgentHost && rawAgentHost !== '0.0.0.0'
-  ? rawAgentHost
-  : dockerDetected
-    ? 'python-agent'
-    : '127.0.0.1';
-const AGENT_WS_URL = rawAgentUrl.length > 0 ? rawAgentUrl : `ws://${defaultAgentHost}:${agentPort}`;
+const agentEndpointResolution = resolveAgentWebSocketEndpoint(
+  process.env.AGENT_WS_URL,
+  process.env.AGENT_WS_HOST,
+  process.env.AGENT_WS_PORT,
+  dockerDetected,
+);
+for (const warning of agentEndpointResolution.warnings) {
+  console.warn(`[Bot] ${warning}`);
+}
+const AGENT_WS_URL = agentEndpointResolution.url;
 
 // GoalNear の許容距離は LLM の挙動やステージ規模に合わせて調整できるよう環境変数化する。
 const moveGoalToleranceResolution = resolveMoveGoalTolerance(process.env.MOVE_GOAL_TOLERANCE);

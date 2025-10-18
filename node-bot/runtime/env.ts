@@ -7,6 +7,12 @@ const DEFAULT_MOVE_GOAL_TOLERANCE = 3;
 const MIN_MOVE_GOAL_TOLERANCE = 1;
 const MAX_MOVE_GOAL_TOLERANCE = 30;
 
+const DEFAULT_AGENT_WS_PORT = 9000;
+const MIN_AGENT_WS_PORT = 1;
+const MAX_AGENT_WS_PORT = 65_535;
+const DEFAULT_AGENT_WS_HOST_DOCKER = 'python-agent';
+const DEFAULT_AGENT_WS_HOST_LOCAL = '127.0.0.1';
+
 /**
  * Docker 実行環境を判定する際に利用する依存関係のインターフェース。
  * 単体テストでは疑似的なファイルシステムを差し替え、条件分岐を細かく検証する。
@@ -59,6 +65,16 @@ export interface HostResolutionResult {
 export interface MoveGoalToleranceResolution {
   tolerance: number;
   warnings: string[];
+}
+
+export interface AgentWebSocketResolution {
+  url: string;
+  host: string;
+  port: number;
+  warnings: string[];
+  usedExplicitUrl: boolean;
+  usedDefaultHost: boolean;
+  usedDefaultPort: boolean;
 }
 
 /**
@@ -132,6 +148,86 @@ export function resolveMoveGoalTolerance(rawValue: string | undefined): MoveGoal
   }
 
   return { tolerance: parsed, warnings };
+}
+
+/**
+ * Python エージェント WebSocket への接続先 URL を正規化する。
+ *
+ * - URL 指定時はそのまま尊重し、スキームが抜けていれば `ws://` を補完する
+ * - ホスト/ポート指定のみの場合は、Docker 環境に応じた既定値へフォールバックする
+ * - 0.0.0.0 や範囲外のポートなど、接続に利用できない値は警告を付けつつ丸める
+ */
+export function resolveAgentWebSocketEndpoint(
+  rawUrl: string | undefined,
+  rawHost: string | undefined,
+  rawPort: string | undefined,
+  dockerDetected: boolean,
+): AgentWebSocketResolution {
+  const warnings: string[] = [];
+  const trimmedUrl = (rawUrl ?? '').trim();
+  const trimmedHost = (rawHost ?? '').trim();
+  const trimmedPort = (rawPort ?? '').trim();
+
+  const defaultHost = dockerDetected ? DEFAULT_AGENT_WS_HOST_DOCKER : DEFAULT_AGENT_WS_HOST_LOCAL;
+
+  let host = defaultHost;
+  let usedDefaultHost = true;
+
+  if (trimmedHost.length > 0) {
+    if (trimmedHost === '0.0.0.0') {
+      warnings.push(
+        `AGENT_WS_HOST='${trimmedHost}' は接続先として利用できないため ${defaultHost} へフォールバックします。`,
+      );
+    } else {
+      host = trimmedHost;
+      usedDefaultHost = false;
+    }
+  }
+
+  let port = DEFAULT_AGENT_WS_PORT;
+  let usedDefaultPort = true;
+
+  if (trimmedPort.length > 0) {
+    const parsedPort = Number.parseInt(trimmedPort, 10);
+
+    if (!Number.isFinite(parsedPort)) {
+      warnings.push(
+        `AGENT_WS_PORT='${rawPort}' は数値として解釈できないため ${DEFAULT_AGENT_WS_PORT} を利用します。`,
+      );
+    } else if (parsedPort < MIN_AGENT_WS_PORT || parsedPort > MAX_AGENT_WS_PORT) {
+      warnings.push(
+        `AGENT_WS_PORT=${parsedPort} は許容範囲 ${MIN_AGENT_WS_PORT}～${MAX_AGENT_WS_PORT} を外れているため ${DEFAULT_AGENT_WS_PORT} へフォールバックします。`,
+      );
+    } else {
+      port = parsedPort;
+      usedDefaultPort = false;
+    }
+  }
+
+  let url = `ws://${host}:${port}`;
+  let usedExplicitUrl = false;
+
+  if (trimmedUrl.length > 0) {
+    usedExplicitUrl = true;
+
+    if (!trimmedUrl.includes('://')) {
+      warnings.push(`AGENT_WS_URL='${trimmedUrl}' にスキームが含まれていないため ws:// を補完しました。`);
+      const hasPortInUrl = trimmedUrl.includes(':');
+      url = hasPortInUrl ? `ws://${trimmedUrl}` : `ws://${trimmedUrl}:${port}`;
+    } else {
+      url = trimmedUrl;
+    }
+  }
+
+  return {
+    url,
+    host,
+    port,
+    warnings,
+    usedExplicitUrl,
+    usedDefaultHost,
+    usedDefaultPort,
+  };
 }
 
 /**
