@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from utils import setup_logger
 from dotenv import load_dotenv
 import openai
+from openai.types.responses import EasyInputMessageParam, Response
 
 logger = setup_logger("planner")
 load_dotenv()
@@ -155,10 +156,9 @@ class BarrierNotification(BaseModel):
 
     message: str = ""
 
-# OpenAI Chat Completions API は response_format=json_object を利用する際、
-# "json" という語がプロンプト内に含まれている必要がある。
-# システムメッセージに明示することで、推論モデルに json 形式での応答を
-# 強制しつつ API 要件を満たす。
+# OpenAI Responses API で response_format=json_object を指定する場合も、
+# プロンプト内に "json" という語を含めておくと安定して構造化応答が得られる。
+# システムメッセージで明示しておくことで、推論モデルへ JSON 出力を強制する。
 SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然文指示を、
 現在の状況を考慮して実行可能な高レベルのステップ列に分解し、同時に
 プレイヤーへ返す丁寧な日本語メッセージを用意してください。行動開始
@@ -207,35 +207,86 @@ json のみ。例：
 {{"plan": ["畑へ移動", "小麦を収穫", "パンを作る"], "resp": "了解しました。小麦を収穫してパンを作りますね。"}}
 """
 
+def _build_responses_input(system_prompt: str, user_prompt: str) -> List[Dict[str, Any]]:
+    """Responses API へ渡す message 配列を生成する補助関数。
+
+    EasyInputMessageParam を経由して型安全に構築し、辞書へ変換することで
+    API 仕様変更が起きてもメッセージ構造の妥当性を確保する。"""
+
+    messages = [
+        EasyInputMessageParam(role="system", content=system_prompt),
+        EasyInputMessageParam(role="user", content=user_prompt),
+    ]
+    return [msg.model_dump(mode="json", exclude_none=True) for msg in messages]
+
+
+def _build_responses_payload(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    """Responses API 呼び出しに共通するペイロードを一元生成する。
+
+    * text.format へ json_object を指定し、Responses API 側で JSON 出力を強制
+    * gpt-5 系パラメータ（temperature / verbosity / reasoning.effort）の
+      解決ロジックを集中させ、plan() / compose_barrier_notification() の
+      重複を無くす
+    """
+
+    payload: Dict[str, Any] = {
+        "model": MODEL,
+        "input": _build_responses_input(system_prompt, user_prompt),
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    temperature = resolve_request_temperature(MODEL)
+    if temperature is not None:
+        payload["temperature"] = temperature
+
+    verbosity = resolve_gpt5_verbosity(MODEL)
+    if verbosity:
+        # Responses API では text.verbosity を使って詳細度を制御する。
+        payload["text"]["verbosity"] = verbosity
+
+    reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
+
+    return payload
+
+
+def _extract_output_text(response: Response) -> str:
+    """Responses API の出力から JSON 本文を安全に取り出す。
+
+    output_text プロパティが利用可能な場合はそれを優先し、存在しないケース
+    ではメッセージ配列を走査して最初の text チャンクを返す。"""
+
+    text = getattr(response, "output_text", "") or ""
+    if text:
+        return text
+
+    for item in response.output or []:
+        if getattr(item, "type", None) == "message":
+            for content in getattr(item, "content", []):
+                content_type = getattr(content, "type", None)
+                if content_type in {"output_text", "text"}:
+                    candidate = getattr(content, "text", "") or ""
+                    if candidate:
+                        return candidate
+
+    return ""
+
+
 async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
+    """ユーザーの日本語チャットを Responses API へ投げ、実行プランを復元する。"""
+
     from openai import AsyncOpenAI
+
     client = AsyncOpenAI()
     prompt = build_user_prompt(user_msg, context)
     logger.info(f"LLM prompt: {prompt}")
 
-    temperature = resolve_request_temperature(MODEL)
-    request_payload: Dict[str, Any] = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    if temperature is not None:
-        request_payload["temperature"] = temperature
-
-    verbosity = resolve_gpt5_verbosity(MODEL)
-    if verbosity:
-        request_payload["verbosity"] = verbosity
-
-    reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
-    if reasoning_effort:
-        request_payload["reasoning"] = {"effort": reasoning_effort}
-
-    resp = await client.chat.completions.create(**request_payload)
-    content = resp.choices[0].message.content
+    request_payload = _build_responses_payload(SYSTEM, prompt)
+    resp = await client.responses.create(**request_payload)
+    content = _extract_output_text(resp)
     logger.info(f"LLM raw: {content}")
+
     try:
         data = PlanOut.model_validate_json(content)
     except Exception:
@@ -247,7 +298,7 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
 async def compose_barrier_notification(
     step: str, reason: str, context: Dict[str, Any]
 ) -> str:
-    """障壁発生時にプレイヤーへ送る確認メッセージを LLM によって生成する。"""
+    """作業障壁を Responses API へ説明し、プレイヤー向け確認メッセージを得る。"""
 
     from openai import AsyncOpenAI
 
@@ -255,28 +306,9 @@ async def compose_barrier_notification(
     prompt = build_barrier_prompt(step, reason, context)
     logger.info(f"Barrier prompt: {prompt}")
 
-    temperature = resolve_request_temperature(MODEL)
-    request_payload: Dict[str, Any] = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": BARRIER_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    if temperature is not None:
-        request_payload["temperature"] = temperature
-
-    verbosity = resolve_gpt5_verbosity(MODEL)
-    if verbosity:
-        request_payload["verbosity"] = verbosity
-
-    reasoning_effort = resolve_gpt5_reasoning_effort(MODEL)
-    if reasoning_effort:
-        request_payload["reasoning"] = {"effort": reasoning_effort}
-
-    resp = await client.chat.completions.create(**request_payload)
-    content = resp.choices[0].message.content
+    request_payload = _build_responses_payload(BARRIER_SYSTEM, prompt)
+    resp = await client.responses.create(**request_payload)
+    content = _extract_output_text(resp)
     logger.info(f"Barrier raw: {content}")
 
     try:
