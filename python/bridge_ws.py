@@ -15,9 +15,12 @@ class BotBridge:
         self.ws_url = ws_url or os.getenv("WS_URL", "ws://node-bot:8765")
 
     async def send(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        logger.debug(f"WS send: {payload}")
+        # 送信内容を INFO レベルで記録し、チャット指示などが確実に Python 側から発行されたことを追跡する。
+        logger.info(f"WS send: {payload}")
         async with websockets.connect(self.ws_url) as ws:
             await ws.send(json.dumps(payload, ensure_ascii=False))
             resp = await ws.recv()
-            logger.debug(f"WS recv: {resp}")
+            # Node 側から返ってきたレスポンスも INFO レベルで記録して、
+            # 実行成否やエラーメッセージが即座に把握できるようにする。
+            logger.info(f"WS recv: {resp}")
             return json.loads(resp)
