@@ -185,11 +185,18 @@ class AgentOrchestrator:
         """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。"""
 
         total_steps = len(plan_out.plan)
+        # プラン生成が空配列で戻るケースでは行動開始前から停滞するため、
+        # 直ちに障壁として報告してプレイヤーへ状況を伝える。
+        if total_steps == 0:
+            await self._report_execution_barrier(
+                "LLM が生成した計画",
+                "手順が 1 件も返されず、行動に移れません。プロンプトや状況を確認してください。",
+            )
+            return
+
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = None
-        # 同一ステップが複数回検出された際に同じ警告を連投しないための記録領域。
-        reported_blockers: set[str] = set()
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -215,6 +222,9 @@ class AgentOrchestrator:
 
             if any(keyword in normalized for keyword in ("移動", "向かう", "歩く")):
                 target_coords = last_target_coords or self.default_move_target
+                # LLM が座標を明示しなかった場合は既定値を採用するが、その事実を
+                # プレイヤーに共有しないと問題分析が難しいため別途通知する。
+                used_default_target = last_target_coords is None
                 if last_target_coords:
                     self.logger.info(
                         "plan_step index=%d fallback_move reuse_last_target=%s",
@@ -227,7 +237,17 @@ class AgentOrchestrator:
                         index,
                         self.default_move_target,
                     )
-                await self._move_to_coordinates(target_coords)
+                move_ok = await self._move_to_coordinates(target_coords)
+                if used_default_target:
+                    await self._report_execution_barrier(
+                        normalized,
+                        "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
+                    )
+                if not move_ok:
+                    await self._report_execution_barrier(
+                        normalized,
+                        "フォールバック移動が Mineflayer に拒否されました。ログの moveTo 応答内容を確認してください。",
+                    )
                 continue
 
             if "報告" in normalized or "伝える" in normalized:
@@ -243,12 +263,10 @@ class AgentOrchestrator:
                 index,
                 normalized,
             )
-            if normalized not in reported_blockers:
-                reported_blockers.add(normalized)
-                await self._report_execution_barrier(
-                    normalized,
-                    "対応可能なアクションが見つからず停滞しています。",
-                )
+            await self._report_execution_barrier(
+                normalized,
+                "対応可能なアクションが見つからず停滞しています。計画ステップの表現を見直してください。",
+            )
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
@@ -260,8 +278,8 @@ class AgentOrchestrator:
                 return x, y, z
         return None
 
-    async def _move_to_coordinates(self, coords: Iterable[int]) -> None:
-        """Mineflayer の移動アクションを発行し、結果をログに残す。"""
+    async def _move_to_coordinates(self, coords: Iterable[int]) -> bool:
+        """Mineflayer の移動アクションを発行し、結果をログへ残すユーティリティ。"""
 
         x, y, z = coords
         self.logger.info("requesting moveTo to (%d, %d, %d)", x, y, z)
@@ -269,6 +287,11 @@ class AgentOrchestrator:
         self.logger.info("moveTo response=%s", resp)
         if resp.get("ok"):
             self.memory.set("last_destination", {"x": x, "y": y, "z": z})
+            return True
+
+        # ここまで来た場合は Mineflayer からエラー応答が返却されたことを意味する。
+        # ゲーム内チャットとログへ障壁を即時通報し、プレイヤーと開発者が原因を
+        # 追跡しやすいようにする。
         else:
             self.logger.error("moveTo command rejected resp=%s", resp)
             error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
@@ -276,6 +299,7 @@ class AgentOrchestrator:
                 f"座標 ({x}, {y}, {z}) への移動",
                 f"Mineflayer からエラー応答を受け取りました（{error_detail}）。",
             )
+            return False
 
     async def _report_execution_barrier(self, step: str, reason: str) -> None:
         """処理を継続できない障壁を検知した際にチャットとログで即時共有する。"""
