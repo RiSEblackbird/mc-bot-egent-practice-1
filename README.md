@@ -182,9 +182,9 @@ Paper サーバーでチャットを送信した際に「何も起こらない�
 - 段差や足場の処理を促す抽象的な文でも「移動継続」のヒントとして扱い、既知の座標へ向かう行動を止めないヒューリスティックを導入しました。Mineflayer の pathfinder が吸収できる範囲は確認待ちを挟まずに処理されるため、「具体的な段差処理方法を教えてほしい」といった追加質問が大幅に減ります。
 
 
-### 5.5 Paper サーバーの警告 (`HelperBot moved wrongly!` / `minecraft:movement_speed`) への対策
+### 5.5 Paper サーバーの警告 (`HelperBot moved wrongly!` / `minecraft:movement_speed`) への方針
 
-- Mineflayer の移動制御でパルクールやダッシュを無効化し、Paper 側の移動検知に引っかからないよう歩行速度へ抑制しました。サーバーが強制的に位置補正を行った場合でも、直近の目的地を再セットして移動を継続します。
+- Mineflayer の移動制御ではパルクールやダッシュをあえて有効化し、危険地帯での生存性と高機動を優先します。`HelperBot moved wrongly!` 警告が発生する場合がありますが、アクロバットなルート選択を阻害しないことを重視した意図的な設定です。サーバーが強制的に位置補正を行った場合でも、直近の目的地を再セットして移動を継続します。
 - OpenAI からの移動命令が継続している際に `forcedMove` が発生した場合は、1 秒以内の連続補正を無視しつつログへ警告を残します。これによりプレイヤーはサーバーが移動を補正した事実を把握できます。
 - 1.21.1 以降で属性名が `minecraft:generic.movement_speed` へ統一されたため、Mineflayer が旧名 `minecraft:movement_speed` を送出しても自動で置き換え、Paper 側の `Ignoring unknown attribute` 警告を防ぎます。
 ## 6. 参考理論（READMEにURLを**必ず**記載）

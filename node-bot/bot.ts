@@ -218,10 +218,11 @@ function registerBotEventHandlers(targetBot: Bot): void {
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
     const defaultMove = new MovementsWithData(targetBot, mcData);
-    // Paper 1.21.x では不自然な速度変化が検出されると "moved wrongly" 警告を出すため、
-    // パルクールやダッシュといった急激な移動を抑止してサーバー側の監視に抵触しないよう調整する。
-    defaultMove.allowParkour = false;
-    defaultMove.allowSprinting = false;
+    // Paper 1.21.x ではパルクールやダッシュを多用すると "moved wrongly" 警告が増えるが、
+    // 危険地帯での生存性を優先して俊敏な動きを維持したいので、敢えて高機動モードを有効化する。
+    // ※警告は出力される場合があるが、アクロバットな行動を阻害しないことを重視するため許容する。
+    defaultMove.allowParkour = true;
+    defaultMove.allowSprinting = true;
     targetBot.pathfinder.setMovements(defaultMove);
     targetBot.chat('起動しました。（Mineflayer）');
   });
