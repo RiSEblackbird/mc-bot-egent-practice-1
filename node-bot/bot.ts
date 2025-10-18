@@ -6,6 +6,7 @@ import { createBot, Bot } from 'mineflayer';
 import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
+import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
 import {
   detectDockerRuntime,
@@ -153,10 +154,14 @@ function registerBotEventHandlers(targetBot: Bot): void {
     targetBot.chat('起動しました。（Mineflayer）');
   });
 
-  targetBot.on('chat', (username: string) => {
+  targetBot.on('chat', (username: string, message: string) => {
     if (username === targetBot.username) return;
-    // 生のゲーム内チャット（プレイヤー発話）を Python 側に転送したい場合は、
-    // ここで WS 送信する設計にしてもよい（今回は Node 側は受信専用に留める）
+    // 受信したチャット内容を詳細ログへ出力し、
+    // 「チャットは届いているが自動処理は未実装」である点を開発者へ明示する。
+    console.info(`[Chat] <${username}> ${message}`);
+    console.info(
+      '[Chat] 自動処理ルーティングは未実装のため、Node 側で受信ログのみを記録しました。',
+    );
   });
 
   targetBot.on('error', (error: Error & { code?: string }) => {
@@ -205,11 +210,13 @@ startBotLifecycle();
  */
 function getActiveBot(): Bot | null {
   if (!bot) {
+    console.warn('[Bot] command requested but bot instance is not ready yet.');
     return null;
   }
 
   // entity が未定義の間はまだスポーン完了前なので、チャットや移動を実行しない。
   if (!bot.entity) {
+    console.warn('[Bot] command requested but spawn sequence has not completed.');
     return null;
   }
 
@@ -223,10 +230,27 @@ console.log(`[WS] listening on ws://${WS_HOST}:${WS_PORT}`);
 
 // ---- WebSocket コマンド処理 ----
 // 1 接続につき 1 コマンドというシンプル設計。必要に応じて永続接続へ拡張予定。
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, request) => {
+  const clientId = randomUUID();
+  const remoteAddress = `${request.socket.remoteAddress ?? 'unknown'}:${request.socket.remotePort ?? 'unknown'}`;
+
+  console.log(`[WS] connection opened id=${clientId} from ${remoteAddress}`);
+
   ws.on('message', async (raw) => {
+    const rawText = raw.toString();
+    console.log(`[WS] (${clientId}) received payload: ${rawText}`);
     const response = await handleIncomingMessage(raw);
+    console.log(`[WS] (${clientId}) sending response: ${JSON.stringify(response)}`);
     ws.send(JSON.stringify(response));
+  });
+
+  ws.on('close', (code, reason) => {
+    const readableReason = reason.toString() || 'no reason';
+    console.log(`[WS] connection closed id=${clientId} code=${code} reason=${readableReason}`);
+  });
+
+  ws.on('error', (error) => {
+    console.error(`[WS] connection error id=${clientId}`, error);
   });
 });
 
@@ -246,6 +270,8 @@ async function handleIncomingMessage(raw: RawData): Promise<CommandResponse> {
 // 将来的にコマンド種別が増えても見通しよく拡張できるよう、switch 文で分岐させる。
 async function executeCommand(payload: CommandPayload): Promise<CommandResponse> {
   const { type, args } = payload;
+
+  console.log(`[WS] executing command type=${type}`);
 
   switch (type) {
     case 'chat':
@@ -267,10 +293,12 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
   const activeBot = getActiveBot();
 
   if (!activeBot) {
+    console.warn('[ChatCommand] rejected because bot is unavailable');
     return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
   }
 
   activeBot.chat(text);
+  console.log(`[ChatCommand] sent in-game chat: ${text}`);
   return { ok: true };
 }
 
@@ -282,18 +310,21 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
   const z = Number(args.z);
 
   if ([x, y, z].some((value) => Number.isNaN(value))) {
+    console.warn('[MoveToCommand] invalid coordinate(s) detected', { x, y, z });
     return { ok: false, error: 'Invalid coordinates' };
   }
 
   const activeBot = getActiveBot();
 
   if (!activeBot) {
+    console.warn('[MoveToCommand] rejected because bot is unavailable');
     return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
   }
 
   const goal = new goals.GoalBlock(x, y, z);
   try {
     await activeBot.pathfinder.goto(goal);
+    console.log(`[MoveToCommand] pathfinder completed to (${x}, ${y}, ${z})`);
     return { ok: true };
   } catch (error) {
     console.error('[Pathfinder] failed to move', error);

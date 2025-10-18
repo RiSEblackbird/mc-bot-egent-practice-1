@@ -25,7 +25,10 @@ async def main():
     # ここではまず標準入力で疑似チャット。後で Paper 側→Node→Python の実受信に差し替え可。
     while True:
         user_msg = input("> ").strip()
+        logger.info(f"received pseudo-chat input: '{user_msg}'")
+
         if not user_msg:
+            logger.info("input was empty after stripping; waiting for next message")
             continue
 
         # （暫定）プレイヤー位置などの状況は mem から渡す（実装中は空）
@@ -34,13 +37,16 @@ async def main():
             "inventory_summary": mem.get("inventory", "不明"),
         }
 
+        logger.info(f"building execution plan for message='{user_msg}' with context={context}")
         plan_out = await plan(user_msg, context)
         # プレイヤーへ応答
+        logger.info(f"LLM responded with plan={plan_out.plan} resp='{plan_out.resp}'")
         await actions.say(plan_out.resp)
 
         # ごく簡単な PLAN 実行デモ： "移動" っぽいテキストがあれば固定座標に移動
         for step in plan_out.plan:
             if "移動" in step:
+                logger.info(f"auto-move triggered by plan step='{step}' -> destination=(0, 64, 0)")
                 # デモ用：スポーン近くへ移動（座標は適宜変更）
                 await actions.move_to(0, 64, 0)
 
