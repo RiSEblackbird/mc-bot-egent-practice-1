@@ -125,6 +125,36 @@ class AgentOrchestrator:
         "迂回",
         "高さ",
     )
+    # 現在位置や所持品などを確認してチャットへ報告するだけのステップは、
+    # 移動や採取といったアクションとは別系統の「検出報告タスク」として扱い、
+    # 進捗報告のテンプレートに流れ込まないように専用の分類を用意する。
+    _DETECTION_TASK_KEYWORDS = {
+        "player_position": (
+            "現在位置",
+            "現在地",
+            "座標",
+            "座標を報告",
+            "XYZ",
+        ),
+        "inventory_status": (
+            "所持品",
+            "インベントリ",
+            "持ち物",
+            "手持ち",
+            "アイテム一覧",
+        ),
+        "general_status": (
+            "状態を報告",
+            "状況を報告",
+            "体力の状況",
+            "満腹度",
+        ),
+    }
+    _DETECTION_LABELS = {
+        "player_position": "現在位置の報告",
+        "inventory_status": "所持品の確認",
+        "general_status": "状態の共有",
+    }
 
     def __init__(self, actions: Actions, memory: Memory) -> None:
         self.actions = actions
@@ -245,6 +275,7 @@ class AgentOrchestrator:
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
+        detection_reports: list[Dict[str, str]] = []
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -255,6 +286,19 @@ class AgentOrchestrator:
                 normalized,
             )
             if not normalized:
+                continue
+
+            detection_category = self._classify_detection_task(normalized)
+            if detection_category:
+                self.logger.info(
+                    "plan_step index=%d classified as detection_report category=%s",
+                    index,
+                    detection_category,
+                )
+                detection_reports.append({
+                    "category": detection_category,
+                    "step": normalized,
+                })
                 continue
 
             coords = self._extract_coordinates(normalized)
@@ -329,6 +373,12 @@ class AgentOrchestrator:
                 "対応可能なアクションが見つからず停滞しています。計画ステップの表現を見直してください。",
             )
 
+        if detection_reports:
+            await self._handle_detection_reports(
+                detection_reports,
+                already_responded=bool(plan_out.resp.strip()),
+            )
+
     def _is_status_check_step(self, text: str) -> bool:
         """位置・所持品確認など実際の操作が不要なステップかを判定する。"""
 
@@ -351,6 +401,16 @@ class AgentOrchestrator:
 
         return any(keyword in text for keyword in self._MOVE_HINT_KEYWORDS)
 
+    def _classify_detection_task(self, text: str) -> Optional[str]:
+        """検出報告タスク（位置・所持品などの確認系ステップ）を分類する。"""
+
+        normalized = text.replace(" ", "").replace("　", "")
+        for category, keywords in self._DETECTION_TASK_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in normalized:
+                    return category
+        return None
+
     async def _attempt_proactive_progress(
         self, step: str, last_target_coords: Optional[Tuple[int, int, int]]
     ) -> bool:
@@ -369,6 +429,44 @@ class AgentOrchestrator:
             return True
 
         return False
+
+    async def _handle_detection_reports(
+        self,
+        reports: Iterable[Dict[str, str]],
+        *,
+        already_responded: bool,
+    ) -> None:
+        """検出報告タスクをメモリへ整理し、必要に応じて丁寧な補足メッセージを送る。"""
+
+        report_list = list(reports)
+        if not report_list:
+            return
+
+        self.memory.set("last_detection_reports", report_list)
+        if already_responded:
+            # LLM からプレイヤー向け応答が既に提示されている場合は追加送信を控え、
+            # ログとメモリへの整理だけでフローを終える。重複応答による冗長さを防ぐため。
+            self.logger.info(
+                "skip detection follow-up because initial response already sent reports=%s",
+                report_list,
+            )
+            return
+
+        # 未返信の場合は検出タスクを丁寧に説明する補足メッセージを構築する。
+        labels = []
+        for item in report_list:
+            category = item.get("category", "")
+            label = self._DETECTION_LABELS.get(category)
+            if label and label not in labels:
+                labels.append(label)
+
+        if not labels:
+            labels.append("状況確認")
+
+        summary = "、".join(labels)
+        await self.actions.say(
+            f"{summary}の確認依頼を検出報告タスクとして整理しました。追加で知りたい情報があれば教えてください。"
+        )
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
