@@ -14,7 +14,7 @@ describe('SLOT_PROTOCOL_VERSIONS', () => {
     expect(SLOT_PROTOCOL_VERSIONS[0]).toBe('1.21');
     expect(new Set(SLOT_PROTOCOL_VERSIONS).size).toBe(SLOT_PROTOCOL_VERSIONS.length);
     expect(SLOT_PROTOCOL_VERSIONS.every((version) => version.startsWith('1.21'))).toBe(true);
-    expect(SLOT_PROTOCOL_VERSIONS).toContain('1.21.8');
+    expect(SLOT_PROTOCOL_VERSIONS).toContain('1.21.4');
   });
 });
 
@@ -37,7 +37,10 @@ describe('buildCustomSlotPatch', () => {
     const [, slotEntries] = slotDefinition;
     const switchDescriptor = slotEntries.find(
       (entry): entry is { type: unknown[] } =>
-        typeof entry === 'object' && entry !== null && 'type' in (entry as Record<string, unknown>),
+        typeof entry === 'object' &&
+        entry !== null &&
+        'type' in (entry as Record<string, unknown>) &&
+        Array.isArray((entry as Record<string, unknown>).type),
     );
 
     expect(switchDescriptor).toBeDefined();

@@ -46,6 +46,7 @@ python/.python_history
 .python-version
 python/.env
 python/.env.*
+python/.envrc
 *.pem
 *.key
 *.p12

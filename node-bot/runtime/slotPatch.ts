@@ -33,7 +33,10 @@ export function collectSlotProtocolVersions(
     seen.add(minecraftVersion);
   }
 
-  return detected;
+  // minecraft-data の配列は新しいバージョンから降順で並ぶため、そのままでは
+  // リリース順の比較が困難になる。localeCompare の numeric オプションで数値順に
+  // 並べ替え、テストやログでの見通しを良くする。
+  return detected.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
 /**

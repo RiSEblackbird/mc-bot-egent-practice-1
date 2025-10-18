@@ -13,6 +13,7 @@ import {
   detectDockerRuntime,
   parseEnvInt,
   resolveMinecraftHostValue,
+  resolveMoveGoalTolerance,
 } from './runtime/env.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 
@@ -135,6 +136,13 @@ const defaultAgentHost = rawAgentHost && rawAgentHost !== '0.0.0.0'
     ? 'python-agent'
     : '127.0.0.1';
 const AGENT_WS_URL = rawAgentUrl.length > 0 ? rawAgentUrl : `ws://${defaultAgentHost}:${agentPort}`;
+
+// GoalNear の許容距離は LLM の挙動やステージ規模に合わせて調整できるよう環境変数化する。
+const moveGoalToleranceResolution = resolveMoveGoalTolerance(process.env.MOVE_GOAL_TOLERANCE);
+for (const warning of moveGoalToleranceResolution.warnings) {
+  console.warn(`[Bot] ${warning}`);
+}
+const MOVE_GOAL_TOLERANCE = moveGoalToleranceResolution.tolerance;
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
 // 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
@@ -335,14 +343,14 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
 
 // ---- moveTo コマンド処理 ----
 // 指定座標へ pathfinder を使って移動する。
-const MOVE_GOAL_TOLERANCE = 10;
-
 /**
  * moveTo コマンドで利用する到達許容距離（ブロック数）。
  *
  * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
  * ブロックの段差や水流の影響で「目的地に着いたのに失敗扱い」になるケースが多い。
- * GoalNear を用いることで ±10 ブロックの範囲を許容し、柔軟に到着完了判定を行う。
+ * GoalNear を用いることで ±MOVE_GOAL_TOLERANCE ブロックの範囲を許容し、
+ * 柔軟に到着完了判定を行う。環境変数で調整可能にしたため、用途に応じて
+ * 1 ～ 30 の範囲でしきい値をカスタマイズできる。
  */
 async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
   const x = Number(args.x);

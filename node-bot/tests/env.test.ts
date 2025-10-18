@@ -5,6 +5,7 @@ import {
   detectDockerRuntime,
   parseEnvInt,
   resolveMinecraftHostValue,
+  resolveMoveGoalTolerance,
   type DockerDetectionDeps,
 } from '../runtime/env.js';
 
@@ -84,5 +85,33 @@ describe('detectDockerRuntime', () => {
       },
     };
     expect(detectDockerRuntime(deps)).toBe(false);
+  });
+});
+
+describe('resolveMoveGoalTolerance', () => {
+  it('未設定の場合は既定値 3 と警告なしを返す', () => {
+    expect(resolveMoveGoalTolerance(undefined)).toEqual({ tolerance: 3, warnings: [] });
+  });
+
+  it('有効な数値はそのまま採用し警告を出さない', () => {
+    expect(resolveMoveGoalTolerance('5')).toEqual({ tolerance: 5, warnings: [] });
+  });
+
+  it('数値化できない入力はフォールバックし警告を追加する', () => {
+    const result = resolveMoveGoalTolerance('abc');
+    expect(result.tolerance).toBe(3);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('下限未満の値は 1 へ丸める', () => {
+    const result = resolveMoveGoalTolerance('0');
+    expect(result.tolerance).toBe(1);
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('上限を超える値は 30 へ丸める', () => {
+    const result = resolveMoveGoalTolerance('100');
+    expect(result.tolerance).toBe(30);
+    expect(result.warnings).toHaveLength(1);
   });
 });
