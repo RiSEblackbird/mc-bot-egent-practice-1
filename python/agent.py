@@ -27,7 +27,14 @@ from services.skill_repository import SkillRepository
 from actions import Actions
 from bridge_ws import BotBridge
 from memory import Memory
-from planner import PlanOut, ReActStep, compose_barrier_notification, plan
+from planner import (
+    PlanOut,
+    ReActStep,
+    BarrierNotificationError,
+    BarrierNotificationTimeout,
+    compose_barrier_notification,
+    plan,
+)
 from skills import SkillMatch
 from utils import log_structured_event, setup_logger
 from agent_orchestrator import (
@@ -1784,10 +1791,23 @@ class AgentOrchestrator:
                     llm_message,
                 )
                 return llm_message
+        except BarrierNotificationTimeout as exc:
+            self.logger.warning(
+                "barrier message generation timed out step='%s': %s",
+                step,
+                exc,
+            )
+        except BarrierNotificationError as exc:
+            self.logger.warning(
+                "barrier message generation failed step='%s': %s",
+                step,
+                exc,
+            )
         except Exception:
             self.logger.exception("failed to compose barrier message via LLM")
 
-        # LLM 連携に失敗した場合は従来通り短縮メッセージを返す。
+        # LLM 連携が利用できない場合は、プレイヤーが状況を素早く把握できるよう
+        # 既存の短縮メッセージロジックで即時応答を組み立てる。
         short_step = self._shorten_text(step, limit=40)
         short_reason = self._shorten_text(reason, limit=60)
         return f"手順「{short_step}」で問題が発生しました: {short_reason}"
