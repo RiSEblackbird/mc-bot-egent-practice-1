@@ -77,7 +77,7 @@ def test_handle_action_task_dispatches_equip(orchestrator: AgentOrchestrator) ->
     backlog: List[Dict[str, str]] = []
 
     async def runner() -> None:
-        handled, _ = await orchestrator._handle_action_task(
+        handled, _, failure = await orchestrator._handle_action_task(
             "equip",
             "渡されたツルハシを装備する",
             last_target_coords=None,
@@ -85,6 +85,7 @@ def test_handle_action_task_dispatches_equip(orchestrator: AgentOrchestrator) ->
         )
 
         assert handled is True
+        assert failure is None
 
     asyncio.run(runner())
 

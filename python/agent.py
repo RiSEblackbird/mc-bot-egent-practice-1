@@ -72,6 +72,10 @@ class ActionTaskRule:
 class AgentOrchestrator:
     """受信チャットを順次処理し、LLM プラン→Mineflayer 操作を遂行する中核クラス。"""
 
+    # 再計画の連鎖が無限に進むとチャット出力が雪崩のように発生するため、
+    # 自動リトライは上限回数で打ち切り、最悪時でも運用者が介入しやすくする。
+    _MAX_REPLAN_DEPTH = 2
+
     # Mineflayer へ渡す座標はプレイヤーの指示の表記揺れが多いため、複数の正規表現
     # を用意して柔軟に抽出する。スラッシュ区切り（-36 / 73 / -66）や全角スラッシュ、
     # カンマ区切り、XYZ: -36 / 73 / -66 などを一括で処理できるようにしている。
@@ -385,7 +389,11 @@ class AgentOrchestrator:
         return snapshot
 
     async def _execute_plan(
-        self, plan_out: PlanOut, *, initial_target: Optional[Tuple[int, int, int]] = None
+        self,
+        plan_out: PlanOut,
+        *,
+        initial_target: Optional[Tuple[int, int, int]] = None,
+        replan_depth: int = 0,
     ) -> None:
         """LLM が出力した高レベルステップを簡易ヒューリスティックで実行する。
 
@@ -444,7 +452,7 @@ class AgentOrchestrator:
                     index,
                     coords,
                 )
-                handled, last_target_coords = await self._handle_action_task(
+                handled, last_target_coords, failure_detail = await self._handle_action_task(
                     "move",
                     normalized,
                     last_target_coords=coords,
@@ -452,10 +460,17 @@ class AgentOrchestrator:
                     explicit_coords=coords,
                 )
                 if not handled:
-                    await self._report_execution_barrier(
-                        normalized,
-                        "座標移動の処理に失敗しました。ログを確認してください。",
+                    await self._handle_plan_failure(
+                        failed_step=normalized,
+                        failure_reason=
+                            failure_detail
+                            or "座標移動の処理に失敗しました。Mineflayer の応答を確認してください。",
+                        detection_reports=detection_reports,
+                        action_backlog=action_backlog,
+                        remaining_steps=plan_out.plan[index:],
+                        replan_depth=replan_depth,
                     )
+                    return
                 continue
 
             if self._is_status_check_step(normalized):
@@ -478,7 +493,7 @@ class AgentOrchestrator:
                     index,
                     action_category,
                 )
-                handled, last_target_coords = await self._handle_action_task(
+                handled, last_target_coords, failure_detail = await self._handle_action_task(
                     action_category,
                     normalized,
                     last_target_coords=last_target_coords,
@@ -486,6 +501,18 @@ class AgentOrchestrator:
                 )
                 if handled:
                     continue
+
+                await self._handle_plan_failure(
+                    failed_step=normalized,
+                    failure_reason=
+                        failure_detail
+                        or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。",
+                    detection_reports=detection_reports,
+                    action_backlog=action_backlog,
+                    remaining_steps=plan_out.plan[index:],
+                    replan_depth=replan_depth,
+                )
+                return
 
             if "報告" in normalized or "伝える" in normalized:
                 self.logger.info(
@@ -516,6 +543,84 @@ class AgentOrchestrator:
                 action_backlog,
                 already_responded=bool(plan_out.resp.strip()),
             )
+
+    async def _handle_plan_failure(
+        self,
+        *,
+        failed_step: str,
+        failure_reason: str,
+        detection_reports: List[Dict[str, str]],
+        action_backlog: List[Dict[str, str]],
+        remaining_steps: List[str],
+        replan_depth: int,
+    ) -> None:
+        """Mineflayer 側の失敗で計画を続行できない場合の回復処理をまとめる。"""
+
+        await self._report_execution_barrier(failed_step, failure_reason)
+
+        if detection_reports:
+            await self._handle_detection_reports(
+                detection_reports,
+                already_responded=True,
+            )
+
+        if action_backlog:
+            await self._handle_action_backlog(
+                action_backlog,
+                already_responded=True,
+            )
+
+        await self._request_replan(
+            failed_step=failed_step,
+            failure_reason=failure_reason,
+            remaining_steps=remaining_steps,
+            replan_depth=replan_depth,
+        )
+
+    async def _request_replan(
+        self,
+        *,
+        failed_step: str,
+        failure_reason: str,
+        remaining_steps: List[str],
+        replan_depth: int,
+    ) -> None:
+        """障壁内容を踏まえて LLM へ再計画を依頼し、後続ステップを自動調整する。"""
+
+        if replan_depth >= self._MAX_REPLAN_DEPTH:
+            self.logger.warning(
+                "skip replan because max depth reached step='%s' reason='%s'",
+                failed_step,
+                failure_reason,
+            )
+            return
+
+        context = self._build_context_snapshot()
+        remaining_text = "、".join(remaining_steps) if remaining_steps else ""
+        replan_instruction = (
+            f"手順「{failed_step}」の実行に失敗しました（{failure_reason}）。"
+            "現在の状況を踏まえて作業を継続するための別案を提示してください。"
+        )
+        if remaining_text:
+            replan_instruction += f" 未完了ステップ候補: {remaining_text}"
+
+        self.logger.info(
+            "requesting replan depth=%d instruction='%s' context=%s",
+            replan_depth + 1,
+            replan_instruction,
+            context,
+        )
+
+        new_plan = await plan(replan_instruction, context)
+
+        if new_plan.resp.strip():
+            await self.actions.say(new_plan.resp)
+
+        await self._execute_plan(
+            new_plan,
+            initial_target=None,
+            replan_depth=replan_depth + 1,
+        )
 
     def _is_status_check_step(self, text: str) -> bool:
         """位置・所持品確認など実際の操作が不要なステップかを判定する。"""
@@ -636,8 +741,13 @@ class AgentOrchestrator:
                 step,
                 last_target_coords,
             )
-            await self._move_to_coordinates(last_target_coords)
-            return True
+            move_ok, move_error = await self._move_to_coordinates(last_target_coords)
+            if not move_ok and move_error:
+                await self._report_execution_barrier(
+                    step,
+                    f"継続移動に失敗しました（{move_error}）。",
+                )
+            return move_ok
 
         return False
 
@@ -834,8 +944,8 @@ class AgentOrchestrator:
         last_target_coords: Optional[Tuple[int, int, int]],
         backlog: List[Dict[str, str]],
         explicit_coords: Optional[Tuple[int, int, int]] = None,
-    ) -> Tuple[bool, Optional[Tuple[int, int, int]]]:
-        """行動タスクを処理し、必要に応じて保留一覧を更新する。"""
+    ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
+        """行動タスクを処理し、失敗時は理由を添えて返す。"""
 
         rule = self._ACTION_TASK_RULES.get(category)
         if not rule:
@@ -845,7 +955,7 @@ class AgentOrchestrator:
                 category,
                 step,
             )
-            return False, last_target_coords
+            return False, last_target_coords, None
 
         if category == "move":
             target = explicit_coords or self._extract_coordinates(step)
@@ -861,18 +971,16 @@ class AgentOrchestrator:
                 updated_target,
                 used_default_target,
             )
-            move_ok = await self._move_to_coordinates(updated_target)
+            move_ok, move_error = await self._move_to_coordinates(updated_target)
             if used_default_target:
                 await self._report_execution_barrier(
                     step,
                     "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
                 )
             if not move_ok:
-                await self._report_execution_barrier(
-                    step,
-                    "フォールバック移動が Mineflayer に拒否されました。ログの moveTo 応答内容を確認してください。",
-                )
-            return True, updated_target
+                error_detail = move_error or "Mineflayer 側で移動が拒否されました"
+                return False, last_target_coords, error_detail
+            return True, updated_target, None
 
         if category == "equip":
             equip_args = self._infer_equip_arguments(step)
@@ -882,7 +990,7 @@ class AgentOrchestrator:
                     step,
                     "装備するアイテムを推測できませんでした。ツール名や用途をもう少し具体的に指示してください。",
                 )
-                return True, last_target_coords
+                return True, last_target_coords, None
 
             self.logger.info(
                 "handling equip step='%s' args=%s",
@@ -895,14 +1003,10 @@ class AgentOrchestrator:
                 destination=equip_args.get("destination", "hand"),
             )
             if resp.get("ok"):
-                return True, last_target_coords
+                return True, last_target_coords, None
 
             error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
-            await self._report_execution_barrier(
-                step,
-                f"装備コマンドが失敗しました: {error_detail}",
-            )
-            return True, last_target_coords
+            return False, last_target_coords, f"装備コマンドが失敗しました: {error_detail}"
 
         if category == "mine":
             # 鉱石系の指示は Node 側の探索コマンドへ橋渡しし、
@@ -929,7 +1033,7 @@ class AgentOrchestrator:
                     step,
                 )
                 equip_step = f"所持ツルハシ（{display_name}）を装備する"
-                equip_handled, _ = await self._handle_action_task(
+                equip_handled, _, equip_failure = await self._handle_action_task(
                     "equip",
                     equip_step,
                     last_target_coords=last_target_coords,
@@ -940,7 +1044,8 @@ class AgentOrchestrator:
                         "equip fallback skipped because handler returned False step='%s'",
                         equip_step,
                     )
-                return True, last_target_coords
+                    return False, last_target_coords, equip_failure
+                return True, last_target_coords, None
 
             resp = await self.actions.mine_ores(
                 mining_request["targets"],
@@ -952,17 +1057,13 @@ class AgentOrchestrator:
                 self.logger.info(
                     "mine command succeeded mined_blocks=%s resp=%s", mined, resp
                 )
-                return True, last_target_coords
+                return True, last_target_coords, None
 
             error_detail = resp.get("error") or "鉱石採掘コマンドが拒否されました"
             self.logger.error(
                 "mine command failed step='%s' error=%s resp=%s", step, error_detail, resp
             )
-            await self._report_execution_barrier(
-                step,
-                f"採掘コマンドが失敗しました: {error_detail}",
-            )
-            return True, last_target_coords
+            return False, last_target_coords, f"採掘コマンドが失敗しました: {error_detail}"
 
         if rule.implemented:
             self.logger.info(
@@ -970,7 +1071,7 @@ class AgentOrchestrator:
                 category,
                 step,
             )
-            return False, last_target_coords
+            return False, last_target_coords, None
 
         backlog.append({
             "category": category,
@@ -982,7 +1083,7 @@ class AgentOrchestrator:
             category,
             step,
         )
-        return True, last_target_coords
+        return True, last_target_coords, None
 
     def _select_pickaxe_for_targets(
         self, ore_names: Iterable[str]
@@ -1155,7 +1256,9 @@ class AgentOrchestrator:
                 return x, y, z
         return None
 
-    async def _move_to_coordinates(self, coords: Iterable[int]) -> bool:
+    async def _move_to_coordinates(
+        self, coords: Iterable[int]
+    ) -> Tuple[bool, Optional[str]]:
         """Mineflayer の移動アクションを発行し、結果をログへ残すユーティリティ。"""
 
         x, y, z = coords
@@ -1164,19 +1267,12 @@ class AgentOrchestrator:
         self.logger.info("moveTo response=%s", resp)
         if resp.get("ok"):
             self.memory.set("last_destination", {"x": x, "y": y, "z": z})
-            return True
+            return True, None
 
         # ここまで来た場合は Mineflayer からエラー応答が返却されたことを意味する。
-        # ゲーム内チャットとログへ障壁を即時通報し、プレイヤーと開発者が原因を
-        # 追跡しやすいようにする。
-        else:
-            self.logger.error("moveTo command rejected resp=%s", resp)
-            error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
-            await self._report_execution_barrier(
-                f"座標 ({x}, {y}, {z}) への移動",
-                f"Mineflayer からエラー応答を受け取りました（{error_detail}）。",
-            )
-            return False
+        self.logger.error("moveTo command rejected resp=%s", resp)
+        error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
+        return False, error_detail
 
     async def _report_execution_barrier(self, step: str, reason: str) -> None:
         """処理を継続できない障壁を検知した際にチャットとログで即時共有する。"""
