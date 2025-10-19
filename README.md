@@ -12,6 +12,7 @@ Python 側が LLM（OpenAI **gpt-5-mini**）でチャット意図を解釈し、
 - 簡易建築：小屋/倉庫などの原始的建築
 - プレイヤー随伴：「ついてきて」で追尾モード
 - 装備持ち替え：ツール名の指示に従って適切な手へ装備
+- マルチエージェント協調：防衛・補給など役割を LangGraph から切り替え、位置・状態イベントを共有メモリで同期
 
 ## バージョン方針
 
@@ -45,6 +46,8 @@ Node 側のボット実装は TypeScript 化しており、`npm start` を実行
 
 Mineflayer 起動時の環境変数は `node-bot/runtime/config.ts` へ集約しており、Docker 実行時の `MC_HOST` 補正や `MC_VERSION` のフォールバック、`MOVE_GOAL_TOLERANCE` の上下限チェックを一括で行います。
 設定変更のテストは `node-bot/tests/config.test.ts` を実行すると安全に回帰確認できます。
+
+2025 年 10 月のアップデートでは `node-bot/runtime/roles.ts` に役割カタログを追加し、`setAgentRole` コマンドで LangGraph から防衛/補給/偵察などのロールへ即座に切り替えられるようになりました。Mineflayer から `agentEvent` チャネル経由で位置・体力・役割のスナップショットを Python 側へ push するため、イベント駆動で共有メモリが更新されます。
 
 `bot.ts` には `gatherStatus` WebSocket コマンドを実装しており、Python エージェントが現在位置・インベントリ・体力/満腹度と掘削許可のスナップショットを即座に取得できます。Mineflayer の `canDig` 設定やゲームモードから地下採掘の可否を判定し、所持ツルハシのエンチャント情報と併せて JSON で返すため、チャット経由で逐一質問せずとも自律的な計画を立てられます。
 
@@ -89,7 +92,7 @@ Python 側で LLM プランニングとアクション実行が行われます�
 モジュールをノード単位で独立させました。これにより再計画時の分岐が視覚化され、`mine` → `equip` のような連鎖的な
 処理もグラフ上で明示されます。同様に `python/planner.py` の LLM 呼び出しも LangGraph の条件分岐ノードに置き換え、
 失敗時は優先度を `high` へ自動昇格、成功時は `normal` へ戻す優先度マネージャーと同期しています。新しいシナリオテスト
-`tests/test_langgraph_scenarios.py` では障害検知・並列進行・優先度遷移を網羅し、グラフ内で再計画が完結することを検証できます。
+`tests/test_langgraph_scenarios.py` では障害検知・並列進行・優先度遷移を網羅し、グラフ内で再計画が完結することを検証できます。さらに `tests/e2e/test_multi_agent_roles.py` では敵襲来時の防衛介入と補給合流のロール切替を E2E で確認し、共有メモリと役割ステートが期待通り同期されることを保証しています。
 
 Mineflayer から `ok=false` が返った場合は、障壁内容を `compose_barrier_notification` で LLM に共有し、
 プレイヤーへチャット通知したのち自動的に再計画を依頼します。失敗ステップと残りの計画案をまとめて LLM に渡すため、

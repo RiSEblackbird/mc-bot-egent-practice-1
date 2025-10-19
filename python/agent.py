@@ -281,6 +281,9 @@ class AgentOrchestrator:
         self.logger = setup_logger("agent.orchestrator")
         # LangGraph ベースのタスクハンドラを初期化して、カテゴリ別モジュールを明確化する。
         self._action_graph = ActionGraph(self)
+        self._current_role_id: str = "generalist"
+        self._pending_role: Optional[Tuple[str, Optional[str]]] = None
+        self._shared_agents: Dict[str, Dict[str, Any]] = {}
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -317,6 +320,112 @@ class AgentOrchestrator:
                 self.logger.exception("failed to process chat task username=%s", task.username)
             finally:
                 self.queue.task_done()
+
+    async def handle_agent_event(self, args: Dict[str, Any]) -> None:
+        """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
+
+        event = args.get("event")
+        if not isinstance(event, dict):
+            self.logger.error("agent event payload missing event=%s", args)
+            return
+
+        channel = str(event.get("channel", ""))
+        if channel != "multi-agent":
+            self.logger.warning("unsupported event channel=%s", channel)
+            return
+
+        agent_id = str(event.get("agentId", "primary") or "primary")
+        agent_state = dict(self._shared_agents.get(agent_id, {}))
+        agent_state["timestamp"] = event.get("timestamp")
+
+        kind = str(event.get("event", ""))
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            agent_state.setdefault("events", []).append({"kind": kind, "payload": payload})
+
+        if kind == "position" and isinstance(payload, dict):
+            agent_state["position"] = payload
+            formatted = self._format_position_payload(payload)
+            if formatted:
+                self.memory.set("player_pos", formatted)
+        elif kind == "status" and isinstance(payload, dict):
+            agent_state["status"] = payload
+            threat = str(payload.get("threatLevel", "")).lower()
+            if threat in {"high", "critical"}:
+                self.request_role_switch("defender", reason="threat-alert")
+            supply = str(payload.get("supplyDemand", "")).lower()
+            if supply == "shortage":
+                self.request_role_switch("supplier", reason="supply-shortage")
+        elif kind == "roleUpdate" and isinstance(payload, dict):
+            role_id = str(payload.get("roleId", "generalist") or "generalist")
+            role_label = str(payload.get("label", role_id))
+            role_info = {
+                "id": role_id,
+                "label": role_label,
+                "reason": payload.get("reason"),
+                "responsibilities": payload.get("responsibilities"),
+            }
+            agent_state["role"] = role_info
+            if agent_id == "primary":
+                self._current_role_id = role_id
+                self.memory.set("agent_active_role", role_info)
+
+        self._shared_agents[agent_id] = agent_state
+        self.memory.set("multi_agent", self._shared_agents)
+
+    def request_role_switch(self, role_id: str, *, reason: Optional[str] = None) -> None:
+        """LangGraph ノードからの役割切替要求をキューへ記録する。"""
+
+        sanitized = (role_id or "").strip() or "generalist"
+        if sanitized == self._current_role_id:
+            return
+        self._pending_role = (sanitized, reason)
+        self.logger.info(
+            "pending role switch registered role=%s reason=%s",
+            sanitized,
+            reason,
+        )
+
+    def _consume_pending_role_switch(self) -> Optional[Tuple[str, Optional[str]]]:
+        pending = self._pending_role
+        self._pending_role = None
+        return pending
+
+    @property
+    def current_role(self) -> str:
+        return self._current_role_id
+
+    async def _apply_role_switch(self, role_id: str, reason: Optional[str]) -> bool:
+        """実際に Node 側へ役割変更コマンドを送信し、成功時は記憶を更新する。"""
+
+        if role_id == self._current_role_id:
+            return False
+
+        resp = await self.actions.set_role(role_id, reason=reason)
+        if not resp.get("ok"):
+            self.logger.warning("role switch command failed role=%s resp=%s", role_id, resp)
+            return False
+
+        label = None
+        data = resp.get("data")
+        if isinstance(data, dict):
+            label_raw = data.get("label")
+            if isinstance(label_raw, str):
+                label = label_raw
+
+        role_info = {
+            "id": role_id,
+            "label": label or role_id,
+            "reason": reason,
+        }
+        self._current_role_id = role_id
+        primary_state = self._shared_agents.setdefault("primary", {})
+        primary_state["role"] = role_info
+        self._shared_agents["primary"] = primary_state
+        self.memory.set("agent_active_role", role_info)
+        self.memory.set("multi_agent", self._shared_agents)
+        self.logger.info("role switch applied role=%s label=%s", role_id, role_info["label"])
+        return True
 
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
@@ -357,6 +466,18 @@ class AgentOrchestrator:
         await self._execute_plan(plan_out, initial_target=user_hint_coords)
         self.memory.set("last_chat", {"username": task.username, "message": task.message})
 
+    def _format_position_payload(self, payload: Dict[str, Any]) -> Optional[str]:
+        """位置イベントからコンテキスト表示用の文字列を生成する。"""
+
+        x = payload.get("x")
+        y = payload.get("y")
+        z = payload.get("z")
+        if not all(isinstance(value, (int, float)) for value in (x, y, z)):
+            return None
+        dimension = payload.get("dimension")
+        dimension_label = dimension if isinstance(dimension, str) and dimension else "unknown"
+        return f"X={int(x)} / Y={int(y)} / Z={int(z)}（ディメンション: {dimension_label}）"
+
     def _build_context_snapshot(self) -> Dict[str, Any]:
         """LLM へ渡す簡易コンテキストを生成する。"""
 
@@ -367,6 +488,10 @@ class AgentOrchestrator:
             "dig_permission": self.memory.get("dig_permission", "未評価"),
             "last_chat": self.memory.get("last_chat", "未記録"),
             "last_destination": self.memory.get("last_destination", "未記録"),
+            "active_role": self.memory.get(
+                "agent_active_role",
+                {"id": self._current_role_id, "label": "汎用サポーター"},
+            ),
         }
         self.logger.info("context snapshot built=%s", snapshot)
         return snapshot
@@ -1216,20 +1341,26 @@ class AgentWebSocketServer:
             self.logger.error("invalid JSON payload=%s", raw)
             return {"ok": False, "error": "invalid json"}
 
-        if payload.get("type") != "chat":
-            self.logger.error("unsupported payload type=%s", payload.get("type"))
-            return {"ok": False, "error": "unsupported type"}
+        payload_type = payload.get("type")
+        if payload_type == "chat":
+            args = payload.get("args") or {}
+            username = str(args.get("username", "")).strip() or "Player"
+            message = str(args.get("message", "")).strip()
 
-        args = payload.get("args") or {}
-        username = str(args.get("username", "")).strip() or "Player"
-        message = str(args.get("message", "")).strip()
+            if not message:
+                self.logger.warning("empty chat message received username=%s", username)
+                return {"ok": False, "error": "empty message"}
 
-        if not message:
-            self.logger.warning("empty chat message received username=%s", username)
-            return {"ok": False, "error": "empty message"}
+            await self.orchestrator.enqueue_chat(username, message)
+            return {"ok": True}
 
-        await self.orchestrator.enqueue_chat(username, message)
-        return {"ok": True}
+        if payload_type == "agentEvent":
+            args = payload.get("args") or {}
+            await self.orchestrator.handle_agent_event(args)
+            return {"ok": True}
+
+        self.logger.error("unsupported payload type=%s", payload_type)
+        return {"ok": False, "error": "unsupported type"}
 
 
 async def main() -> None:

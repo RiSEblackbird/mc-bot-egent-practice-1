@@ -52,6 +52,9 @@ class _ActionState(TypedDict, total=False):
     updated_target: Optional[Tuple[int, int, int]]
     failure_detail: Optional[str]
     module: str
+    active_role: str
+    role_transitioned: bool
+    role_transition_reason: Optional[str]
 
 
 class ActionGraph:
@@ -81,6 +84,8 @@ class ActionGraph:
             "backlog": backlog,
             "rule_label": rule.label or category,
             "rule_implemented": rule.implemented,
+            "active_role": self._orchestrator.current_role,
+            "role_transitioned": False,
         }
         result = await self._graph.ainvoke(state)
         handled = bool(result.get("handled"))
@@ -100,6 +105,27 @@ class ActionGraph:
                 "updated_target": state.get("last_target_coords"),
                 "failure_detail": None,
                 "module": "generic",
+                "active_role": state.get("active_role", orchestrator.current_role),
+                "role_transitioned": False,
+                "role_transition_reason": None,
+            }
+
+        async def apply_role_policy(state: _ActionState) -> Dict[str, Any]:
+            active_role = state.get("active_role", orchestrator.current_role)
+            transitioned = False
+            reason: Optional[str] = None
+            pending = orchestrator._consume_pending_role_switch()  # type: ignore[attr-defined]
+            if pending:
+                desired_role, pending_reason = pending
+                reason = pending_reason
+                if desired_role and desired_role != active_role:
+                    transitioned = await orchestrator._apply_role_switch(desired_role, pending_reason)  # type: ignore[attr-defined]
+                    if transitioned:
+                        active_role = orchestrator.current_role  # type: ignore[attr-defined]
+            return {
+                "active_role": active_role,
+                "role_transitioned": transitioned,
+                "role_transition_reason": reason,
             }
 
         def route_module(state: _ActionState) -> Dict[str, Any]:
@@ -152,6 +178,19 @@ class ActionGraph:
                     "updated_target": last_target,
                     "failure_detail": error_detail,
                 }
+            if state.get("role_transitioned"):
+                active_role = state.get("active_role", "")
+                reason = state.get("role_transition_reason") or ""
+                state["backlog"].append(
+                    {
+                        "category": "role",
+                        "step": step,
+                        "label": f"役割切替: {active_role or '不明'}",
+                        "module": "role",
+                        "role": active_role,
+                        "reason": reason,
+                    }
+                )
             return {
                 "handled": True,
                 "updated_target": target,
@@ -293,6 +332,7 @@ class ActionGraph:
                     "phase": updated_checkpoint.phase.value,
                     "procurement": procurement_label,
                     "placement": placement_label,
+                    "role": state.get("active_role", ""),
                 }
             )
 
@@ -313,6 +353,7 @@ class ActionGraph:
                     "step": state["step"],
                     "label": label,
                     "module": "defense",
+                    "role": state.get("active_role", ""),
                 }
             )
             return {
@@ -340,6 +381,7 @@ class ActionGraph:
                     "category": state["category"],
                     "step": state["step"],
                     "label": state.get("rule_label") or state["category"],
+                    "role": state.get("active_role", ""),
                 }
             )
             orchestrator.logger.info(  # type: ignore[attr-defined]
@@ -359,6 +401,7 @@ class ActionGraph:
             return {}
 
         graph.add_node("initialize", initialize)
+        graph.add_node("apply_role_policy", apply_role_policy)
         graph.add_node("route_module", route_module)
         graph.add_node("handle_move", handle_move)
         graph.add_node("handle_equip", handle_equip)
@@ -369,7 +412,8 @@ class ActionGraph:
         graph.add_node("finalize", finalize)
 
         graph.add_edge(START, "initialize")
-        graph.add_edge("initialize", "route_module")
+        graph.add_edge("initialize", "apply_role_policy")
+        graph.add_edge("apply_role_policy", "route_module")
         graph.add_conditional_edges(
             "route_module",
             lambda state: state.get("module", "generic"),
