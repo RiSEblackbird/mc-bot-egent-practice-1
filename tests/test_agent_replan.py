@@ -17,7 +17,12 @@ if str(PYTHON_DIR) not in sys.path:
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
-from planner import PlanOut  # type: ignore  # noqa: E402
+from planner import (  # type: ignore  # noqa: E402
+    PlanOut,
+    get_plan_priority,
+    plan,
+    reset_plan_priority,
+)
 
 
 class ReplanActions:
@@ -109,3 +114,31 @@ def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None
         {"tool_type": "pickaxe", "item_name": None, "destination": "hand"}
     ]
     assert replan_prompts and "失敗" in replan_prompts[0]
+
+
+def test_plan_timeout_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM タイムアウト時にフォールバックプランと優先度昇格が行われる。"""
+
+    class TimeoutAsyncOpenAI:
+        """Responses.create が TimeoutError を送出するスタブクライアント。"""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.responses = self
+
+        async def create(self, *args: Any, **kwargs: Any) -> Any:
+            raise asyncio.TimeoutError("simulated timeout")
+
+    monkeypatch.setattr("planner.AsyncOpenAI", TimeoutAsyncOpenAI)
+
+    async def runner() -> tuple[PlanOut, str]:
+        await reset_plan_priority()
+        plan_out_inner = await plan("状況どう？", {})
+        priority_inner = await get_plan_priority()
+        await reset_plan_priority()
+        return plan_out_inner, priority_inner
+
+    plan_out, priority = asyncio.run(runner())
+
+    assert plan_out.plan == []
+    assert plan_out.resp == "了解しました。"
+    assert priority == "high"

@@ -21,6 +21,7 @@ def test_load_agent_config_returns_defaults() -> None:
     assert config.minedojo.api_base_url == "https://api.minedojo.org/v1"
     assert config.minedojo.cache_dir == "var/cache/minedojo"
     assert config.minedojo.api_key is None
+    assert config.llm_timeout_seconds == 30.0
 
 
 def test_load_agent_config_emits_warning_on_invalid_port() -> None:
@@ -35,3 +36,10 @@ def test_load_agent_config_handles_invalid_move_target() -> None:
 
     assert result.config.default_move_target == (0, 64, 0)
     assert any("DEFAULT_MOVE_TARGET" in warning for warning in result.warnings)
+
+
+def test_load_agent_config_handles_invalid_llm_timeout() -> None:
+    result = load_agent_config({"LLM_TIMEOUT_SECONDS": "-10"})
+
+    assert result.config.llm_timeout_seconds == 30.0
+    assert any("タイムアウト値" in warning for warning in result.warnings)

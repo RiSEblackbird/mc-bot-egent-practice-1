@@ -23,6 +23,7 @@ _DEFAULT_SKILL_LIBRARY_PATH = "var/skills/library.json"
 _DEFAULT_MINEDOJO_API_BASE_URL = "https://api.minedojo.org/v1"
 _DEFAULT_MINEDOJO_CACHE_DIR = "var/cache/minedojo"
 _DEFAULT_MINEDOJO_REQUEST_TIMEOUT = 10.0
+_DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class AgentConfig:
     default_move_target_raw: str
     skill_library_path: str
     minedojo: MineDojoConfig
+    llm_timeout_seconds: float  # Responses API 呼び出しを強制終了するまでの猶予秒数
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,9 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     minedojo_timeout, timeout_warnings = _parse_positive_float(
         source.get("MINEDOJO_REQUEST_TIMEOUT"), _DEFAULT_MINEDOJO_REQUEST_TIMEOUT
     )
+    llm_timeout_seconds, llm_timeout_warnings = _parse_positive_float(
+        source.get("LLM_TIMEOUT_SECONDS"), _DEFAULT_LLM_TIMEOUT_SECONDS
+    )
 
     minedojo_cache_dir = minedojo_cache_dir_raw.strip() or _DEFAULT_MINEDOJO_CACHE_DIR
     minedojo_dataset = (
@@ -152,6 +157,7 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     _collect_warnings(warnings, port_warnings)
     _collect_warnings(warnings, move_warnings)
     _collect_warnings(warnings, timeout_warnings)
+    _collect_warnings(warnings, llm_timeout_warnings)
 
     config = AgentConfig(
         ws_url=ws_url,
@@ -167,6 +173,7 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
             cache_dir=minedojo_cache_dir,
             request_timeout=minedojo_timeout,
         ),
+        llm_timeout_seconds=llm_timeout_seconds,
     )
 
     for warning in warnings:
