@@ -89,6 +89,14 @@ Python 側で LLM プランニングとアクション実行が行われます�
 フェーズ定義・遷移条件・ロールバック指針を整理しており、長期ジョブを中断しても
 安全に再開できるようチェックポイント設計の前提を共有しています。
 
+#### MineDojo ミッション連携
+
+* Python エージェントは行動タスクの分類結果から MineDojo ミッション ID を推論し、該当カテゴリでは `python/services/minedojo_client.py` を介してミッション情報とデモを取得します。
+* 取得したデモは `Actions.play_vpt_actions` に対して自動送信され、Mineflayer 側で低レベル操作を事前ロードします。同時に LLM コンテキストへミッション概要とデモ要約（アクション種別・件数）が注入されるため、計画生成時に具体的な事例を参照できます。
+* API 経由で MineDojo を利用する場合は `.env`（または環境変数）へ `MINEDOJO_API_KEY` を設定してください。ローカルデータセットを参照する場合は `MINEDOJO_DATASET_DIR` に JSON の配置ディレクトリ（`missions/mission_id.json`・`demos/mission_id.json`）を指定します。
+* キャッシュは `MINEDOJO_CACHE_DIR`（既定: `var/cache/minedojo`）へ保存されます。API 応答やデモ軌跡にはライセンス制限・個人データが含まれる可能性があるため、リポジトリへコミットしないでください。`.gitignore` にも除外設定を追加済みです。
+* 具体的なディレクトリ構成やデータ利用ポリシーは `docs/minedojo_integration.md` を参照してください。MineDojo 利用規約に従い、商用利用可否や二次配布の扱いをチーム内で確認してください。
+
 #### LangGraph 構造化ログとリカバリー
 
 * `python/utils/logging.py` に構造化ロギングユーティリティを追加し、LangGraph ノード ID・チェックポイント ID・イベントレベルを JSON 形式で出力します。`log_structured_event` を利用すると、ノード固有の `context` メタデータを辞書で渡せます。
@@ -195,6 +203,11 @@ python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --sect
 * `MOVE_GOAL_TOLERANCE`: moveTo コマンドで利用する GoalNear の許容距離（ブロック数）。既定値は `3` で、1～30 の範囲に丸められます。
 * `BOT_USERNAME`: ボットの表示名（例 `HelperBot`）
 * `AUTH_MODE`: `offline`（開発時推奨）/ `microsoft`
+* `MINEDOJO_API_BASE_URL`: MineDojo API のベース URL（既定: `https://api.minedojo.org/v1`）
+* `MINEDOJO_API_KEY`: MineDojo API キー。未設定の場合はローカルデータセットのみ参照します。
+* `MINEDOJO_DATASET_DIR`: ローカルに配置した MineDojo データセットのルートディレクトリ。`missions/` と `demos/` サブディレクトリを想定。
+* `MINEDOJO_CACHE_DIR`: API 応答やデモをキャッシュするディレクトリ（既定: `var/cache/minedojo`）
+* `MINEDOJO_REQUEST_TIMEOUT`: API リクエストのタイムアウト秒数（既定: `10.0`）。0 以下の値は警告の上で既定値に丸められます。
 
 ## 5. 使い方（ゲーム内）
 

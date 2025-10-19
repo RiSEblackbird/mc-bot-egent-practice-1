@@ -89,6 +89,9 @@ node-bot/coverage/
 # Skill library runtime storage（学習履歴やプレイヤー座標を含むため除外）
 var/skills/
 python/skills/*.runtime.json
+# MineDojo 連携で使用するキャッシュ/データセット（API 応答やデモ軌跡に秘匿情報が含まれる）
+var/cache/minedojo/
+var/datasets/minedojo/
 # Reflexion ログの永続化ファイル（失敗手順や復旧履歴に敏感情報が含まれるため除外）
 var/memory/
 # VPT 推論用のチェックポイントや推論キャッシュ（再配布禁止ライセンスに抵触する恐れがあるため除外）

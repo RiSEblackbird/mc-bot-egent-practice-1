@@ -22,6 +22,7 @@ from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 from websockets.server import serve
 
 from config import AgentConfig, load_agent_config
+from services.minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
 from services.skill_repository import SkillRepository
 from actions import Actions
 from bridge_ws import BotBridge
@@ -208,6 +209,13 @@ class AgentOrchestrator:
             label="素材収集",
         ),
     }
+    # MineDojo のミッション ID へ分類カテゴリをマッピングする。カテゴリ追加時に
+    # 参照することで、デモ取得の影響範囲を明示できるようにしている。
+    _MINEDOJO_MISSION_BINDINGS: Dict[str, str] = {
+        "mine": "obtain_diamond",
+        "farm": "harvest_wheat",
+        "build": "build_simple_house",
+    }
     # 現在位置や所持品などを確認してチャットへ報告するだけのステップは、
     # 移動や採取といったアクションとは別系統の「検出報告タスク」として扱い、
     # 進捗報告のテンプレートに流れ込まないように専用の分類を用意する。
@@ -282,6 +290,7 @@ class AgentOrchestrator:
         *,
         skill_repository: SkillRepository | None = None,
         config: AgentConfig | None = None,
+        minedojo_client: MineDojoClient | None = None,
     ) -> None:
         self.actions = actions
         self.memory = memory
@@ -304,6 +313,11 @@ class AgentOrchestrator:
         self._current_role_id: str = "generalist"
         self._pending_role: Optional[Tuple[str, Optional[str]]] = None
         self._shared_agents: Dict[str, Dict[str, Any]] = {}
+        # MineDojo クライアントを初期化し、テスト時にはスタブを差し込めるようにする。
+        self.minedojo_client = minedojo_client or MineDojoClient(self.config.minedojo)
+        self._active_minedojo_mission: Optional[MineDojoMission] = None
+        self._active_minedojo_demos: List[MineDojoDemonstration] = []
+        self._active_minedojo_mission_id: Optional[str] = None
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -513,6 +527,9 @@ class AgentOrchestrator:
                 {"id": self._current_role_id, "label": "汎用サポーター"},
             ),
         }
+        minedojo_context = self.memory.get("minedojo_context")
+        if minedojo_context:
+            snapshot["minedojo_support"] = minedojo_context
         reflection_context = self.memory.build_reflection_context()
         if reflection_context:
             snapshot["recent_reflections"] = reflection_context
@@ -1397,6 +1414,112 @@ class AgentOrchestrator:
         error_detail = resp.get("error") or "探索モードへの切り替えが Mineflayer 側で拒否されました"
         return False, error_detail
 
+    async def _attach_minedojo_context(self, category: str, step: str) -> None:
+        """分類カテゴリに応じて MineDojo のミッション/デモを準備する。"""
+
+        mission_id = self._MINEDOJO_MISSION_BINDINGS.get(category)
+        if not mission_id:
+            return
+
+        if not self.minedojo_client:
+            self.logger.info(
+                "MineDojo client is unavailable; skip context binding category=%s step='%s'",
+                category,
+                step,
+            )
+            return
+
+        if mission_id == self._active_minedojo_mission_id and self._active_minedojo_demos:
+            return
+
+        try:
+            mission = await self.minedojo_client.fetch_mission(mission_id)
+            demos = await self.minedojo_client.fetch_demonstrations(mission_id, limit=1)
+        except Exception:
+            self.logger.exception("failed to fetch MineDojo resources mission=%s", mission_id)
+            return
+
+        self._active_minedojo_mission = mission
+        self._active_minedojo_demos = demos
+        self._active_minedojo_mission_id = mission_id if (mission or demos) else None
+
+        context_payload = self._build_minedojo_context_payload(mission, demos)
+        if context_payload:
+            self.memory.set("minedojo_context", context_payload)
+
+        if demos:
+            await self._prime_actions_with_demo(mission_id, demos[0])
+
+    def _build_minedojo_context_payload(
+        self,
+        mission: Optional[MineDojoMission],
+        demos: List[MineDojoDemonstration],
+    ) -> Optional[Dict[str, Any]]:
+        """LLM プロンプトへ差し込む MineDojo 情報を整形する。"""
+
+        if not mission and not demos:
+            return None
+
+        payload: Dict[str, Any] = {}
+        if mission:
+            payload["mission"] = mission.to_prompt_payload()
+        if demos:
+            payload["demonstrations"] = [
+                self._format_minedojo_demo_for_context(demo) for demo in demos if demo
+            ]
+        return payload
+
+    def _format_minedojo_demo_for_context(self, demo: MineDojoDemonstration) -> Dict[str, Any]:
+        """デモを LLM 用に要約し、過剰なデータ転送を避ける。"""
+
+        action_types: List[str] = []
+        for action in list(demo.actions)[:3]:
+            if isinstance(action, dict):
+                label = str(action.get("type") or action.get("name") or "unknown")
+                action_types.append(label)
+        return {
+            "demo_id": demo.demo_id,
+            "summary": demo.summary,
+            "action_types": action_types,
+            "action_count": len(demo.actions),
+        }
+
+    async def _prime_actions_with_demo(
+        self, mission_id: str, demo: MineDojoDemonstration
+    ) -> None:
+        """取得したデモを Actions へ送信し、Mineflayer 側で事前ロードする。"""
+
+        if not hasattr(self.actions, "play_vpt_actions"):
+            return
+
+        if not demo.actions:
+            return
+
+        actions_payload = [dict(item) for item in demo.actions if isinstance(item, dict)]
+        if not actions_payload:
+            return
+
+        metadata = demo.to_metadata()
+        metadata["mission_id"] = mission_id
+        try:
+            resp = await self.actions.play_vpt_actions(actions_payload, metadata=metadata)
+        except Exception:
+            self.logger.exception("MineDojo demo preload failed mission=%s demo=%s", mission_id, demo.demo_id)
+            return
+
+        if resp.get("ok"):
+            self.memory.set(
+                "minedojo_last_demo_metadata",
+                {"mission_id": mission_id, "demo_id": demo.demo_id, "metadata": metadata},
+            )
+        else:
+            self.logger.warning(
+                "MineDojo demo preload command failed mission=%s demo=%s resp=%s",
+                mission_id,
+                demo.demo_id,
+                resp,
+            )
+
     async def _handle_action_task(
         self,
         category: str,
@@ -1424,6 +1547,7 @@ class AgentOrchestrator:
             step,
             rule.label or category,
         )
+        await self._attach_minedojo_context(category, step)
         handled, updated_target, failure_detail = await self._action_graph.run(
             category=category,
             step=step,

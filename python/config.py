@@ -20,6 +20,20 @@ _DEFAULT_AGENT_PORT = 9000
 _DEFAULT_MOVE_TARGET_RAW = "0,64,0"
 _DEFAULT_MOVE_TARGET = (0, 64, 0)
 _DEFAULT_SKILL_LIBRARY_PATH = "var/skills/library.json"
+_DEFAULT_MINEDOJO_API_BASE_URL = "https://api.minedojo.org/v1"
+_DEFAULT_MINEDOJO_CACHE_DIR = "var/cache/minedojo"
+_DEFAULT_MINEDOJO_REQUEST_TIMEOUT = 10.0
+
+
+@dataclass(frozen=True)
+class MineDojoConfig:
+    """MineDojo 連携に必要な接続情報とキャッシュ設定。"""
+
+    api_base_url: str
+    api_key: str | None
+    dataset_dir: str | None
+    cache_dir: str
+    request_timeout: float
 
 
 @dataclass(frozen=True)
@@ -32,6 +46,7 @@ class AgentConfig:
     default_move_target: Tuple[int, int, int]
     default_move_target_raw: str
     skill_library_path: str
+    minedojo: MineDojoConfig
 
 
 @dataclass(frozen=True)
@@ -84,6 +99,26 @@ def _parse_default_move_target(raw: str) -> Tuple[Tuple[int, int, int], List[str
         return _DEFAULT_MOVE_TARGET, warnings
 
 
+def _parse_positive_float(raw: str | None, default: float) -> Tuple[float, List[str]]:
+    """正の浮動小数点数を安全に解析する。"""
+
+    warnings: List[str] = []
+
+    if raw is None or raw.strip() == "":
+        return default, warnings
+
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError
+        return value, warnings
+    except ValueError:
+        warnings.append(
+            f"環境変数のタイムアウト値 '{raw}' が不正なため {default} 秒を使用します。"
+        )
+        return default, warnings
+
+
 def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     """プロセス環境から Python エージェントの設定を読み取る。"""
 
@@ -96,9 +131,27 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     move_target_raw = source.get("DEFAULT_MOVE_TARGET", _DEFAULT_MOVE_TARGET_RAW)
     move_target, move_warnings = _parse_default_move_target(move_target_raw)
     skill_library_path = source.get("SKILL_LIBRARY_PATH", _DEFAULT_SKILL_LIBRARY_PATH)
+    minedojo_api_base = source.get(
+        "MINEDOJO_API_BASE_URL", _DEFAULT_MINEDOJO_API_BASE_URL
+    )
+    minedojo_api_key = source.get("MINEDOJO_API_KEY")
+    minedojo_dataset_dir = source.get("MINEDOJO_DATASET_DIR")
+    minedojo_cache_dir_raw = source.get("MINEDOJO_CACHE_DIR", _DEFAULT_MINEDOJO_CACHE_DIR)
+    minedojo_timeout, timeout_warnings = _parse_positive_float(
+        source.get("MINEDOJO_REQUEST_TIMEOUT"), _DEFAULT_MINEDOJO_REQUEST_TIMEOUT
+    )
+
+    minedojo_cache_dir = minedojo_cache_dir_raw.strip() or _DEFAULT_MINEDOJO_CACHE_DIR
+    minedojo_dataset = (
+        minedojo_dataset_dir.strip() if minedojo_dataset_dir and minedojo_dataset_dir.strip() else None
+    )
+    minedojo_api_base = (
+        minedojo_api_base.strip() or _DEFAULT_MINEDOJO_API_BASE_URL
+    )
 
     _collect_warnings(warnings, port_warnings)
     _collect_warnings(warnings, move_warnings)
+    _collect_warnings(warnings, timeout_warnings)
 
     config = AgentConfig(
         ws_url=ws_url,
@@ -107,6 +160,13 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
         default_move_target=move_target,
         default_move_target_raw=move_target_raw,
         skill_library_path=skill_library_path.strip() or _DEFAULT_SKILL_LIBRARY_PATH,
+        minedojo=MineDojoConfig(
+            api_base_url=minedojo_api_base,
+            api_key=(minedojo_api_key.strip() if minedojo_api_key and minedojo_api_key.strip() else None),
+            dataset_dir=minedojo_dataset,
+            cache_dir=minedojo_cache_dir,
+            request_timeout=minedojo_timeout,
+        ),
     )
 
     for warning in warnings:
