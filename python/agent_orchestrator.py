@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from skills import SkillMatch
 from services.building_service import (
     BuildingPhase,
     advance_building_state,
@@ -58,6 +59,8 @@ class _ActionState(TypedDict, total=False):
     active_role: str
     role_transitioned: bool
     role_transition_reason: Optional[str]
+    skill_candidate: SkillMatch
+    skill_status: str
 
 
 class ActionGraph:
@@ -111,6 +114,41 @@ class ActionGraph:
                 "active_role": state.get("active_role", orchestrator.current_role),
                 "role_transitioned": False,
                 "role_transition_reason": None,
+                "skill_status": "none",
+            }
+
+        async def seek_skill(state: _ActionState) -> Dict[str, Any]:
+            category = state.get("category", "")
+            step = state["step"]
+            if not category:
+                return {"skill_status": "none"}
+            match = await orchestrator._find_skill_for_step(category, step)  # type: ignore[attr-defined]
+            if match is None:
+                return {"skill_status": "none"}
+            if match.unlocked:
+                if not hasattr(orchestrator.actions, "invoke_skill"):
+                    orchestrator.logger.info(  # type: ignore[attr-defined]
+                        "skill invocation skipped because Actions.invoke_skill is unavailable",
+                    )
+                    return {"skill_status": "none"}
+                handled, failure_detail = await orchestrator._execute_skill_match(match, step)  # type: ignore[attr-defined]
+                status = "handled" if handled else "failed"
+                return {
+                    "handled": handled,
+                    "failure_detail": failure_detail,
+                    "updated_target": state.get("last_target_coords"),
+                    "skill_candidate": match,
+                    "skill_status": status,
+                }
+            if not hasattr(orchestrator.actions, "begin_skill_exploration"):
+                orchestrator.logger.info(  # type: ignore[attr-defined]
+                    "skill exploration skipped because Actions.begin_skill_exploration is unavailable",
+                )
+                return {"skill_status": "none"}
+            return {
+                "skill_candidate": match,
+                "skill_status": "locked",
+                "updated_target": state.get("last_target_coords"),
             }
 
         async def apply_role_policy(state: _ActionState) -> Dict[str, Any]:
@@ -145,6 +183,24 @@ class ActionGraph:
             elif category == "equip":
                 module = "equip"
             return {"module": module}
+
+        async def trigger_exploration(state: _ActionState) -> Dict[str, Any]:
+            match = state.get("skill_candidate")
+            if not isinstance(match, SkillMatch):
+                return {
+                    "handled": False,
+                    "failure_detail": "探索対象のスキル候補が見つかりませんでした。",
+                    "updated_target": state.get("last_target_coords"),
+                    "skill_status": "failed",
+                }
+            handled, failure_detail = await orchestrator._begin_skill_exploration(match, state["step"])  # type: ignore[attr-defined]
+            status = "exploration" if handled else "failed"
+            return {
+                "handled": handled,
+                "failure_detail": failure_detail,
+                "updated_target": state.get("last_target_coords"),
+                "skill_status": status,
+            }
 
         async def handle_move(state: _ActionState) -> Dict[str, Any]:
             step = state["step"]
@@ -447,8 +503,10 @@ class ActionGraph:
             return {}
 
         graph.add_node("initialize", initialize)
+        graph.add_node("seek_skill", seek_skill)
         graph.add_node("apply_role_policy", apply_role_policy)
         graph.add_node("route_module", route_module)
+        graph.add_node("trigger_exploration", trigger_exploration)
         graph.add_node("handle_move", handle_move)
         graph.add_node("handle_equip", handle_equip)
         graph.add_node("handle_mining", handle_mining)
@@ -458,8 +516,19 @@ class ActionGraph:
         graph.add_node("finalize", finalize)
 
         graph.add_edge(START, "initialize")
-        graph.add_edge("initialize", "apply_role_policy")
+        graph.add_edge("initialize", "seek_skill")
         graph.add_edge("apply_role_policy", "route_module")
+        graph.add_conditional_edges(
+            "seek_skill",
+            lambda state: state.get("skill_status", "none"),
+            {
+                "handled": "finalize",
+                "failed": "finalize",
+                "locked": "trigger_exploration",
+                "exploration": "finalize",
+                "none": "apply_role_policy",
+            },
+        )
         graph.add_conditional_edges(
             "route_module",
             lambda state: state.get("module", "generic"),
@@ -478,6 +547,7 @@ class ActionGraph:
         graph.add_edge("handle_building", "finalize")
         graph.add_edge("handle_defense", "finalize")
         graph.add_edge("handle_generic", "finalize")
+        graph.add_edge("trigger_exploration", "finalize")
         graph.add_edge("finalize", END)
 
         return graph.compile()

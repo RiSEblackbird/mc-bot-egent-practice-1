@@ -12,6 +12,7 @@ import contextlib
 import json
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -20,10 +21,12 @@ from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 from websockets.server import serve
 
 from config import AgentConfig, load_agent_config
+from services.skill_repository import SkillRepository
 from actions import Actions
 from bridge_ws import BotBridge
 from memory import Memory
 from planner import PlanOut, compose_barrier_notification, plan
+from skills import SkillMatch
 from utils import setup_logger
 from agent_orchestrator import ActionGraph, ActionTaskRule, ChatTask
 
@@ -40,6 +43,7 @@ AGENT_WS_HOST = AGENT_CONFIG.agent_host
 AGENT_WS_PORT = AGENT_CONFIG.agent_port
 DEFAULT_MOVE_TARGET_RAW = AGENT_CONFIG.default_move_target_raw
 DEFAULT_MOVE_TARGET = AGENT_CONFIG.default_move_target
+SKILL_LIBRARY_PATH = AGENT_CONFIG.skill_library_path
 
 logger.info(
     "Agent configuration loaded (ws_url=%s, bind=%s:%s, default_target=%s)",
@@ -270,10 +274,20 @@ class AgentOrchestrator:
         actions: Actions,
         memory: Memory,
         *,
+        skill_repository: SkillRepository | None = None,
         config: AgentConfig | None = None,
     ) -> None:
         self.actions = actions
         self.memory = memory
+        repo = skill_repository
+        if repo is None:
+            seed_path = Path(__file__).resolve().parent / "skills" / "seed_library.json"
+            repo = SkillRepository(
+                SKILL_LIBRARY_PATH,
+                seed_path=str(seed_path),
+            )
+        # Voyager 互換のスキルライブラリを共有し、タスク実行前に再利用候補を即座に取得する。
+        self.skill_repository = repo
         self.queue: asyncio.Queue[ChatTask] = asyncio.Queue()
         self.config = config or AGENT_CONFIG
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
@@ -1044,6 +1058,69 @@ class AgentOrchestrator:
                 matches.append(keyword)
         return matches
 
+    async def _find_skill_for_step(
+        self,
+        category: str,
+        step: str,
+    ) -> Optional[SkillMatch]:
+        """ステップ文から再利用可能なスキルを検索する。"""
+
+        try:
+            return await self.skill_repository.match_skill(step, category=category)
+        except Exception:
+            self.logger.exception("skill matching failed category=%s step='%s'", category, step)
+            return None
+
+    async def _execute_skill_match(
+        self,
+        match: SkillMatch,
+        step: str,
+    ) -> Tuple[bool, Optional[str]]:
+        """既存スキルを Mineflayer 側へ再生指示し、結果を戻す。"""
+
+        if not hasattr(self.actions, "invoke_skill"):
+            self.logger.info("Actions.invoke_skill is unavailable; falling back to legacy execution flow")
+            return False, None
+
+        resp = await self.actions.invoke_skill(match.skill.identifier, context=step)
+        if resp.get("ok"):
+            await self.skill_repository.record_usage(match.skill.identifier, success=True)
+            self.memory.set(
+                "last_skill_usage",
+                {"skill_id": match.skill.identifier, "title": match.skill.title, "step": step},
+            )
+            return True, None
+
+        await self.skill_repository.record_usage(match.skill.identifier, success=False)
+        error_detail = resp.get("error") or "Mineflayer 側でスキル再生が拒否されました"
+        return False, f"スキル『{match.skill.title}』の再生に失敗しました: {error_detail}"
+
+    async def _begin_skill_exploration(
+        self,
+        match: SkillMatch,
+        step: str,
+    ) -> Tuple[bool, Optional[str]]:
+        """未習得スキルのため探索モードへ切り替える。"""
+
+        if not hasattr(self.actions, "begin_skill_exploration"):
+            self.logger.info("Actions.begin_skill_exploration is unavailable; skipping exploration mode")
+            return False, None
+
+        resp = await self.actions.begin_skill_exploration(
+            skill_id=match.skill.identifier,
+            description=match.skill.description,
+            step_context=step,
+        )
+        if resp.get("ok"):
+            self.memory.set(
+                "last_skill_exploration",
+                {"skill_id": match.skill.identifier, "title": match.skill.title, "step": step},
+            )
+            return True, None
+
+        error_detail = resp.get("error") or "探索モードへの切り替えが Mineflayer 側で拒否されました"
+        return False, error_detail
+
     async def _handle_action_task(
         self,
         category: str,
@@ -1369,7 +1446,13 @@ async def main() -> None:
     bridge = BotBridge(WS_URL)
     actions = Actions(bridge)
     mem = Memory()
-    orchestrator = AgentOrchestrator(actions, mem)
+    # 既定のスキル定義を JSON から読み込み、学習済みスキルとの差分を蓄積できるようにする。
+    seed_path = Path(__file__).resolve().parent / "skills" / "seed_library.json"
+    skill_repo = SkillRepository(
+        SKILL_LIBRARY_PATH,
+        seed_path=str(seed_path),
+    )
+    orchestrator = AgentOrchestrator(actions, mem, skill_repository=skill_repo)
     ws_server = AgentWebSocketServer(orchestrator)
 
     worker_task = asyncio.create_task(orchestrator.worker(), name="agent-worker")

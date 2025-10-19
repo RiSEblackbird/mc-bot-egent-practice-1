@@ -19,6 +19,7 @@ _DEFAULT_AGENT_HOST = "0.0.0.0"
 _DEFAULT_AGENT_PORT = 9000
 _DEFAULT_MOVE_TARGET_RAW = "0,64,0"
 _DEFAULT_MOVE_TARGET = (0, 64, 0)
+_DEFAULT_SKILL_LIBRARY_PATH = "var/skills/library.json"
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class AgentConfig:
     agent_port: int
     default_move_target: Tuple[int, int, int]
     default_move_target_raw: str
+    skill_library_path: str
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,7 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     agent_port, port_warnings = _parse_port(source.get("AGENT_WS_PORT"), _DEFAULT_AGENT_PORT)
     move_target_raw = source.get("DEFAULT_MOVE_TARGET", _DEFAULT_MOVE_TARGET_RAW)
     move_target, move_warnings = _parse_default_move_target(move_target_raw)
+    skill_library_path = source.get("SKILL_LIBRARY_PATH", _DEFAULT_SKILL_LIBRARY_PATH)
 
     _collect_warnings(warnings, port_warnings)
     _collect_warnings(warnings, move_warnings)
@@ -103,6 +106,7 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
         agent_port=agent_port,
         default_move_target=move_target,
         default_move_target_raw=move_target_raw,
+        skill_library_path=skill_library_path.strip() or _DEFAULT_SKILL_LIBRARY_PATH,
     )
 
     for warning in warnings:

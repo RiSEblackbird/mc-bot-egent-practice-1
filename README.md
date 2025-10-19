@@ -109,6 +109,12 @@ Python エージェントが呼び出す LLM は **OpenAI Responses API** を利
 `reasoning` パラメータが拒否されるため、Responses API の `reasoning.effort` と `text.verbosity` を併用し、
 gpt-5 系モデルに対して安定した JSON 応答と推論強度の指定を両立させています。
 
+#### スキルライブラリの活用
+
+- Python 側では `python/skills/seed_library.json` を初期値として読み込み、`SKILL_LIBRARY_PATH`（既定: `var/skills/library.json`）で指定した JSON に学習済みスキルの使用履歴を永続化します。
+- LangGraph のアクションノードはスキル名/カテゴリから既知スキルを検索し、再生可能な場合は `invokeSkill` コマンドを Mineflayer へ送信します。未習得の場合は `skillExplore` で探索モードへ切り替え、獲得候補を構造化ログへ残します。
+- Mineflayer 側では `registerSkill` / `invokeSkill` / `skillExplore` コマンドを受け取り、`SKILL_HISTORY_PATH`（既定: `var/skills/history.ndjson`）にスキル獲得履歴を NDJSON で追記します。ログは `level/event/context` の構造化形式で `stdout` にも出力されるため、可観測性ツールへの取り込みが容易です。
+
 ### 3.3 Docker Compose（Python + Node 同時ホットリロード）
 
 開発時に Python エージェントと Node ボットの両方をホットリロードで動かしたい場合は、プロジェクトルートに追加した `docker-compose.yml` を利用できます。

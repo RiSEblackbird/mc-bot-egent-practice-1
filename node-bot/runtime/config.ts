@@ -102,6 +102,9 @@ export interface BotRuntimeConfig {
   };
   agentBridge: AgentWebSocketResolution;
   moveGoalTolerance: MoveGoalToleranceResolution;
+  skills: {
+    historyPath: string;
+  };
 }
 
 export interface ConfigLoadResult {
@@ -130,6 +133,10 @@ export function loadBotRuntimeConfig(
     dockerDetected,
   );
 
+  const skillHistoryPathRaw = env.SKILL_HISTORY_PATH?.trim() ?? '';
+  const skillHistoryPath =
+    skillHistoryPathRaw.length > 0 ? skillHistoryPathRaw : 'var/skills/history.ndjson';
+
   const config: BotRuntimeConfig = {
     dockerDetected,
     minecraft: {
@@ -148,6 +155,9 @@ export function loadBotRuntimeConfig(
     },
     agentBridge: agentResolution,
     moveGoalTolerance: moveGoalToleranceResolution,
+    skills: {
+      historyPath: skillHistoryPath,
+    },
   };
 
   const warnings: string[] = [

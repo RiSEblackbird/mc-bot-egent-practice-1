@@ -86,3 +86,6 @@ Thumbs.db
 # Vitest cache / coverage
 node-bot/.vitest/
 node-bot/coverage/
+# Skill library runtime storage（学習履歴やプレイヤー座標を含むため除外）
+var/skills/
+python/skills/*.runtime.json

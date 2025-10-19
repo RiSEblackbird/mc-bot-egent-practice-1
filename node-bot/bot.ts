@@ -9,6 +9,9 @@ import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { access, appendFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { loadBotRuntimeConfig } from './runtime/config.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
@@ -46,6 +49,7 @@ const WS_PORT = runtimeConfig.websocket.port;
 const AGENT_WS_URL = runtimeConfig.agentBridge.url;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 const MINING_APPROACH_TOLERANCE = 1;
+const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -55,7 +59,10 @@ type CommandType =
   | 'equipItem'
   | 'gatherStatus'
   | 'mineOre'
-  | 'setAgentRole';
+  | 'setAgentRole'
+  | 'registerSkill'
+  | 'invokeSkill'
+  | 'skillExplore';
 
 // WebSocket で受信するメッセージの基本形。
 interface CommandPayload {
@@ -128,6 +135,15 @@ interface GeneralStatusSnapshot {
   formatted: string;
 }
 
+interface RegisteredSkill {
+  id: string;
+  title: string;
+  description: string;
+  steps: string[];
+  tags: string[];
+  createdAt: number;
+}
+
 interface FoodInfo {
   // minecraft-data 側の構造体では foodPoints / saturation 等が格納されている。
   // 本エージェントでは存在確認のみ行うため、詳細なフィールド定義は必須ではない。
@@ -151,6 +167,8 @@ let cautiousMovements: MovementsClass | null = null;
 let digPermissiveMovements: MovementsClass | null = null;
 const agentRoleState: AgentRoleState = createInitialAgentRoleState();
 const PRIMARY_AGENT_ID = 'primary';
+const skillRegistry = new Map<string, RegisteredSkill>();
+let skillHistoryInitialized = false;
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
@@ -197,6 +215,42 @@ function startBotLifecycle(): void {
  */
 function getActiveAgentRole(): AgentRoleDescriptor {
   return agentRoleState.activeRole;
+}
+
+async function ensureSkillHistorySink(): Promise<void> {
+  if (!SKILL_HISTORY_PATH || skillHistoryInitialized) {
+    return;
+  }
+  try {
+    await access(SKILL_HISTORY_PATH, fsConstants.F_OK);
+    skillHistoryInitialized = true;
+    return;
+  } catch {
+    try {
+      await mkdir(dirname(SKILL_HISTORY_PATH), { recursive: true });
+      await appendFile(SKILL_HISTORY_PATH, '');
+      skillHistoryInitialized = true;
+    } catch (error) {
+      console.error('[SkillLog] failed to prepare history sink', error);
+    }
+  }
+}
+
+function logSkillEvent(level: 'info' | 'warn', event: string, context: Record<string, unknown>): void {
+  const payload = {
+    level,
+    event,
+    timestamp: new Date().toISOString(),
+    context,
+  };
+  console.log(JSON.stringify(payload));
+  if (!SKILL_HISTORY_PATH) {
+    return;
+  }
+  ensureSkillHistorySink()
+    .then(() => appendFile(SKILL_HISTORY_PATH, `${JSON.stringify(payload)}
+`))
+    .catch((error) => console.error('[SkillLog] failed to append event', error));
 }
 
 /**
@@ -433,6 +487,10 @@ function scheduleReconnect(): void {
 // 初回接続を起動
 startBotLifecycle();
 
+if (SKILL_HISTORY_PATH) {
+  void ensureSkillHistorySink();
+}
+
 /**
  * コマンド実行時に利用可能な Bot インスタンスを取得する。未接続の場合は null を返す。
  */
@@ -514,12 +572,110 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleMineOreCommand(args);
     case 'setAgentRole':
       return handleSetAgentRoleCommand(args);
+    case 'registerSkill':
+      return handleRegisterSkillCommand(args);
+    case 'invokeSkill':
+      return handleInvokeSkillCommand(args);
+    case 'skillExplore':
+      return handleSkillExploreCommand(args);
     default: {
       const exhaustiveCheck: never = type;
       void exhaustiveCheck;
       return { ok: false, error: 'Unknown command type' };
     }
   }
+}
+
+// ---- skill コマンド処理 ----
+function handleRegisterSkillCommand(args: Record<string, unknown>): CommandResponse {
+  const skillId = typeof args.skillId === 'string' ? args.skillId.trim() : '';
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  const description = typeof args.description === 'string' ? args.description.trim() : '';
+  const stepsRaw = Array.isArray(args.steps) ? args.steps : [];
+  const steps: string[] = stepsRaw
+    .filter((step): step is string => typeof step === 'string' && step.trim().length > 0)
+    .map((step) => step.trim());
+  const tagsRaw = Array.isArray(args.tags) ? args.tags : [];
+  const tags: string[] = tagsRaw
+    .filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+    .map((tag) => tag.trim());
+
+  if (!skillId || !title || !description || steps.length === 0) {
+    return { ok: false, error: 'Invalid skill registration payload' };
+  }
+
+  const record: RegisteredSkill = {
+    id: skillId,
+    title,
+    description,
+    steps,
+    tags,
+    createdAt: Date.now(),
+  };
+
+  skillRegistry.set(skillId, record);
+  logSkillEvent('info', 'skill.registered', {
+    skillId,
+    title,
+    stepCount: steps.length,
+    tags,
+  });
+
+  return { ok: true, data: { registered: true } };
+}
+
+function handleInvokeSkillCommand(args: Record<string, unknown>): CommandResponse {
+  const skillId = typeof args.skillId === 'string' ? args.skillId.trim() : '';
+  const context = typeof args.context === 'string' ? args.context : '';
+
+  if (!skillId) {
+    return { ok: false, error: 'skillId is required' };
+  }
+
+  const record = skillRegistry.get(skillId);
+  if (!record) {
+    logSkillEvent('warn', 'skill.invoke.missing', { skillId, context });
+    return { ok: false, error: `Skill ${skillId} is not registered` };
+  }
+
+  logSkillEvent('info', 'skill.invoke', {
+    skillId,
+    title: record.title,
+    context,
+    stepCount: record.steps.length,
+  });
+
+  const activeBot = getActiveBot();
+  if (activeBot) {
+    activeBot.chat(
+      `[Skill] ${record.title} を再生します。登録ステップ数: ${record.steps.length}`,
+    );
+  }
+
+  return { ok: true, data: { steps: record.steps } };
+}
+
+function handleSkillExploreCommand(args: Record<string, unknown>): CommandResponse {
+  const skillId = typeof args.skillId === 'string' ? args.skillId.trim() : '';
+  const description = typeof args.description === 'string' ? args.description.trim() : '';
+  const context = typeof args.context === 'string' ? args.context : '';
+
+  if (!skillId || !description) {
+    return { ok: false, error: 'Invalid exploration payload' };
+  }
+
+  logSkillEvent('info', 'skill.explore', {
+    skillId,
+    description,
+    context,
+  });
+
+  const activeBot = getActiveBot();
+  if (activeBot) {
+    activeBot.chat(`[Skill] ${skillId} の探索を開始します。ヒント: ${description}`);
+  }
+
+  return { ok: true, data: { exploring: skillId } };
 }
 
 // ---- chat コマンド処理 ----
