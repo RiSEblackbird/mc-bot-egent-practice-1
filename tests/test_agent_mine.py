@@ -96,13 +96,14 @@ def test_mine_skips_when_suitable_pickaxe_exists(
     backlog: List[Dict[str, str]] = []
 
     async def runner() -> None:
-        handled, _ = await orchestrator._handle_action_task(
+        handled, _, failure = await orchestrator._handle_action_task(
             "mine",
             "近くのダイヤモンド鉱石を採掘して",
             last_target_coords=None,
             backlog=backlog,
         )
         assert handled is True
+        assert failure is None
 
     asyncio.run(runner())
 
@@ -135,13 +136,14 @@ def test_mine_continues_when_pickaxe_missing(
     backlog: List[Dict[str, str]] = []
 
     async def runner() -> None:
-        handled, _ = await orchestrator._handle_action_task(
+        handled, _, failure = await orchestrator._handle_action_task(
             "mine",
             "レッドストーン鉱石を掘って",
             last_target_coords=None,
             backlog=backlog,
         )
         assert handled is True
+        assert failure is None
 
     asyncio.run(runner())
 
