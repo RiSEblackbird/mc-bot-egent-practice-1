@@ -66,6 +66,7 @@ class ActionTaskRule:
     hints: Tuple[str, ...] = ()
     label: str = ""
     implemented: bool = False
+    priority: int = 0
 
 
 class AgentOrchestrator:
@@ -113,6 +114,7 @@ class AgentOrchestrator:
             ),
             label="指定地点への移動",
             implemented=True,
+            priority=15,
         ),
         "mine": ActionTaskRule(
             keywords=(
@@ -123,6 +125,7 @@ class AgentOrchestrator:
                 "ブランチ",
             ),
             label="採掘作業",
+            priority=10,
         ),
         "farm": ActionTaskRule(
             keywords=(
@@ -180,6 +183,7 @@ class AgentOrchestrator:
             ),
             label="装備持ち替え",
             implemented=True,
+            priority=20,
         ),
         "deliver": ActionTaskRule(
             keywords=(
@@ -733,16 +737,68 @@ class AgentOrchestrator:
     def _classify_action_task(self, text: str) -> Optional[str]:
         """行動系タスクのカテゴリを判定し、保留リスト整理に利用する。"""
 
-        normalized = text.replace(" ", "").replace("　", "")
-        for category, rule in self._ACTION_TASK_RULES.items():
-            if self._match_keywords(normalized, rule.keywords):
-                return category
-        return None
+        segments = self._split_action_segments(text)
+        best_category: Optional[str] = None
+        best_score: Optional[Tuple[int, int, int, int]] = None
+
+        for order_index, (category, rule) in enumerate(self._ACTION_TASK_RULES.items()):
+            # 各カテゴリ候補を優先度→一致キーワード数→キーワード長→定義順で採点する。
+            matched_keywords = set()
+            longest_keyword = 0
+
+            for segment in segments:
+                matches = self._collect_keyword_matches(segment, rule.keywords)
+                if not matches:
+                    continue
+
+                matched_keywords.update(matches)
+                segment_longest = max(len(keyword) for keyword in matches)
+                longest_keyword = max(longest_keyword, segment_longest)
+
+            if not matched_keywords:
+                continue
+
+            score = (
+                rule.priority,
+                len(matched_keywords),
+                longest_keyword,
+                -order_index,
+            )
+            if best_score is None or score > best_score:
+                best_score = score
+                best_category = category
+
+        return best_category
 
     def _match_keywords(self, text: str, keywords: Tuple[str, ...]) -> bool:
         """任意のキーワードが文中に含まれるかを評価するヘルパー。"""
 
         return any(keyword and keyword in text for keyword in keywords)
+
+    def _split_action_segments(self, text: str) -> Tuple[str, ...]:
+        """句読点や改行を基準にアクション指示を分割し、個別判定に役立てる。"""
+
+        separators = r"[、。,，,\n]+"
+        parts = [segment.strip() for segment in re.split(separators, text) if segment.strip()]
+        if not parts:
+            return (text,)
+        return tuple(parts)
+
+    def _collect_keyword_matches(
+        self, text: str, keywords: Tuple[str, ...]
+    ) -> List[str]:
+        """指定した文とキーワード群の一致候補を列挙し、重み付けに利用する。"""
+
+        compact = text.replace(" ", "").replace("　", "")
+        compact_lower = compact.lower()
+        matches: List[str] = []
+        for keyword in keywords:
+            normalized_keyword = keyword.replace(" ", "").replace("　", "")
+            if not normalized_keyword:
+                continue
+            if normalized_keyword in compact or normalized_keyword.lower() in compact_lower:
+                matches.append(keyword)
+        return matches
 
     async def _handle_action_task(
         self,
