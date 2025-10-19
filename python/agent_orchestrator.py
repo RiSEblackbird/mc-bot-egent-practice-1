@@ -427,7 +427,50 @@ class ActionGraph:
                     "failure_detail": None,
                 }
 
-            error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
+            error_detail_raw = resp.get("error") or "Mineflayer 側の理由不明な拒否"
+            error_detail = str(error_detail_raw)
+            normalized_error = error_detail.lower()
+            if "requested item is not available in inventory" in normalized_error:
+                # Mineflayer 側で装備対象が欠品している場合は、即座に最新の所持品を
+                # 取得し直してメモリへ反映する。これにより障壁通知や再計画時の
+                # コンテキストへ「ツルハシを持っていない」という事実を正確に渡せる。
+                retry_refresh_ok, retry_inventory, retry_error = await _refresh_inventory_snapshot(
+                    orchestrator
+                )
+                if not retry_refresh_ok:
+                    # 所持品の再取得にも失敗した場合は、以降の判断材料として誤情報が
+                    # 残らないよう関連メモリをリセットしておく。
+                    orchestrator.memory.set("inventory", "所持品の再取得に失敗しました。")  # type: ignore[attr-defined]
+                    orchestrator.memory.set("inventory_detail", {})  # type: ignore[attr-defined]
+
+                label = item_name or tool_type or "指定装備"
+                if retry_refresh_ok:
+                    pickaxe_hint = ""
+                    if isinstance(retry_inventory, dict):
+                        pickaxes = retry_inventory.get("pickaxes")
+                        if isinstance(pickaxes, list) and not pickaxes:
+                            pickaxe_hint = "（ツルハシが不足しています）"
+                    reason = (
+                        f"装備対象『{label}』がインベントリから見つからず、計画を続行できません。"
+                        f"補充してから再度指示してください。{pickaxe_hint}"
+                    )
+                else:
+                    detail = retry_error or "所持品の状態を確認できませんでした"
+                    reason = (
+                        f"装備対象『{label}』がインベントリで欠品しており、所持品の再取得にも"
+                        f"失敗しました（{detail}）。"
+                    )
+
+                await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
+                    step,
+                    reason,
+                )
+                return {
+                    "handled": False,
+                    "updated_target": state.get("last_target_coords"),
+                    "failure_detail": reason,
+                }
+
             return {
                 "handled": False,
                 "updated_target": state.get("last_target_coords"),

@@ -1013,6 +1013,11 @@ class AgentOrchestrator:
             return
 
         context = self._build_context_snapshot()
+        inventory_detail = self.memory.get("inventory_detail")
+        # 所持品詳細を replan コンテキストへ含めることで、直前の装備失敗で
+        # ツルハシが不足しているなどの状況を LLM へ明確に伝えられる。
+        if inventory_detail is not None:
+            context["inventory_detail"] = inventory_detail
         remaining_text = "、".join(remaining_steps) if remaining_steps else ""
         replan_instruction = (
             f"手順「{failed_step}」の実行に失敗しました（{failure_reason}）。"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -53,6 +54,18 @@ class ReplanActions:
         )
         return {"ok": False, "error": "pickaxe not equipped"}
 
+    async def gather_status(self, kind: str) -> Dict[str, Any]:
+        if kind != "inventory":
+            return {"ok": False, "error": f"unsupported status kind: {kind}"}
+        return {
+            "ok": True,
+            "data": {
+                "formatted": "所持品は空です。",
+                "items": [],
+                "pickaxes": [],
+            },
+        }
+
     async def equip_item(
         self,
         *,
@@ -71,6 +84,52 @@ class ReplanActions:
 
     async def move_to(self, x: int, y: int, z: int) -> Dict[str, bool]:
         return {"ok": True}
+
+
+class EquipFailureActions:
+    """装備失敗シナリオを再現し、インベントリ更新フローを検証するスタブ。"""
+
+    def __init__(self, snapshots: List[Dict[str, Any]]) -> None:
+        self.say_messages: List[str] = []
+        self.equip_calls: List[Dict[str, Optional[str]]] = []
+        self.gather_calls: List[str] = []
+        self._snapshots = [copy.deepcopy(snapshot) for snapshot in snapshots]
+        self._snapshot_index = 0
+
+    async def say(self, text: str) -> Dict[str, bool]:
+        self.say_messages.append(text)
+        return {"ok": True}
+
+    async def gather_status(self, kind: str) -> Dict[str, Any]:
+        if kind != "inventory":
+            return {"ok": False, "error": f"unsupported status kind: {kind}"}
+
+        self.gather_calls.append(kind)
+        index = self._snapshot_index
+        if index >= len(self._snapshots):
+            index = len(self._snapshots) - 1
+        snapshot = copy.deepcopy(self._snapshots[index])
+        self._snapshot_index = min(self._snapshot_index + 1, len(self._snapshots))
+        return {"ok": True, "data": snapshot}
+
+    async def equip_item(
+        self,
+        *,
+        tool_type: Optional[str] = None,
+        item_name: Optional[str] = None,
+        destination: str = "hand",
+    ) -> Dict[str, Any]:
+        self.equip_calls.append(
+            {
+                "tool_type": tool_type,
+                "item_name": item_name,
+                "destination": destination,
+            }
+        )
+        return {
+            "ok": False,
+            "error": "Requested item is not available in inventory",
+        }
 
 
 def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,14 +166,89 @@ def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert len(actions.mine_calls) == 1
     assert actions.mine_calls[0]["targets"]
-    assert len(actions.say_messages) == 2
+    assert actions.say_messages, "障壁メッセージが送信されていません"
     assert actions.say_messages[0].startswith("障壁")
-    assert actions.say_messages[1] == "代替プランで進めます。"
+    assert any(msg == "代替プランで進めます。" for msg in actions.say_messages)
+    assert replan_prompts and "失敗" in replan_prompts[0]
+
+
+def test_equip_failure_refreshes_inventory_and_requests_replan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """装備欠品で障壁を報告しつつ、最新インベントリを共有して再計画する。"""
+
+    first_snapshot = {
+        "formatted": "所持品は 1 種類（ツルハシ 1 本）を確認しました。",
+        "items": [
+            {
+                "slot": 0,
+                "name": "iron_pickaxe",
+                "displayName": "Iron Pickaxe",
+                "count": 1,
+                "enchantments": [],
+            }
+        ],
+        "pickaxes": [
+            {
+                "slot": 0,
+                "name": "iron_pickaxe",
+                "displayName": "Iron Pickaxe",
+                "count": 1,
+                "enchantments": [],
+            }
+        ],
+    }
+    second_snapshot = {
+        "formatted": "所持品は空です。",
+        "items": [],
+        "pickaxes": [],
+    }
+
+    actions = EquipFailureActions([first_snapshot, second_snapshot])
+    memory = Memory()
+    orchestrator = AgentOrchestrator(actions, memory)
+
+    barrier_contexts: List[Dict[str, Any]] = []
+
+    async def fake_barrier(step: str, reason: str, context: Dict[str, Any]) -> str:
+        barrier_contexts.append(context)
+        return f"障壁: {step} / {reason}"
+
+    replan_messages: List[str] = []
+    replan_contexts: List[Dict[str, Any]] = []
+
+    async def fake_plan(message: str, context: Dict[str, Any]) -> PlanOut:
+        replan_messages.append(message)
+        replan_contexts.append(context)
+        return PlanOut(
+            plan=["チェストから代替の資材を探す"],
+            resp="在庫不足を確認しました。",
+        )
+
+    monkeypatch.setattr("agent.compose_barrier_notification", fake_barrier)
+    monkeypatch.setattr("agent.plan", fake_plan)
+
+    plan_out = PlanOut(
+        plan=["採掘用のツルハシを装備して", "近くのダイヤモンド鉱石を採掘する"],
+        resp="",
+    )
+
+    async def runner() -> None:
+        await orchestrator._execute_plan(plan_out)
+
+    asyncio.run(runner())
+
     assert actions.equip_calls == [
         {"tool_type": "pickaxe", "item_name": None, "destination": "hand"}
     ]
-    assert replan_prompts and "失敗" in replan_prompts[0]
-
+    assert actions.gather_calls == ["inventory", "inventory"]
+    assert len(actions.say_messages) >= 2
+    assert actions.say_messages[0].startswith("障壁")
+    assert actions.say_messages[-1] == "在庫不足を確認しました。"
+    assert replan_messages and "失敗" in replan_messages[0]
+    assert replan_contexts and replan_contexts[0]["inventory_detail"] == second_snapshot
+    assert memory.get("inventory_detail") == second_snapshot
+    assert barrier_contexts and barrier_contexts[0]["queue_backlog"] == 0
 
 def test_plan_timeout_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM タイムアウト時にフォールバックプランと優先度昇格が行われる。"""
