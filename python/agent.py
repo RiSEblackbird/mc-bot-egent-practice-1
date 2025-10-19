@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -21,6 +20,7 @@ from websockets import WebSocketServerProtocol
 from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 from websockets.server import serve
 
+from config import AgentConfig, load_agent_config
 from actions import Actions
 from bridge_ws import BotBridge
 from memory import Memory
@@ -31,48 +31,23 @@ logger = setup_logger("agent")
 
 load_dotenv()
 
-# --- 環境変数の読み込み ----------------------------------------------------
+# --- 設定の読み込み --------------------------------------------------------
 
-WS_URL = os.getenv("WS_URL", "ws://127.0.0.1:8765")
-AGENT_WS_HOST = os.getenv("AGENT_WS_HOST", "0.0.0.0")
-DEFAULT_MOVE_TARGET_RAW = os.getenv("DEFAULT_MOVE_TARGET", "0,64,0")
+_CONFIG_RESULT = load_agent_config()
+AGENT_CONFIG: AgentConfig = _CONFIG_RESULT.config
+WS_URL = AGENT_CONFIG.ws_url
+AGENT_WS_HOST = AGENT_CONFIG.agent_host
+AGENT_WS_PORT = AGENT_CONFIG.agent_port
+DEFAULT_MOVE_TARGET_RAW = AGENT_CONFIG.default_move_target_raw
+DEFAULT_MOVE_TARGET = AGENT_CONFIG.default_move_target
 
-
-def _parse_port(raw: Optional[str], default: int) -> int:
-    """環境変数からポート番号を安全に読み取る。"""
-
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-        if value <= 0 or value > 65535:
-            raise ValueError
-        return value
-    except ValueError:
-        logger.warning("環境変数のポート値 '%s' が不正なため %d を使用します。", raw, default)
-        return default
-
-
-AGENT_WS_PORT = _parse_port(os.getenv("AGENT_WS_PORT"), 9000)
-
-
-def _parse_default_move_target(raw: str) -> Tuple[int, int, int]:
-    """環境変数から読み込んだ座標文字列を整数タプルへ変換する。"""
-
-    try:
-        parts = [int(part.strip()) for part in raw.split(",")]
-        if len(parts) != 3:
-            raise ValueError
-        return parts[0], parts[1], parts[2]
-    except Exception:
-        logger.warning(
-            "DEFAULT_MOVE_TARGET='%s' の解析に失敗したため (0, 64, 0) を採用します。",
-            raw,
-        )
-        return (0, 64, 0)
-
-
-DEFAULT_MOVE_TARGET = _parse_default_move_target(DEFAULT_MOVE_TARGET_RAW)
+logger.info(
+    "Agent configuration loaded (ws_url=%s, bind=%s:%s, default_target=%s)",
+    WS_URL,
+    AGENT_WS_HOST,
+    AGENT_WS_PORT,
+    DEFAULT_MOVE_TARGET,
+)
 
 
 @dataclass
@@ -275,11 +250,19 @@ class AgentOrchestrator:
         (("松明", "たいまつ", "torch"), {"item_name": "torch"}),
     )
 
-    def __init__(self, actions: Actions, memory: Memory) -> None:
+    def __init__(
+        self,
+        actions: Actions,
+        memory: Memory,
+        *,
+        config: AgentConfig | None = None,
+    ) -> None:
         self.actions = actions
         self.memory = memory
         self.queue: asyncio.Queue[ChatTask] = asyncio.Queue()
-        self.default_move_target = DEFAULT_MOVE_TARGET
+        self.config = config or AGENT_CONFIG
+        # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
+        self.default_move_target = self.config.default_move_target
         self.logger = setup_logger("agent.orchestrator")
 
     async def enqueue_chat(self, username: str, message: str) -> None:
