@@ -159,11 +159,23 @@ let lastHungerWarningAt = 0;
 let lastMoveTarget: { x: number; y: number; z: number } | null = null;
 let lastForcedMoveAt = 0;
 let lastForcedMoveLoggedAt = 0;
+let cautiousMovements: MovementsClass | null = null;
+let digPermissiveMovements: MovementsClass | null = null;
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
 const FORCED_MOVE_MAX_RETRIES = 2;
 const FORCED_MOVE_RETRY_DELAY_MS = 300;
+
+// ブロック破壊を避けたルート探索を優先させるためのコスト設定。
+const DIGGING_DISABLED_COST = 96;
+const DIGGING_ENABLED_COST = 1;
+
+// MovementsClass を拡張して mineflayer-pathfinder の内部プロパティへアクセスできるようにする補助型。
+type MutableMovements = MovementsClass & {
+  canDig?: boolean;
+  digCost?: number;
+};
 
 const STARVATION_FOOD_LEVEL = 0;
 const HUNGER_WARNING_COOLDOWN_MS = 30_000;
@@ -223,13 +235,18 @@ function registerBotEventHandlers(targetBot: Bot): void {
     cachedFoodsByName = ((mcData as unknown as { foodsByName?: FoodDictionary }).foodsByName) ?? {};
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
-    const defaultMove = new MovementsWithData(targetBot, mcData);
+    const digFriendlyMovements = new MovementsWithData(targetBot, mcData);
+    configureMovementProfile(digFriendlyMovements, true);
+    digPermissiveMovements = digFriendlyMovements;
+
+    const cautiousMovementProfile = new MovementsWithData(targetBot, mcData);
+    configureMovementProfile(cautiousMovementProfile, false);
+    cautiousMovements = cautiousMovementProfile;
+
     // Paper 1.21.x ではパルクールやダッシュを多用すると "moved wrongly" 警告が増えるが、
-    // 危険地帯での生存性を優先して俊敏な動きを維持したいので、敢えて高機動モードを有効化する。
-    // ※警告は出力される場合があるが、アクロバットな行動を阻害しないことを重視するため許容する。
-    defaultMove.allowParkour = true;
-    defaultMove.allowSprinting = true;
-    targetBot.pathfinder.setMovements(defaultMove);
+    // 危険地帯での生存性を優先して俊敏な動きを維持したいので、敢えて高機動モードを維持する。
+    targetBot.pathfinder.setMovements(cautiousMovementProfile);
+    console.log('[Bot] movement profiles initialized (cautious default / digging fallback).');
     targetBot.chat('起動しました。（Mineflayer）');
   });
 
@@ -414,6 +431,28 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
+ * Mineflayer の経路探索に用いる Movements のパラメータを統一的に調整する。
+ *
+ * ここで掘削可否や移動コストを明示的に設定しておくことで、
+ * 既存の pathfinder.goto 呼び出し側が余計な知識を持たずに済む。
+ */
+function configureMovementProfile(movements: MovementsClass, allowDigging: boolean): void {
+  const mutable = movements as MutableMovements;
+  mutable.allowParkour = true;
+  mutable.allowSprinting = true;
+  mutable.canDig = allowDigging;
+
+  if (allowDigging) {
+    mutable.digCost = DIGGING_ENABLED_COST;
+    return;
+  }
+
+  // 掘削不可の状態では掘る場合のコストを大きく設定し、AI が安易に壁を壊す選択を避ける。
+  const currentCost = mutable.digCost ?? DIGGING_ENABLED_COST;
+  mutable.digCost = Math.max(currentCost, DIGGING_DISABLED_COST);
+}
+
+/**
  * moveTo コマンドで利用する到達許容距離（ブロック数）。
  *
  * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
@@ -437,6 +476,59 @@ function shouldRetryDueToForcedMove(error: unknown): boolean {
   return message.includes('GoalChanged');
 }
 
+/**
+ * mineflayer-pathfinder が到達経路を見つけられなかった際の例外かどうかを判別する。
+ *
+ * 表記ゆれ（"No path"・"No path to goal" 等）を包含するため、小文字化した部分一致で判定する。
+ */
+function isNoPathError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes('no path');
+}
+
+/**
+ * 指定した Movements プロファイルを適用した状態で pathfinder.goto を実行し、
+ * forcedMove に伴う GoalChanged エラーが発生した場合は所定回数リトライする。
+ */
+async function gotoWithForcedMoveRetry(
+  targetBot: Bot,
+  goal: InstanceType<typeof goals.GoalNear>,
+  movements: MovementsClass,
+): Promise<void> {
+  const { pathfinder: activePathfinder } = targetBot;
+  const previousMovements = activePathfinder.movements;
+  const shouldRestoreMovements = previousMovements !== movements;
+
+  if (shouldRestoreMovements) {
+    activePathfinder.setMovements(movements);
+  }
+
+  try {
+    for (let attempt = 0; attempt <= FORCED_MOVE_MAX_RETRIES; attempt++) {
+      try {
+        await activePathfinder.goto(goal);
+        return;
+      } catch (error) {
+        if (shouldRetryDueToForcedMove(error) && attempt < FORCED_MOVE_MAX_RETRIES) {
+          console.warn(
+            `[MoveToCommand] retrying due to forcedMove correction (attempt ${attempt + 1}/${FORCED_MOVE_MAX_RETRIES})`,
+          );
+          await delay(FORCED_MOVE_RETRY_DELAY_MS);
+          continue;
+        }
+
+        throw error;
+      }
+    }
+  } finally {
+    if (shouldRestoreMovements) {
+      activePathfinder.setMovements(previousMovements);
+    }
+  }
+
+  throw new Error('Pathfinding failed after forcedMove retries');
+}
+
 async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
   const x = Number(args.x);
   const y = Number(args.y);
@@ -456,31 +548,38 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
 
   lastMoveTarget = { x, y, z };
   const goal = new goals.GoalNear(x, y, z, MOVE_GOAL_TOLERANCE);
+  const preferredMovements = cautiousMovements ?? activeBot.pathfinder.movements;
+  const fallbackMovements = digPermissiveMovements;
 
-  for (let attempt = 0; attempt <= FORCED_MOVE_MAX_RETRIES; attempt++) {
-    try {
-      await activeBot.pathfinder.goto(goal);
-      const { position } = activeBot.entity;
-      console.log(
-        `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE}`,
+  try {
+    await gotoWithForcedMoveRetry(activeBot, goal, preferredMovements);
+    const { position } = activeBot.entity;
+    console.log(
+      `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE} profile=cautious`,
+    );
+    return { ok: true };
+  } catch (primaryError) {
+    if (isNoPathError(primaryError) && fallbackMovements) {
+      console.warn(
+        '[MoveToCommand] no walkable route found without digging. Retrying with digging-enabled fallback profile.',
       );
-      return { ok: true };
-    } catch (error) {
-      if (shouldRetryDueToForcedMove(error) && attempt < FORCED_MOVE_MAX_RETRIES) {
-        console.warn(
-          `[MoveToCommand] retrying due to forcedMove correction (attempt ${attempt + 1}/${FORCED_MOVE_MAX_RETRIES})`,
+
+      try {
+        await gotoWithForcedMoveRetry(activeBot, goal, fallbackMovements);
+        const { position } = activeBot.entity;
+        console.log(
+          `[MoveToCommand] fallback pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE} profile=dig-enabled`,
         );
-        await delay(FORCED_MOVE_RETRY_DELAY_MS);
-        continue;
+        return { ok: true };
+      } catch (fallbackError) {
+        console.error('[Pathfinder] dig-enabled fallback also failed', fallbackError);
+        return { ok: false, error: 'Pathfinding failed' };
       }
-
-      console.error('[Pathfinder] failed to move', error);
-      return { ok: false, error: 'Pathfinding failed' };
     }
-  }
 
-  console.error('[Pathfinder] exhausted forcedMove retries without success');
-  return { ok: false, error: 'Pathfinding failed' };
+    console.error('[Pathfinder] failed to move', primaryError);
+    return { ok: false, error: 'Pathfinding failed' };
+  }
 }
 
 /**
