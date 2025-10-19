@@ -91,3 +91,7 @@ var/skills/
 python/skills/*.runtime.json
 # Reflexion ログの永続化ファイル（失敗手順や復旧履歴に敏感情報が含まれるため除外）
 var/memory/
+# VPT 推論用のチェックポイントや推論キャッシュ（再配布禁止ライセンスに抵触する恐れがあるため除外）
+var/vpt/
+python/vpt_cache/
+python/services/vpt_checkpoints/

@@ -51,6 +51,23 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.minecraft.port).toBe(25565);
     expect(config.minecraft.username).toBe('HelperBot');
     expect(config.agentBridge.url).toBe('ws://python-agent:9000');
+    expect(config.control.mode).toBe('command');
+    expect(config.control.vpt.tickIntervalMs).toBeGreaterThan(0);
+    expect(warnings).toBeInstanceOf(Array);
+  });
+
+  it('VPT 関連の環境変数を解釈して警告を集約する', () => {
+    const env = {
+      CONTROL_MODE: 'vpt',
+      VPT_TICK_INTERVAL_MS: '15',
+      VPT_MAX_SEQUENCE_LENGTH: '500',
+    } as NodeJS.ProcessEnv;
+
+    const { config, warnings } = loadBotRuntimeConfig(env, fakeDeps);
+
+    expect(config.control.mode).toBe('vpt');
+    expect(config.control.vpt.tickIntervalMs).toBe(15);
+    expect(config.control.vpt.maxSequenceLength).toBe(500);
     expect(warnings).toBeInstanceOf(Array);
   });
 });

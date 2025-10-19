@@ -12,6 +12,7 @@ from .building_service import (
     restore_checkpoint,
     rollback_building_state,
 )
+from .vpt_controller import VPTController, VPTModelSpec
 
 __all__ = [
     "BuildingCheckpoint",
@@ -23,4 +24,6 @@ __all__ = [
     "plan_material_procurement",
     "restore_checkpoint",
     "rollback_building_state",
+    "VPTController",
+    "VPTModelSpec",
 ]
