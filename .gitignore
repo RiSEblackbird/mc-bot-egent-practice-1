@@ -89,3 +89,5 @@ node-bot/coverage/
 # Skill library runtime storage（学習履歴やプレイヤー座標を含むため除外）
 var/skills/
 python/skills/*.runtime.json
+# Reflexion ログの永続化ファイル（失敗手順や復旧履歴に敏感情報が含まれるため除外）
+var/memory/

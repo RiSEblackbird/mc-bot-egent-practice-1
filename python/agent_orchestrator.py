@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -29,6 +29,54 @@ class ChatTask:
 
     username: str
     message: str
+
+
+def build_reflection_prompt(
+    failed_step: str,
+    failure_reason: str,
+    *,
+    detection_reports: Sequence[Dict[str, Any]] = (),
+    action_backlog: Sequence[Dict[str, Any]] = (),
+    previous_reflections: Sequence[Dict[str, Any]] = (),
+) -> str:
+    """再計画時に渡す Reflexion プロンプトを生成する補助関数。"""
+
+    lines: List[str] = [
+        "以下の障壁を踏まえた再計画を提案してください。",
+        f"失敗したステップ: {failed_step}",
+        f"失敗理由: {failure_reason}",
+    ]
+
+    if detection_reports:
+        lines.append("関連ステータス報告:")
+        for report in detection_reports:
+            summary = str(report.get("summary") or report.get("category") or "").strip()
+            if summary:
+                lines.append(f"- {summary}")
+
+    if action_backlog:
+        lines.append("未消化のアクション候補:")
+        for item in action_backlog:
+            label = str(
+                item.get("label")
+                or item.get("step")
+                or item.get("category")
+                or "未分類のアクション"
+            ).strip()
+            if label:
+                lines.append(f"- {label}")
+
+    if previous_reflections:
+        lines.append("過去の反省ログ:")
+        for entry in previous_reflections:
+            improvement = str(entry.get("improvement") or "改善案未記録").strip()
+            retry_result = str(entry.get("retry_result") or "結果未記録").strip()
+            lines.append(f"- {improvement} / 再試行結果: {retry_result}")
+
+    lines.append(
+        "同じ失敗を繰り返さないよう、具体的な改善ポイントを含む計画ステップを提示してください。"
+    )
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)
