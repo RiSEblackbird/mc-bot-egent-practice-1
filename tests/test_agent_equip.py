@@ -40,6 +40,9 @@ class DummyActions:
                     "displayName": "Iron Pickaxe",
                     "count": 1,
                     "enchantments": [],
+                    "maxDurability": 250,
+                    "durabilityUsed": 0,
+                    "durability": 250,
                 }
             ],
             "pickaxes": [
@@ -49,6 +52,9 @@ class DummyActions:
                     "displayName": "Iron Pickaxe",
                     "count": 1,
                     "enchantments": [],
+                    "maxDurability": 250,
+                    "durabilityUsed": 0,
+                    "durability": 250,
                 }
             ],
         }
