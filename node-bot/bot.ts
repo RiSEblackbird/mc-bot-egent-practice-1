@@ -41,7 +41,7 @@ const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
-type CommandType = 'chat' | 'moveTo' | 'equipItem';
+type CommandType = 'chat' | 'moveTo' | 'equipItem' | 'gatherStatus';
 
 // WebSocket で受信するメッセージの基本形。
 interface CommandPayload {
@@ -53,6 +53,51 @@ interface CommandPayload {
 interface CommandResponse {
   ok: boolean;
   error?: string;
+  data?: unknown;
+}
+
+type GatherStatusKind = 'position' | 'inventory' | 'general';
+
+interface PositionSnapshot {
+  kind: 'position';
+  position: { x: number; y: number; z: number };
+  dimension: string;
+  formatted: string;
+}
+
+interface InventoryItemSnapshot {
+  slot: number;
+  name: string;
+  displayName: string;
+  count: number;
+  enchantments: string[];
+}
+
+interface InventorySnapshot {
+  kind: 'inventory';
+  occupiedSlots: number;
+  totalSlots: number;
+  items: InventoryItemSnapshot[];
+  pickaxes: InventoryItemSnapshot[];
+  formatted: string;
+}
+
+interface DigPermissionSnapshot {
+  allowed: boolean;
+  gameMode: string;
+  fallbackMovementInitialized: boolean;
+  reason: string;
+}
+
+interface GeneralStatusSnapshot {
+  kind: 'general';
+  health: number;
+  maxHealth: number;
+  food: number;
+  saturation: number;
+  oxygenLevel: number;
+  digPermission: DigPermissionSnapshot;
+  formatted: string;
 }
 
 interface FoodInfo {
@@ -308,6 +353,8 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleMoveToCommand(args);
     case 'equipItem':
       return handleEquipItemCommand(args);
+    case 'gatherStatus':
+      return handleGatherStatusCommand(args);
     default: {
       const exhaustiveCheck: never = type;
       void exhaustiveCheck;
@@ -602,6 +649,201 @@ async function handleEquipItemCommand(args: Record<string, unknown>): Promise<Co
     console.error('[EquipItemCommand] failed to equip item', error);
     return { ok: false, error: 'Failed to equip item' };
   }
+}
+
+/**
+ * gatherStatus コマンドを処理し、移動前に必要な情報を即時収集する。
+ *
+ * Mineflayer から取得可能なステータスを種類ごとに切り分け、Python 側が
+ * プレイヤーへ質問せずとも意思決定できるように集約する。
+ */
+async function handleGatherStatusCommand(args: Record<string, unknown>): Promise<CommandResponse> {
+  const kindRaw = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
+  const supportedKinds: GatherStatusKind[] = ['position', 'inventory', 'general'];
+  const normalizedKind = supportedKinds.find((candidate) => candidate === kindRaw) ?? null;
+
+  if (!normalizedKind) {
+    console.warn('[GatherStatusCommand] unsupported kind received', { kindRaw });
+    return { ok: false, error: `Unsupported status kind: ${kindRaw || 'unknown'}` };
+  }
+
+  const activeBot = getActiveBot();
+
+  if (!activeBot) {
+    console.warn('[GatherStatusCommand] rejected because bot is unavailable');
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
+  switch (normalizedKind) {
+    case 'position':
+      return { ok: true, data: buildPositionSnapshot(activeBot) };
+    case 'inventory':
+      return { ok: true, data: buildInventorySnapshot(activeBot) };
+    case 'general':
+      return { ok: true, data: buildGeneralStatusSnapshot(activeBot) };
+    default: {
+      const exhaustiveCheck: never = normalizedKind;
+      void exhaustiveCheck;
+      return { ok: false, error: 'Unsupported status kind' };
+    }
+  }
+}
+
+const ENCHANT_NAME_MAP: Record<string, string> = {
+  efficiency: '効率強化',
+  unbreaking: '耐久力',
+  fortune: '幸運',
+  silk_touch: 'シルクタッチ',
+  mending: '修繕',
+};
+
+const ROMAN_NUMERALS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+
+interface EnchantmentInfo {
+  id: string;
+  level: number;
+}
+
+function buildPositionSnapshot(targetBot: Bot): PositionSnapshot {
+  const { x, y, z } = targetBot.entity.position;
+  const rounded = { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
+  const dimension = targetBot.game.dimension ?? 'unknown';
+  const formatted = `現在位置は X=${rounded.x} / Y=${rounded.y} / Z=${rounded.z}（ディメンション: ${dimension}）です。`;
+  return { kind: 'position', position: rounded, dimension, formatted };
+}
+
+function buildInventorySnapshot(targetBot: Bot): InventorySnapshot {
+  const rawItems = targetBot.inventory.items();
+  const totalSlots = targetBot.inventory.slots.length;
+  const occupiedSlots = rawItems.length;
+  const items = rawItems.map((item) => ({
+    slot: item.slot,
+    name: item.name,
+    displayName: item.displayName,
+    count: item.count,
+    enchantments: describeEnchantments(item),
+  }));
+  const pickaxeItems = rawItems.filter((item) => EQUIP_TOOL_MATCHERS.pickaxe(item));
+  const pickaxes = pickaxeItems.map((item) => ({
+    slot: item.slot,
+    name: item.name,
+    displayName: item.displayName,
+    count: item.count,
+    enchantments: describeEnchantments(item),
+  }));
+
+  const pickaxeSummaries = pickaxes.map((item) => formatInventoryItemSummary(item));
+  const torchCount = rawItems
+    .filter((item) => item.name === 'torch')
+    .reduce((acc, item) => acc + item.count, 0);
+
+  const base = `所持品は ${occupiedSlots}/${totalSlots} スロットを使用中`;
+  const pickaxeSegment = pickaxeSummaries.length > 0 ? `主要ツルハシ: ${pickaxeSummaries.join('、')}` : 'ツルハシは所持していません';
+  const torchSegment = torchCount > 0 ? `松明: ${torchCount} 本` : '松明は未所持';
+  const formatted = `${base}。${pickaxeSegment}。${torchSegment}。`;
+
+  return {
+    kind: 'inventory',
+    occupiedSlots,
+    totalSlots,
+    items,
+    pickaxes,
+    formatted,
+  };
+}
+
+function buildGeneralStatusSnapshot(targetBot: Bot): GeneralStatusSnapshot {
+  const health = Math.round(targetBot.health);
+  const rawMaxHealth = Number((targetBot as Record<string, unknown>).maxHealth ?? 20);
+  const maxHealth = Number.isFinite(rawMaxHealth) ? rawMaxHealth : 20;
+  const food = Math.round(targetBot.food);
+  const rawSaturation = Number(targetBot.foodSaturation ?? 0);
+  const saturation = Number.isFinite(rawSaturation) ? Math.round(rawSaturation * 10) / 10 : 0;
+  const oxygenLevel = Math.round(targetBot.oxygenLevel);
+  const digPermission = evaluateDigPermission(targetBot);
+
+  const formatted = `体力: ${health}/${maxHealth}、満腹度: ${food}/20、飽和度: ${saturation.toFixed(1)}、採掘許可: ${digPermission.allowed ? 'あり' : `なし（${digPermission.reason}）`}。`;
+
+  return {
+    kind: 'general',
+    health,
+    maxHealth,
+    food,
+    saturation,
+    oxygenLevel,
+    digPermission,
+    formatted,
+  };
+}
+
+function evaluateDigPermission(targetBot: Bot): DigPermissionSnapshot {
+  const gameMode = targetBot.game.gameMode ?? 'survival';
+  const fallbackMovements = digPermissiveMovements as MutableMovements | null;
+  const fallbackMovementInitialized = Boolean(fallbackMovements);
+  const fallbackAllowsDig = Boolean(fallbackMovements?.canDig);
+  const gameModeAllows = !['adventure', 'spectator'].includes(gameMode);
+  const allowed = gameModeAllows && fallbackAllowsDig;
+
+  let reason = '掘削許可付きの移動プロファイルを利用可能です';
+  if (!gameModeAllows) {
+    reason = `ゲームモード ${gameMode} ではブロック破壊が制限されています`;
+  } else if (!fallbackMovementInitialized) {
+    reason = '掘削許可付きの移動プロファイルがまだ初期化されていません';
+  } else if (!fallbackAllowsDig) {
+    reason = '現在の移動プロファイルでは canDig が無効化されています';
+  }
+
+  return {
+    allowed,
+    gameMode,
+    fallbackMovementInitialized,
+    reason,
+  };
+}
+
+function describeEnchantments(item: Item): string[] {
+  return extractEnchantments(item).map((entry) => {
+    const shortId = entry.id.replace(/^minecraft:/, '');
+    const label = ENCHANT_NAME_MAP[shortId] ?? shortId;
+    const levelIndex = Math.max(0, Math.min(ROMAN_NUMERALS.length - 1, entry.level - 1));
+    const roman = entry.level >= 1 && entry.level <= ROMAN_NUMERALS.length ? ROMAN_NUMERALS[levelIndex] : String(entry.level);
+    return `${label} ${roman}`;
+  });
+}
+
+function extractEnchantments(item: Item): EnchantmentInfo[] {
+  const result: EnchantmentInfo[] = [];
+  const nbt = item.nbt as any;
+  if (!nbt?.value) {
+    return result;
+  }
+
+  const enchantList = nbt.value.Enchantments ?? nbt.value.enchantments;
+  const entries = enchantList?.value;
+
+  if (!Array.isArray(entries)) {
+    return result;
+  }
+
+  for (const entry of entries) {
+    const idValue = typeof entry?.id?.value === 'string' ? entry.id.value : typeof entry?.id === 'string' ? entry.id : null;
+    const levelValueRaw = entry?.lvl?.value ?? entry?.lvl;
+    const levelValue = Number(levelValueRaw);
+    if (!idValue || !Number.isFinite(levelValue)) {
+      continue;
+    }
+    result.push({ id: idValue, level: levelValue });
+  }
+
+  return result;
+}
+
+function formatInventoryItemSummary(item: InventoryItemSnapshot): string {
+  if (!item.enchantments.length) {
+    return `${item.displayName} x${item.count}`;
+  }
+
+  return `${item.displayName} x${item.count}（${item.enchantments.join('、')}）`;
 }
 
 /**
