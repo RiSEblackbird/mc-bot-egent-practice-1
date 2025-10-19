@@ -1640,6 +1640,12 @@ class AgentOrchestrator:
     ) -> Optional[float]:
         """所持ツルハシ情報から残耐久を推定して数値として返す。"""
 
+        # Node 側で直接算出された耐久値があれば最優先で利用し、
+        # 欠損時のみ古いキーへフォールバックする。
+        direct_value = item.get("durability")
+        if isinstance(direct_value, (int, float)):
+            return float(direct_value)
+
         max_durability = item.get("maxDurability")
         durability_used = item.get("durabilityUsed")
         if isinstance(max_durability, (int, float)) and isinstance(
@@ -1647,7 +1653,7 @@ class AgentOrchestrator:
         ):
             return float(max_durability) - float(durability_used)
 
-        for key in ("durabilityRemaining", "remainingDurability", "durability"):
+        for key in ("durabilityRemaining", "remainingDurability"):
             value = item.get(key)
             if isinstance(value, (int, float)):
                 return float(value)

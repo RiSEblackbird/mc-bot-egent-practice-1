@@ -89,6 +89,8 @@ def test_mine_skips_when_suitable_pickaxe_exists(
                     "name": "diamond_pickaxe",
                     "displayName": "ダイヤのツルハシ",
                     "durability": 23,
+                    "maxDurability": 1561,
+                    "durabilityUsed": 1538,
                 }
             ]
         },
@@ -129,6 +131,8 @@ def test_mine_continues_when_pickaxe_missing(
                     "name": "stone_pickaxe",
                     "displayName": "石のツルハシ",
                     "durability": 10,
+                    "maxDurability": 131,
+                    "durabilityUsed": 121,
                 }
             ]
         },
@@ -154,6 +158,46 @@ def test_mine_continues_when_pickaxe_missing(
         "redstone_ore",
         "deepslate_redstone_ore",
     ]
+    assert actions.equip_calls == []
+
+
+def test_mine_treats_broken_pickaxe_as_missing(
+    orchestrator_fixture: Tuple[AgentOrchestrator, DummyActions, Memory]
+) -> None:
+    """残耐久が 0 のツルハシは装備候補に含めない。"""
+
+    orchestrator, actions, memory = orchestrator_fixture
+    memory.set(
+        "inventory_detail",
+        {
+            "pickaxes": [
+                {
+                    "name": "diamond_pickaxe",
+                    "displayName": "ダイヤのツルハシ",
+                    "durability": 0,
+                    "maxDurability": 1561,
+                    "durabilityUsed": 1561,
+                }
+            ]
+        },
+    )
+
+    backlog: List[Dict[str, str]] = []
+
+    async def runner() -> None:
+        handled, _, failure = await orchestrator._handle_action_task(
+            "mine",
+            "ラピスラズリ鉱石を採掘して",
+            last_target_coords=None,
+            backlog=backlog,
+        )
+        assert handled is True
+        assert failure is None
+
+    asyncio.run(runner())
+
+    assert backlog == []
+    assert len(actions.mine_calls) == 1
     assert actions.equip_calls == []
 
 

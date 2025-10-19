@@ -108,12 +108,17 @@ interface PositionSnapshot {
   formatted: string;
 }
 
+type NullableDurabilityValue = number | null;
+
 interface InventoryItemSnapshot {
   slot: number;
   name: string;
   displayName: string;
   count: number;
   enchantments: string[];
+  maxDurability: NullableDurabilityValue;
+  durabilityUsed: NullableDurabilityValue;
+  durability: NullableDurabilityValue;
 }
 
 interface InventorySnapshot {
@@ -1541,25 +1546,19 @@ function buildPositionSnapshot(targetBot: Bot): PositionSnapshot {
   return { kind: 'position', position: rounded, dimension, formatted };
 }
 
+/**
+ * Mineflayer が公開する耐久値を含めてインベントリのスナップショットを生成する。
+ *
+ * 単純なマッピングであっても、ツルハシの選定ロジックが Python 側で依存しているため、
+ * 耐久関連フィールドは欠損時に null を明示することで後段の推論が扱いやすくなる。
+ */
 function buildInventorySnapshot(targetBot: Bot): InventorySnapshot {
   const rawItems = targetBot.inventory.items();
   const totalSlots = targetBot.inventory.slots.length;
   const occupiedSlots = rawItems.length;
-  const items = rawItems.map((item) => ({
-    slot: item.slot,
-    name: item.name,
-    displayName: item.displayName,
-    count: item.count,
-    enchantments: describeEnchantments(item),
-  }));
+  const items = rawItems.map((item) => createInventoryItemSnapshot(item));
   const pickaxeItems = rawItems.filter((item) => EQUIP_TOOL_MATCHERS.pickaxe(item));
-  const pickaxes = pickaxeItems.map((item) => ({
-    slot: item.slot,
-    name: item.name,
-    displayName: item.displayName,
-    count: item.count,
-    enchantments: describeEnchantments(item),
-  }));
+  const pickaxes = pickaxeItems.map((item) => createInventoryItemSnapshot(item));
 
   const pickaxeSummaries = pickaxes.map((item) => formatInventoryItemSummary(item));
   const torchCount = rawItems
@@ -1579,6 +1578,40 @@ function buildInventorySnapshot(targetBot: Bot): InventorySnapshot {
     pickaxes,
     formatted,
   };
+}
+
+/**
+ * Mineflayer の Item から耐久関連フィールドを抽出し、欠損時は null を設定する。
+ *
+ * null を統一的に用いることで、Python 側では "値が来ていない" 状態を簡単に検知できる。
+ */
+function createInventoryItemSnapshot(item: Item): InventoryItemSnapshot {
+  const maxDurability = resolveDurabilityValue((item as Record<string, unknown>).maxDurability);
+  const durabilityUsed = resolveDurabilityValue((item as Record<string, unknown>).durabilityUsed);
+  const directDurability = resolveDurabilityValue((item as Record<string, unknown>).durability);
+  const durability =
+    directDurability ??
+    (maxDurability !== null && durabilityUsed !== null
+      ? Math.max(0, maxDurability - durabilityUsed)
+      : null);
+
+  return {
+    slot: item.slot,
+    name: item.name,
+    displayName: item.displayName,
+    count: item.count,
+    enchantments: describeEnchantments(item),
+    maxDurability,
+    durabilityUsed,
+    durability,
+  };
+}
+
+/**
+ * Mineflayer から渡される値は number 以外になることもあるため、有限数のみを許可する。
+ */
+function resolveDurabilityValue(value: unknown): NullableDurabilityValue {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function buildHotbarSnapshot(targetBot: Bot): VptObservationHotbarSlot[] {
