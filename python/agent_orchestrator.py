@@ -9,6 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, TYPE_CHECKING
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from services.building_service import (
+    advance_building_state,
+    checkpoint_to_dict,
+    restore_checkpoint,
+)
+
 if TYPE_CHECKING:
     from agent import AgentOrchestrator
 
@@ -239,19 +245,57 @@ class ActionGraph:
             }
 
         async def handle_building(state: _ActionState) -> Dict[str, Any]:
-            # 建築ノードはまだ Mineflayer 側の実装が乏しいため、backlog に整理して
-            # プレイヤーへ進捗報告できるようにする。Graph 内でモジュール名を保持する
-            # ことで、未実装カテゴリの可視化を容易にする。
+            # Mineflayer 側の建築アクションは段階的に拡張する予定のため、LangGraph 側では
+            # 純粋関数ベースで資材調達と配置計画を立て、ジョブの中断・再開が安全に行える
+            # ようにする。副作用を伴う操作は最終的に別ノードへ移譲し、ここでは計画のみ
+            # を算出する方針。
             backlog = state["backlog"]
             label = state.get("rule_label") or "建築作業"
+
+            checkpoint_raw = orchestrator.memory.get("building_checkpoint")  # type: ignore[attr-defined]
+            requirements = orchestrator.memory.get("building_material_requirements", {})  # type: ignore[attr-defined]
+            layout = orchestrator.memory.get("building_layout", [])  # type: ignore[attr-defined]
+            inventory_snapshot = orchestrator.memory.get("inventory_summary", {})  # type: ignore[attr-defined]
+
+            checkpoint = restore_checkpoint(checkpoint_raw)
+            updated_checkpoint, procurement_plan, placement_plan = advance_building_state(
+                checkpoint=checkpoint,
+                requirements=requirements if isinstance(requirements, dict) else {},
+                inventory=inventory_snapshot if isinstance(inventory_snapshot, dict) else {},
+                layout=layout if isinstance(layout, list) else [],
+            )
+
+            orchestrator.memory.set(  # type: ignore[attr-defined]
+                "building_checkpoint",
+                checkpoint_to_dict(updated_checkpoint),
+            )
+
+            procurement_label = (
+                ", ".join(f"{name}:{amount}" for name, amount in procurement_plan.items())
+                if procurement_plan
+                else "なし"
+            )
+            placement_label = (
+                ", ".join(
+                    f"{task.block}@{task.coords[0]},{task.coords[1]},{task.coords[2]}"
+                    for task in placement_plan
+                )
+                if placement_plan
+                else "なし"
+            )
+
             backlog.append(
                 {
                     "category": "build",
                     "step": state["step"],
                     "label": label,
                     "module": "building",
+                    "phase": updated_checkpoint.phase.value,
+                    "procurement": procurement_label,
+                    "placement": placement_label,
                 }
             )
+
             return {
                 "handled": True,
                 "updated_target": state.get("last_target_coords"),

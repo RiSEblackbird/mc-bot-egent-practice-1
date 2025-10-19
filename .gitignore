@@ -29,6 +29,9 @@ python/action_backlog*.json
 # LangGraph 実行時のデバッグアーティファクト（秘匿情報が混入しうるため除外）
 .langgraph/
 python/.langgraph/
+# 建築ジョブなどで生成されるチェックポイントファイル（進捗や位置情報を含むため秘匿対象）
+checkpoints/
+python/checkpoints/
 # Python agent のローカル設定ファイル（秘匿情報を含む可能性があるため除外）
 python/config.local.py
 python/config.local.json
