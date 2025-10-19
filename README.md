@@ -336,6 +336,43 @@ MineDojo は Minecraft の多様なタスクを大規模データセットとし
 - 関連モジュール: [`docs/tunnel_mode_design.md`](docs/tunnel_mode_design.md), [`tests/e2e/test_multi_agent_roles.py`](tests/e2e/test_multi_agent_roles.py)
 - 今後の改善ポイント: MineDojo の報酬設計を再評価し、LangGraph の優先度マネージャーにタスクカテゴリ別の KPI を組み込んで進捗を可視化する。
 
+## 4. VPT 操作再生モード
+
+Mineflayer 側で低レベル操作を逐次再生するため、VPT (Video PreTraining) モデルの推論結果をそのまま入力として扱える経路を整備しました。Python 側で観測値を収集して VPT 互換の特徴量へ整形し、Node.js 側が `setControlState` / `look` を組み合わせてアクション列を再生します。
+
+### 4.1 モデル取得とライセンス確認
+
+1. Hugging Face 上の [openai/vpt](https://huggingface.co/openai/vpt) リポジトリから `foundation-model-1x.model`（例）を取得します。`python/services/vpt_controller.py` の `VPTModelSpec` で `repo_id` と `filename` を指定すると、自動的に `var/vpt/` 配下へダウンロードされます。
+2. 取得前に `pip install torch huggingface-hub` を実行して依存関係を導入してください。PyTorch 2.3 以上 + CUDA 11.8 以降であれば GPU 推論が利用できます。
+3. VPT モデルは MIT License で公開されています。`VPTController.verify_model_license()` を呼び出すと Hugging Face のモデルカードを参照し、期待値（既定で `mit`）と一致しない場合は例外を送出します。再配布が禁止されているチェックポイントを扱う場合は `.gitignore` によりコミット対象外となるため、秘匿情報が混入しません。
+
+### 4.2 GPU と依存関係の要件
+
+- NVIDIA GPU（8GB 以上推奨） + CUDA 対応ドライバーがある場合は `torch` の CUDA ビルドをインストールしてください。GPU 非搭載環境でも CPU 推論は可能ですが、ヒューリスティック経路へフォールバックします。
+- 追加依存関係: `torch`, `huggingface-hub`, `numpy`（PyTorch 依存で自動導入）。Python 側で VPT モデルを使用しない場合はインストール不要です。
+- `python/services/vpt_controller.py` は PyTorch が見つからない場合でも安全にヒューリスティックを返すため、開発環境での回帰テストは軽量に保たれます。
+
+### 4.3 Mineflayer 側の切り替え
+
+Node.js 側の実行モードは `CONTROL_MODE` 環境変数で切り替えます。既定値は `command`（従来のコマンド駆動）で、`vpt` を指定すると VPT 再生ループが有効になります。
+
+```env
+# .env または env.example を参照
+CONTROL_MODE=vpt
+VPT_TICK_INTERVAL_MS=50
+VPT_MAX_SEQUENCE_LENGTH=240
+```
+
+- `VPT_TICK_INTERVAL_MS` は 1 Tick あたりの待機時間（ミリ秒）です。既定で 50ms（Minecraft 標準）。
+- `VPT_MAX_SEQUENCE_LENGTH` は 1 回の再生で受け付けるアクション数の上限です。安全のため 2000 Tick までに制限しています。
+- Python 側からは `Actions.play_vpt_actions()` でアクション列を送信し、Mineflayer 側は `bot.setControlState` と `bot.look` を組み合わせて逐次実行します。再生中は pathfinder を停止し、終了後に入力状態を確実にリセットします。
+
+### 4.4 テストとフォールバック
+
+- `pytest tests/e2e/test_vpt_playback.py` を実行すると、VPT コントローラーのヒューリスティック出力と WebSocket 送信処理を検証できます。
+- Node.js 側の設定は `npm test -- --runInBand node-bot/tests/config.test.ts` で回帰できます。`CONTROL_MODE` の正規化や tick 設定の境界値検証を含みます。
+- モデルが未ロードの場合は、観測値から進行方向を推定して `look` → `forward` → `wait` の安全なヒューリスティック列を生成します。GPU を利用できる環境では `VPTController.load_pretrained()` を呼び出して TorchScript モデルを読み込み、推論結果をそのまま Mineflayer へ送信してください。
+
 ## 7. アーキテクチャ概要
 
 ```

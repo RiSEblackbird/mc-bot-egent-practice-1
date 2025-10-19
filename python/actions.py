@@ -137,6 +137,19 @@ class Actions:
         payload = {"type": "invokeSkill", "args": args}
         return await self._dispatch("invokeSkill", payload)
 
+    async def play_vpt_actions(
+        self,
+        actions: List[Dict[str, Any]],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """VPT で生成した低レベル操作列を Mineflayer へ転送する。"""
+
+        payload: Dict[str, Any] = {"type": "playVptActions", "args": {"actions": actions}}
+        if metadata:
+            payload["args"]["metadata"] = metadata
+        return await self._dispatch("playVptActions", payload)
+
     async def begin_skill_exploration(
         self,
         *,

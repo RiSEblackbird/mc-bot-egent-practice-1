@@ -38,6 +38,8 @@ for (const warning of runtimeWarnings) {
   console.warn(`[Config] ${warning}`);
 }
 
+console.log(`[Control] mode=${CONTROL_MODE} tick=${VPT_TICK_INTERVAL_MS}ms maxSeq=${VPT_MAX_SEQUENCE_LENGTH}`);
+
 const MC_VERSION = runtimeConfig.minecraft.version;
 const MC_HOST = runtimeConfig.minecraft.host;
 const MC_PORT = runtimeConfig.minecraft.port;
@@ -50,6 +52,9 @@ const AGENT_WS_URL = runtimeConfig.agentBridge.url;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 const MINING_APPROACH_TOLERANCE = 1;
 const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
+const CONTROL_MODE = runtimeConfig.control.mode;
+const VPT_TICK_INTERVAL_MS = runtimeConfig.control.vpt.tickIntervalMs;
+const VPT_MAX_SEQUENCE_LENGTH = runtimeConfig.control.vpt.maxSequenceLength;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -58,11 +63,13 @@ type CommandType =
   | 'moveTo'
   | 'equipItem'
   | 'gatherStatus'
+  | 'gatherVptObservation'
   | 'mineOre'
   | 'setAgentRole'
   | 'registerSkill'
   | 'invokeSkill'
-  | 'skillExplore';
+  | 'skillExplore'
+  | 'playVptActions';
 
 // WebSocket で受信するメッセージの基本形。
 interface CommandPayload {
@@ -135,6 +142,79 @@ interface GeneralStatusSnapshot {
   formatted: string;
 }
 
+type VptControlName =
+  | 'forward'
+  | 'back'
+  | 'left'
+  | 'right'
+  | 'jump'
+  | 'sprint'
+  | 'sneak'
+  | 'attack'
+  | 'use';
+
+const SUPPORTED_VPT_CONTROLS: readonly VptControlName[] = [
+  'forward',
+  'back',
+  'left',
+  'right',
+  'jump',
+  'sprint',
+  'sneak',
+  'attack',
+  'use',
+] as const;
+const SUPPORTED_VPT_CONTROLS_SET = new Set<string>(SUPPORTED_VPT_CONTROLS);
+
+interface VptControlAction {
+  kind: 'control';
+  control: VptControlName;
+  state: boolean;
+  durationTicks: number;
+}
+
+interface VptLookAction {
+  kind: 'look';
+  yaw: number;
+  pitch: number;
+  relative?: boolean;
+  durationTicks?: number;
+}
+
+interface VptWaitAction {
+  kind: 'wait';
+  durationTicks: number;
+}
+
+type VptAction = VptControlAction | VptLookAction | VptWaitAction;
+
+interface VptNavigationHint {
+  targetYawDegrees: number;
+  horizontalDistance: number;
+  verticalOffset: number;
+}
+
+interface VptObservationHotbarSlot {
+  slot: number;
+  name: string;
+  displayName: string;
+  count: number;
+}
+
+interface VptObservationSnapshot {
+  position: { x: number; y: number; z: number };
+  velocity: { x: number; y: number; z: number };
+  orientation: { yawDegrees: number; pitchDegrees: number };
+  status: { health: number; food: number; saturation: number };
+  onGround: boolean;
+  hotbar: VptObservationHotbarSlot[];
+  heldItem: string | null;
+  navigationHint: VptNavigationHint | null;
+  timestamp: number;
+  tickAge: number;
+  dimension: string;
+}
+
 interface RegisteredSkill {
   id: string;
   title: string;
@@ -169,6 +249,7 @@ const agentRoleState: AgentRoleState = createInitialAgentRoleState();
 const PRIMARY_AGENT_ID = 'primary';
 const skillRegistry = new Map<string, RegisteredSkill>();
 let skillHistoryInitialized = false;
+let isVptPlaybackActive = false;
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
@@ -568,6 +649,8 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleEquipItemCommand(args);
     case 'gatherStatus':
       return handleGatherStatusCommand(args);
+    case 'gatherVptObservation':
+      return handleGatherVptObservationCommand(args);
     case 'mineOre':
       return handleMineOreCommand(args);
     case 'setAgentRole':
@@ -578,6 +661,8 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleInvokeSkillCommand(args);
     case 'skillExplore':
       return handleSkillExploreCommand(args);
+    case 'playVptActions':
+      return handlePlayVptActionsCommand(args);
     default: {
       const exhaustiveCheck: never = type;
       void exhaustiveCheck;
@@ -1187,6 +1272,250 @@ async function handleGatherStatusCommand(args: Record<string, unknown>): Promise
   }
 }
 
+function handleGatherVptObservationCommand(args: Record<string, unknown>): CommandResponse {
+  const activeBot = getActiveBot();
+
+  if (!activeBot) {
+    console.warn('[GatherVptObservation] rejected because bot is unavailable');
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
+  const entity = activeBot.entity;
+
+  if (!entity) {
+    return { ok: false, error: 'Bot entity is not initialized yet' };
+  }
+
+  const position = {
+    x: Number(entity.position.x),
+    y: Number(entity.position.y),
+    z: Number(entity.position.z),
+  };
+  const velocity = entity.velocity ?? ({ x: 0, y: 0, z: 0 } as Vec3);
+  const yawDegrees = radToDeg(entity.yaw ?? 0);
+  const pitchDegrees = radToDeg(entity.pitch ?? 0);
+  const general = buildGeneralStatusSnapshot(activeBot);
+  const hotbar = buildHotbarSnapshot(activeBot);
+  const navigationHint = computeNavigationHint(activeBot);
+  const heldItem = activeBot.heldItem ? activeBot.heldItem.displayName ?? activeBot.heldItem.name : null;
+
+  const snapshot: VptObservationSnapshot = {
+    position,
+    velocity: { x: velocity.x, y: velocity.y, z: velocity.z },
+    orientation: { yawDegrees, pitchDegrees },
+    status: { health: general.health, food: general.food, saturation: general.saturation },
+    onGround: Boolean(entity.onGround),
+    hotbar,
+    heldItem,
+    navigationHint,
+    timestamp: Date.now(),
+    tickAge: Number(activeBot.time?.age ?? 0),
+    dimension: activeBot.game.dimension ?? 'unknown',
+  };
+
+  return { ok: true, data: snapshot };
+}
+
+async function handlePlayVptActionsCommand(args: Record<string, unknown>): Promise<CommandResponse> {
+  if (CONTROL_MODE !== 'vpt') {
+    return { ok: false, error: 'CONTROL_MODE=vpt ではないため VPT 再生は無効化されています。' };
+  }
+
+  const rawActions = args.actions;
+  let sanitized: VptAction[];
+
+  try {
+    sanitized = sanitizeVptActions(rawActions);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('[VPT] invalid payload', { message });
+    return { ok: false, error: message };
+  }
+
+  if (sanitized.length === 0) {
+    return { ok: true, data: { executed: 0 } };
+  }
+
+  if (sanitized.length > VPT_MAX_SEQUENCE_LENGTH) {
+    return {
+      ok: false,
+      error: `actions length exceeds limit (${sanitized.length} > ${VPT_MAX_SEQUENCE_LENGTH})`,
+    };
+  }
+
+  const activeBot = getActiveBot();
+  if (!activeBot) {
+    console.warn('[VPT] playback rejected because bot is unavailable');
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
+  if (isVptPlaybackActive) {
+    return { ok: false, error: 'Another VPT playback is already in progress' };
+  }
+
+  const metadata = typeof args.metadata === 'object' && args.metadata !== null ? args.metadata : undefined;
+
+  try {
+    isVptPlaybackActive = true;
+    await executeVptActionSequence(activeBot, sanitized, metadata);
+    return { ok: true, data: { executed: sanitized.length } };
+  } catch (error) {
+    console.error('[VPT] failed to execute action sequence', error);
+    return { ok: false, error: 'Failed to execute VPT action sequence' };
+  } finally {
+    isVptPlaybackActive = false;
+  }
+}
+
+function sanitizeVptActions(rawActions: unknown): VptAction[] {
+  if (!Array.isArray(rawActions)) {
+    throw new Error('actions must be an array');
+  }
+
+  return rawActions.map((item, index) => sanitizeVptAction(item, index));
+}
+
+function sanitizeVptAction(raw: unknown, index: number): VptAction {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error(`actions[${index}] must be an object`);
+  }
+
+  const record = raw as Record<string, unknown>;
+  const kindRaw = typeof record.kind === 'string' ? record.kind.trim().toLowerCase() : '';
+
+  if (!kindRaw) {
+    throw new Error(`actions[${index}].kind is required`);
+  }
+
+  switch (kindRaw) {
+    case 'control': {
+      const controlRaw = typeof record.control === 'string' ? record.control.trim().toLowerCase() : '';
+      if (!SUPPORTED_VPT_CONTROLS_SET.has(controlRaw)) {
+        throw new Error(`actions[${index}].control '${controlRaw}' is not supported`);
+      }
+      if (typeof record.state !== 'boolean') {
+        throw new Error(`actions[${index}].state must be a boolean`);
+      }
+      const state = record.state;
+      const durationTicks = sanitizeDuration(record.durationTicks, index);
+      return {
+        kind: 'control',
+        control: controlRaw as VptControlName,
+        state,
+        durationTicks,
+      };
+    }
+    case 'look': {
+      const yaw = Number(record.yaw);
+      const pitch = Number(record.pitch ?? 0);
+      if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+        throw new Error(`actions[${index}] look.yaw/look.pitch must be numeric`);
+      }
+      const relative = record.relative !== undefined ? Boolean(record.relative) : false;
+      const durationTicks = record.durationTicks !== undefined ? sanitizeDuration(record.durationTicks, index) : 0;
+      return {
+        kind: 'look',
+        yaw,
+        pitch,
+        relative,
+        ...(durationTicks > 0 ? { durationTicks } : {}),
+      };
+    }
+    case 'wait': {
+      const durationTicks = sanitizeDuration(record.durationTicks, index);
+      return { kind: 'wait', durationTicks };
+    }
+    default:
+      throw new Error(`actions[${index}].kind='${kindRaw}' is not supported`);
+  }
+}
+
+function sanitizeDuration(raw: unknown, index: number): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`actions[${index}].durationTicks must be a non-negative number`);
+  }
+  return Math.round(value);
+}
+
+async function executeVptActionSequence(
+  targetBot: Bot,
+  actions: VptAction[],
+  metadata?: Record<string, unknown>,
+): Promise<void> {
+  if (targetBot.pathfinder.isMoving()) {
+    targetBot.pathfinder.stop();
+  }
+
+  targetBot.clearControlStates();
+
+  const pressedControls = new Set<VptControlName>();
+
+  console.log('[VPT] playback start', {
+    actionCount: actions.length,
+    metadata,
+  });
+
+  try {
+    for (const action of actions) {
+      switch (action.kind) {
+        case 'control': {
+          targetBot.setControlState(action.control, action.state);
+          if (action.state) {
+            pressedControls.add(action.control);
+          } else {
+            pressedControls.delete(action.control);
+          }
+          await waitTicks(action.durationTicks);
+          break;
+        }
+        case 'look': {
+          const entity = targetBot.entity;
+          const yawRadians = degToRad(action.yaw);
+          const pitchRadians = degToRad(action.pitch ?? 0);
+          let targetYaw = yawRadians;
+          let targetPitch = pitchRadians;
+          if (action.relative && entity) {
+            targetYaw = entity.yaw + yawRadians;
+            targetPitch = entity.pitch + pitchRadians;
+          }
+          await targetBot.look(targetYaw, clampPitch(targetPitch), true);
+          if (action.durationTicks && action.durationTicks > 0) {
+            await waitTicks(action.durationTicks);
+          }
+          break;
+        }
+        case 'wait': {
+          await waitTicks(action.durationTicks);
+          break;
+        }
+        default: {
+          const exhaustiveCheck: never = action;
+          void exhaustiveCheck;
+        }
+      }
+    }
+  } finally {
+    for (const control of pressedControls) {
+      targetBot.setControlState(control, false);
+    }
+    targetBot.clearControlStates();
+  }
+
+  console.log('[VPT] playback completed', {
+    actionCount: actions.length,
+    metadata,
+  });
+}
+
+function waitTicks(ticks: number): Promise<void> {
+  const clamped = Math.max(0, Math.round(ticks));
+  if (clamped <= 0) {
+    return Promise.resolve();
+  }
+  return delay(clamped * VPT_TICK_INTERVAL_MS);
+}
+
 const ENCHANT_NAME_MAP: Record<string, string> = {
   efficiency: '効率強化',
   unbreaking: '耐久力',
@@ -1250,6 +1579,26 @@ function buildInventorySnapshot(targetBot: Bot): InventorySnapshot {
   };
 }
 
+function buildHotbarSnapshot(targetBot: Bot): VptObservationHotbarSlot[] {
+  const slots: VptObservationHotbarSlot[] = [];
+  for (let index = 0; index < 9; index++) {
+    const slotIndex = 36 + index;
+    const item = targetBot.inventory.slots[slotIndex] as Item | null;
+    if (item) {
+      slots.push({
+        slot: slotIndex,
+        name: item.name,
+        displayName: item.displayName ?? item.name,
+        count: item.count,
+      });
+      continue;
+    }
+
+    slots.push({ slot: slotIndex, name: '', displayName: '', count: 0 });
+  }
+  return slots;
+}
+
 function buildGeneralStatusSnapshot(targetBot: Bot): GeneralStatusSnapshot {
   const health = Math.round(targetBot.health);
   const rawMaxHealth = Number((targetBot as Record<string, unknown>).maxHealth ?? 20);
@@ -1298,6 +1647,44 @@ function evaluateDigPermission(targetBot: Bot): DigPermissionSnapshot {
     fallbackMovementInitialized,
     reason,
   };
+}
+
+function computeNavigationHint(targetBot: Bot): VptNavigationHint | null {
+  if (!lastMoveTarget) {
+    return null;
+  }
+
+  const entity = targetBot.entity;
+  if (!entity) {
+    return null;
+  }
+
+  const dx = lastMoveTarget.x + 0.5 - entity.position.x;
+  const dz = lastMoveTarget.z + 0.5 - entity.position.z;
+  const horizontalDistance = Math.sqrt(dx * dx + dz * dz);
+  const verticalOffset = lastMoveTarget.y - entity.position.y;
+  const targetYawRadians = Math.atan2(-dx, dz);
+  const targetYawDegrees = radToDeg(targetYawRadians);
+
+  return {
+    targetYawDegrees,
+    horizontalDistance,
+    verticalOffset,
+  };
+}
+
+function degToRad(value: number): number {
+  return (value * Math.PI) / 180;
+}
+
+function radToDeg(value: number): number {
+  return (value * 180) / Math.PI;
+}
+
+function clampPitch(radians: number): number {
+  const minPitch = -Math.PI / 2;
+  const maxPitch = Math.PI / 2;
+  return Math.max(minPitch, Math.min(maxPitch, radians));
 }
 
 function describeEnchantments(item: Item): string[] {

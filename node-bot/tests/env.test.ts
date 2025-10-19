@@ -5,8 +5,10 @@ import {
   detectDockerRuntime,
   parseEnvInt,
   resolveAgentWebSocketEndpoint,
+  resolveControlMode,
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
+  resolveVptPlaybackConfig,
   type DockerDetectionDeps,
 } from '../runtime/env.js';
 
@@ -180,5 +182,46 @@ describe('resolveAgentWebSocketEndpoint', () => {
     expect(result.warnings).toContain(
       "AGENT_WS_HOST='0.0.0.0' は接続先として利用できないため 127.0.0.1 へフォールバックします。",
     );
+  });
+});
+
+describe('resolveControlMode', () => {
+  it('未設定時は command を返す', () => {
+    expect(resolveControlMode(undefined)).toEqual({ mode: 'command', warnings: [] });
+  });
+
+  it('有効なモードはそのまま採用する', () => {
+    expect(resolveControlMode('vpt')).toEqual({ mode: 'vpt', warnings: [] });
+  });
+
+  it('未知のモードは警告付きで command へ戻す', () => {
+    const result = resolveControlMode('invalid');
+    expect(result.mode).toBe('command');
+    expect(result.warnings).toHaveLength(1);
+  });
+});
+
+describe('resolveVptPlaybackConfig', () => {
+  it('未設定時は既定値を返す', () => {
+    expect(resolveVptPlaybackConfig(undefined, undefined)).toEqual({
+      tickIntervalMs: 50,
+      maxSequenceLength: 240,
+      warnings: [],
+    });
+  });
+
+  it('有効な数値はそのまま採用する', () => {
+    expect(resolveVptPlaybackConfig('70', '400')).toEqual({
+      tickIntervalMs: 70,
+      maxSequenceLength: 400,
+      warnings: [],
+    });
+  });
+
+  it('異常値は丸めと警告を出す', () => {
+    const result = resolveVptPlaybackConfig('5', '99999');
+    expect(result.tickIntervalMs).toBeGreaterThanOrEqual(10);
+    expect(result.maxSequenceLength).toBeLessThanOrEqual(2000);
+    expect(result.warnings.length).toBeGreaterThanOrEqual(1);
   });
 });

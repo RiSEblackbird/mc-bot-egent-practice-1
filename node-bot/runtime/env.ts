@@ -13,6 +13,15 @@ const MAX_AGENT_WS_PORT = 65_535;
 const DEFAULT_AGENT_WS_HOST_DOCKER = 'python-agent';
 const DEFAULT_AGENT_WS_HOST_LOCAL = '127.0.0.1';
 
+const DEFAULT_CONTROL_MODE = 'command';
+const SUPPORTED_CONTROL_MODES = new Set(['command', 'vpt']);
+const DEFAULT_VPT_TICK_INTERVAL_MS = 50;
+const MIN_VPT_TICK_INTERVAL_MS = 10;
+const MAX_VPT_TICK_INTERVAL_MS = 250;
+const DEFAULT_VPT_MAX_SEQUENCE_LENGTH = 240;
+const MIN_VPT_MAX_SEQUENCE_LENGTH = 1;
+const MAX_VPT_MAX_SEQUENCE_LENGTH = 2000;
+
 /**
  * Docker 実行環境を判定する際に利用する依存関係のインターフェース。
  * 単体テストでは疑似的なファイルシステムを差し替え、条件分岐を細かく検証する。
@@ -75,6 +84,17 @@ export interface AgentWebSocketResolution {
   usedExplicitUrl: boolean;
   usedDefaultHost: boolean;
   usedDefaultPort: boolean;
+}
+
+export interface ControlModeResolution {
+  mode: 'command' | 'vpt';
+  warnings: string[];
+}
+
+export interface VptPlaybackResolution {
+  tickIntervalMs: number;
+  maxSequenceLength: number;
+  warnings: string[];
 }
 
 /**
@@ -237,4 +257,72 @@ export function resolveAgentWebSocketEndpoint(
 export function parseEnvInt(rawValue: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(rawValue ?? '', 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function resolveControlMode(rawMode: string | undefined): ControlModeResolution {
+  const warnings: string[] = [];
+  const sanitized = (rawMode ?? '').trim().toLowerCase();
+
+  if (sanitized.length === 0) {
+    return { mode: DEFAULT_CONTROL_MODE, warnings };
+  }
+
+  if (SUPPORTED_CONTROL_MODES.has(sanitized)) {
+    return { mode: sanitized as 'command' | 'vpt', warnings };
+  }
+
+  warnings.push(
+    `CONTROL_MODE='${rawMode}' はサポート外のため ${DEFAULT_CONTROL_MODE} へフォールバックします。`,
+  );
+  return { mode: DEFAULT_CONTROL_MODE, warnings };
+}
+
+export function resolveVptPlaybackConfig(
+  rawTickInterval: string | undefined,
+  rawMaxSequence: string | undefined,
+): VptPlaybackResolution {
+  const warnings: string[] = [];
+
+  let tickIntervalMs = DEFAULT_VPT_TICK_INTERVAL_MS;
+  const sanitizedTick = (rawTickInterval ?? '').trim();
+  if (sanitizedTick.length > 0) {
+    const parsed = Number.parseInt(sanitizedTick, 10);
+    if (!Number.isFinite(parsed)) {
+      warnings.push(
+        `VPT_TICK_INTERVAL_MS='${rawTickInterval}' は数値として解釈できないため ${DEFAULT_VPT_TICK_INTERVAL_MS} を利用します。`,
+      );
+    } else if (parsed < MIN_VPT_TICK_INTERVAL_MS || parsed > MAX_VPT_TICK_INTERVAL_MS) {
+      const clamped = Math.min(Math.max(parsed, MIN_VPT_TICK_INTERVAL_MS), MAX_VPT_TICK_INTERVAL_MS);
+      warnings.push(
+        `VPT_TICK_INTERVAL_MS=${parsed} は許容範囲 ${MIN_VPT_TICK_INTERVAL_MS}～${MAX_VPT_TICK_INTERVAL_MS} を外れているため ${clamped} へ丸めます。`,
+      );
+      tickIntervalMs = clamped;
+    } else {
+      tickIntervalMs = parsed;
+    }
+  }
+
+  let maxSequenceLength = DEFAULT_VPT_MAX_SEQUENCE_LENGTH;
+  const sanitizedSeq = (rawMaxSequence ?? '').trim();
+  if (sanitizedSeq.length > 0) {
+    const parsed = Number.parseInt(sanitizedSeq, 10);
+    if (!Number.isFinite(parsed)) {
+      warnings.push(
+        `VPT_MAX_SEQUENCE_LENGTH='${rawMaxSequence}' は数値として解釈できないため ${DEFAULT_VPT_MAX_SEQUENCE_LENGTH} を利用します。`,
+      );
+    } else if (parsed < MIN_VPT_MAX_SEQUENCE_LENGTH || parsed > MAX_VPT_MAX_SEQUENCE_LENGTH) {
+      const clamped = Math.min(
+        Math.max(parsed, MIN_VPT_MAX_SEQUENCE_LENGTH),
+        MAX_VPT_MAX_SEQUENCE_LENGTH,
+      );
+      warnings.push(
+        `VPT_MAX_SEQUENCE_LENGTH=${parsed} は許容範囲 ${MIN_VPT_MAX_SEQUENCE_LENGTH}～${MAX_VPT_MAX_SEQUENCE_LENGTH} を外れているため ${clamped} へ丸めます。`,
+      );
+      maxSequenceLength = clamped;
+    } else {
+      maxSequenceLength = parsed;
+    }
+  }
+
+  return { tickIntervalMs, maxSequenceLength, warnings };
 }

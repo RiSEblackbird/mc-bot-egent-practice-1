@@ -4,13 +4,17 @@ import minecraftData from 'minecraft-data';
 
 import {
   AgentWebSocketResolution,
+  ControlModeResolution,
   HostResolutionResult,
   MoveGoalToleranceResolution,
+  VptPlaybackResolution,
   detectDockerRuntime,
   parseEnvInt,
   resolveAgentWebSocketEndpoint,
+  resolveControlMode,
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
+  resolveVptPlaybackConfig,
 } from './env.js';
 
 /**
@@ -105,6 +109,11 @@ export interface BotRuntimeConfig {
   skills: {
     historyPath: string;
   };
+  control: {
+    mode: 'command' | 'vpt';
+    modeResolution: ControlModeResolution;
+    vpt: VptPlaybackResolution;
+  };
 }
 
 export interface ConfigLoadResult {
@@ -132,6 +141,11 @@ export function loadBotRuntimeConfig(
     env.AGENT_WS_PORT,
     dockerDetected,
   );
+  const controlModeResolution = resolveControlMode(env.CONTROL_MODE);
+  const vptPlaybackResolution = resolveVptPlaybackConfig(
+    env.VPT_TICK_INTERVAL_MS,
+    env.VPT_MAX_SEQUENCE_LENGTH,
+  );
 
   const skillHistoryPathRaw = env.SKILL_HISTORY_PATH?.trim() ?? '';
   const skillHistoryPath =
@@ -158,12 +172,19 @@ export function loadBotRuntimeConfig(
     skills: {
       historyPath: skillHistoryPath,
     },
+    control: {
+      mode: controlModeResolution.mode,
+      modeResolution: controlModeResolution,
+      vpt: vptPlaybackResolution,
+    },
   };
 
   const warnings: string[] = [
     ...versionResolution.warnings,
     ...agentResolution.warnings,
     ...moveGoalToleranceResolution.warnings,
+    ...controlModeResolution.warnings,
+    ...vptPlaybackResolution.warnings,
   ];
 
   if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {
