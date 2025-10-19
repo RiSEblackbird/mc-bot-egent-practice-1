@@ -346,6 +346,8 @@ class AgentOrchestrator:
         snapshot = {
             "player_pos": self.memory.get("player_pos", "不明"),
             "inventory_summary": self.memory.get("inventory", "不明"),
+            "general_status": self.memory.get("general_status", "未記録"),
+            "dig_permission": self.memory.get("dig_permission", "未評価"),
             "last_chat": self.memory.get("last_chat", "未記録"),
             "last_destination": self.memory.get("last_destination", "未記録"),
         }
@@ -398,10 +400,11 @@ class AgentOrchestrator:
                     index,
                     detection_category,
                 )
-                detection_reports.append({
-                    "category": detection_category,
-                    "step": normalized,
-                })
+                detection_result = await self._perform_detection_task(
+                    detection_category
+                )
+                if detection_result:
+                    detection_reports.append(detection_result)
                 continue
 
             coords = self._extract_coordinates(normalized)
@@ -557,6 +560,125 @@ class AgentOrchestrator:
             return True
 
         return False
+
+    async def _perform_detection_task(self, category: str) -> Optional[Dict[str, Any]]:
+        """Mineflayer 側のステータス取得コマンドを実行し、メモリと報告用要約を更新する。"""
+
+        if category == "player_position":
+            resp = await self.actions.gather_status("position")
+            if not resp.get("ok"):
+                error_detail = resp.get("error") or "Mineflayer が現在位置を返しませんでした。"
+                await self._report_execution_barrier(
+                    "現在位置の確認",
+                    f"ステータス取得に失敗しました（{error_detail}）。",
+                )
+                return None
+
+            data = resp.get("data") or {}
+            summary = self._summarize_position_status(data)
+            self.memory.set("player_pos", summary)
+            self.memory.set("player_pos_detail", data)
+            return {"category": category, "summary": summary, "data": data}
+
+        if category == "inventory_status":
+            resp = await self.actions.gather_status("inventory")
+            if not resp.get("ok"):
+                error_detail = resp.get("error") or "Mineflayer が所持品を返しませんでした。"
+                await self._report_execution_barrier(
+                    "所持品の確認",
+                    f"ステータス取得に失敗しました（{error_detail}）。",
+                )
+                return None
+
+            data = resp.get("data") or {}
+            summary = self._summarize_inventory_status(data)
+            self.memory.set("inventory", summary)
+            self.memory.set("inventory_detail", data)
+            return {"category": category, "summary": summary, "data": data}
+
+        if category == "general_status":
+            resp = await self.actions.gather_status("general")
+            if not resp.get("ok"):
+                error_detail = resp.get("error") or "Mineflayer が状態値を返しませんでした。"
+                await self._report_execution_barrier(
+                    "状態の共有",
+                    f"ステータス取得に失敗しました（{error_detail}）。",
+                )
+                return None
+
+            data = resp.get("data") or {}
+            summary = self._summarize_general_status(data)
+            self.memory.set("general_status", summary)
+            self.memory.set("general_status_detail", data)
+            if isinstance(data, dict) and "digPermission" in data:
+                self.memory.set("dig_permission", data.get("digPermission"))
+            return {"category": category, "summary": summary, "data": data}
+
+        self.logger.warning("unknown detection category encountered category=%s", category)
+        return None
+
+    def _summarize_position_status(self, data: Dict[str, Any]) -> str:
+        """Node 側から受け取った位置情報をプレイヤー向けの要約文へ整形する。"""
+
+        if isinstance(data, dict):
+            formatted = str(data.get("formatted") or "").strip()
+            if formatted:
+                return formatted
+
+            position = data.get("position")
+            if isinstance(position, dict):
+                x = position.get("x")
+                y = position.get("y")
+                z = position.get("z")
+                dimension = data.get("dimension") or "unknown"
+                if all(isinstance(value, int) for value in (x, y, z)):
+                    return f"現在位置は X={x} / Y={y} / Z={z}（ディメンション: {dimension}）です。"
+
+        return "現在位置の最新情報を取得しました。"
+
+    def _summarize_inventory_status(self, data: Dict[str, Any]) -> str:
+        """インベントリ情報を主要要約へ変換する。"""
+
+        if isinstance(data, dict):
+            formatted = str(data.get("formatted") or "").strip()
+            if formatted:
+                return formatted
+
+            items = data.get("items")
+            if isinstance(items, list):
+                item_count = len(items)
+                pickaxes = data.get("pickaxes")
+                pickaxe_count = len(pickaxes) if isinstance(pickaxes, list) else 0
+                return f"所持品は {item_count} 種類を確認しました（ツルハシ {pickaxe_count} 本）。"
+
+        return "所持品一覧を取得しました。"
+
+    def _summarize_general_status(self, data: Dict[str, Any]) -> str:
+        """体力・満腹度・掘削許可のステータスを読みやすい文章にまとめる。"""
+
+        if isinstance(data, dict):
+            formatted = str(data.get("formatted") or "").strip()
+            if formatted:
+                return formatted
+
+            health = data.get("health")
+            max_health = data.get("maxHealth")
+            food = data.get("food")
+            saturation = data.get("saturation")
+            dig_permission = data.get("digPermission")
+            if all(
+                isinstance(value, (int, float))
+                for value in (health, max_health, food, saturation)
+            ) and isinstance(dig_permission, dict):
+                allowed = dig_permission.get("allowed")
+                reason = dig_permission.get("reason")
+                permission_text = "あり" if allowed else f"なし（{reason}）"
+                return (
+                    f"体力: {int(health)}/{int(max_health)}、満腹度: {int(food)}/20、飽和度: {float(saturation):.1f}、"
+                    f"採掘許可: {permission_text}。"
+                )
+
+        return "体力や採掘許可の現在値を確認しました。"
 
     def _classify_action_task(self, text: str) -> Optional[str]:
         """行動系タスクのカテゴリを判定し、保留リスト整理に利用する。"""
@@ -727,21 +849,27 @@ class AgentOrchestrator:
             )
             return
 
-        # 未返信の場合は検出タスクを丁寧に説明する補足メッセージを構築する。
-        labels = []
+        # 未返信の場合は取得した内容そのものを共有し、プレイヤーが追加指示を出しやすくする。
+        segments: List[str] = []
         for item in report_list:
-            category = item.get("category", "")
-            label = self._DETECTION_LABELS.get(category)
-            if label and label not in labels:
-                labels.append(label)
+            summary_text = str(item.get("summary") or "").strip()
+            if summary_text:
+                segments.append(summary_text.rstrip("。"))
 
-        if not labels:
-            labels.append("状況確認")
+        if not segments:
+            labels = []
+            for item in report_list:
+                category = item.get("category", "")
+                label = self._DETECTION_LABELS.get(category)
+                if label and label not in labels:
+                    labels.append(label)
+            if not labels:
+                labels.append("状況確認")
+            message = f"{'、'.join(labels)}の確認結果を取得しました。"
+        else:
+            message = "。".join(segments) + "。"
 
-        summary = "、".join(labels)
-        await self.actions.say(
-            f"{summary}の確認依頼を検出報告タスクとして整理しました。追加で知りたい情報があれば教えてください。"
-        )
+        await self.actions.say(message)
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""

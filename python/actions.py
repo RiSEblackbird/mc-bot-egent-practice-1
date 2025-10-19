@@ -64,6 +64,12 @@ class Actions:
         payload = {"type": "equipItem", "args": args}
         return await self._dispatch("equipItem", payload)
 
+    async def gather_status(self, kind: str) -> Dict[str, Any]:
+        """Mineflayer 側から位置・所持品などのステータス情報を取得する。"""
+
+        payload = {"type": "gatherStatus", "args": {"kind": kind}}
+        return await self._dispatch("gatherStatus", payload)
+
     async def _dispatch(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """共通の送信処理: 付番、送信時間、レスポンスを詳細に記録する。"""
 
