@@ -3,7 +3,7 @@
 
 import itertools
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from bridge_ws import BotBridge
 from utils import setup_logger
@@ -45,6 +45,24 @@ class Actions:
 
         payload = {"type": "placeTorch", "args": position}
         return await self._dispatch("placeTorch", payload)
+
+    async def equip_item(
+        self,
+        *,
+        tool_type: Optional[str] = None,
+        item_name: Optional[str] = None,
+        destination: str = "hand",
+    ) -> Dict[str, Any]:
+        """指定した種類のアイテムを手に持ち替える。"""
+
+        args: Dict[str, Any] = {"destination": destination}
+        if tool_type:
+            args["toolType"] = tool_type
+        if item_name:
+            args["itemName"] = item_name
+
+        payload = {"type": "equipItem", "args": args}
+        return await self._dispatch("equipItem", payload)
 
     async def _dispatch(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """共通の送信処理: 付番、送信時間、レスポンスを詳細に記録する。"""

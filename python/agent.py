@@ -196,6 +196,16 @@ class AgentOrchestrator:
             ),
             label="戦闘行動",
         ),
+        "equip": ActionTaskRule(
+            keywords=(
+                "装備",
+                "持ち替え",
+                "手に持つ",
+                "構える",
+            ),
+            label="装備持ち替え",
+            implemented=True,
+        ),
         "deliver": ActionTaskRule(
             keywords=(
                 "渡す",
@@ -254,6 +264,16 @@ class AgentOrchestrator:
         "inventory_status": "所持品の確認",
         "general_status": "状態の共有",
     }
+    # 装備ステップ用のキーワード→装備対象の推測マップ。右手・左手のヒントも同時に解析する。
+    _EQUIP_KEYWORD_RULES = (
+        (("ツルハシ", "ピッケル", "pickaxe"), {"tool_type": "pickaxe"}),
+        (("剣", "ソード", "sword"), {"tool_type": "sword"}),
+        (("斧", "おの", "axe"), {"tool_type": "axe"}),
+        (("シャベル", "スコップ", "shovel", "spade"), {"tool_type": "shovel"}),
+        (("クワ", "鍬", "hoe"), {"tool_type": "hoe"}),
+        (("盾", "シールド", "shield"), {"tool_type": "shield"}),
+        (("松明", "たいまつ", "torch"), {"item_name": "torch"}),
+    )
 
     def __init__(self, actions: Actions, memory: Memory) -> None:
         self.actions = actions
@@ -515,6 +535,27 @@ class AgentOrchestrator:
                     return category
         return None
 
+    def _infer_equip_arguments(self, text: str) -> Optional[Dict[str, str]]:
+        """装備ステップから Mineflayer へ渡す装備パラメータを推測する。"""
+
+        normalized = text.lower()
+        destination = "hand"
+        if "左手" in text or "オフハンド" in normalized or "off-hand" in normalized:
+            destination = "off-hand"
+        elif "右手" in text:
+            destination = "hand"
+
+        for keywords, mapping in self._EQUIP_KEYWORD_RULES:
+            if any(keyword and keyword in text for keyword in keywords):
+                result: Dict[str, str] = {"destination": destination}
+                result.update(mapping)
+                return result
+            if any(keyword and keyword.lower() in normalized for keyword in keywords):
+                result = {"destination": destination, **mapping}
+                return result
+
+        return None
+
     async def _attempt_proactive_progress(
         self, step: str, last_target_coords: Optional[Tuple[int, int, int]]
     ) -> bool:
@@ -595,6 +636,36 @@ class AgentOrchestrator:
                     "フォールバック移動が Mineflayer に拒否されました。ログの moveTo 応答内容を確認してください。",
                 )
             return True, updated_target
+
+        if category == "equip":
+            equip_args = self._infer_equip_arguments(step)
+            if not equip_args:
+                self.logger.info("equip step inference failed step='%s'", step)
+                await self._report_execution_barrier(
+                    step,
+                    "装備するアイテムを推測できませんでした。ツール名や用途をもう少し具体的に指示してください。",
+                )
+                return True, last_target_coords
+
+            self.logger.info(
+                "handling equip step='%s' args=%s",
+                step,
+                equip_args,
+            )
+            resp = await self.actions.equip_item(
+                tool_type=equip_args.get("tool_type"),
+                item_name=equip_args.get("item_name"),
+                destination=equip_args.get("destination", "hand"),
+            )
+            if resp.get("ok"):
+                return True, last_target_coords
+
+            error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
+            await self._report_execution_barrier(
+                step,
+                f"装備コマンドが失敗しました: {error_detail}",
+            )
+            return True, last_target_coords
 
         if rule.implemented:
             self.logger.info(
