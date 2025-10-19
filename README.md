@@ -101,6 +101,18 @@ Python 側で LLM プランニングとアクション実行が行われます�
 失敗時は優先度を `high` へ自動昇格、成功時は `normal` へ戻す優先度マネージャーと同期しています。新しいシナリオテスト
 `tests/test_langgraph_scenarios.py` では障害検知・並列進行・優先度遷移を網羅し、グラフ内で再計画が完結することを検証できます。さらに `tests/e2e/test_multi_agent_roles.py` では敵襲来時の防衛介入と補給合流のロール切替を E2E で確認し、共有メモリと役割ステートが期待通り同期されることを保証しています。
 
+#### Reflexion ログの確認手順
+
+* 失敗ステップと再試行結果は `var/memory/reflections.json` に JSON 形式で蓄積されます。Python/Node いずれのプロセスを再起動しても履歴を再利用できるため、長期的な改善状況を追跡できます。
+* 直近の反省ログを確認するには以下のように `python -m json.tool` で整形すると見やすいです。
+
+  ```bash
+  python -m json.tool var/memory/reflections.json | less
+  ```
+
+* 改善提案と再試行結果のみを確認したい場合は `jq ' .entries[] | {failed_step, improvement, retry_result}' var/memory/reflections.json` のように抽出してください。
+* plan() へ渡された要約は Python 側の `memory` ロガーに `recent_reflections` として出力されます。直近の Reflexion プロンプト原文は `last_reflection_prompt` キーに保存され、次回計画時のヒントとして利用されます。
+
 Mineflayer から `ok=false` が返った場合は、障壁内容を `compose_barrier_notification` で LLM に共有し、
 プレイヤーへチャット通知したのち自動的に再計画を依頼します。失敗ステップと残りの計画案をまとめて LLM に渡すため、
 例えば「採掘が拒否された→ツール装備プランを立て直す」といった自律的なリカバリーが可能です。障壁発生時も既存の

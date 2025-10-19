@@ -29,7 +29,12 @@ from memory import Memory
 from planner import PlanOut, ReActStep, compose_barrier_notification, plan
 from skills import SkillMatch
 from utils import log_structured_event, setup_logger
-from agent_orchestrator import ActionGraph, ActionTaskRule, ChatTask
+from agent_orchestrator import (
+    ActionGraph,
+    ActionTaskRule,
+    ChatTask,
+    build_reflection_prompt,
+)
 
 logger = setup_logger("agent")
 
@@ -508,6 +513,12 @@ class AgentOrchestrator:
                 {"id": self._current_role_id, "label": "汎用サポーター"},
             ),
         }
+        reflection_context = self.memory.build_reflection_context()
+        if reflection_context:
+            snapshot["recent_reflections"] = reflection_context
+        active_reflection_prompt = self.memory.get_active_reflection_prompt()
+        if active_reflection_prompt:
+            snapshot["active_reflection_prompt"] = active_reflection_prompt
         self.logger.info("context snapshot built=%s", snapshot)
         return snapshot
 
@@ -848,6 +859,16 @@ class AgentOrchestrator:
                 already_responded=bool(plan_out.resp.strip()),
             )
 
+        # 計画が最後まで完了した場合は pending 状態の反省ログへ成功結果を書き戻す。
+        completed_reflection = self.memory.finalize_pending_reflection(
+            outcome="success",
+            detail="計画ステップを完了",
+        )
+        if completed_reflection:
+            self.logger.info(
+                "reflection session marked as success id=%s", completed_reflection.id
+            )
+
     def _emit_react_log(
         self,
         *,
@@ -892,6 +913,43 @@ class AgentOrchestrator:
         """Mineflayer 側の失敗で計画を続行できない場合の回復処理をまとめる。"""
 
         await self._report_execution_barrier(failed_step, failure_reason)
+
+        # 直前の再試行が完了していない状態で失敗が再発した場合は、結果を明示的に記録する。
+        previous_pending = self.memory.finalize_pending_reflection(
+            outcome="failed",
+            detail=f"step='{failed_step}' reason='{failure_reason}'",
+        )
+        if previous_pending:
+            self.logger.info(
+                "previous reflection marked as failed id=%s", previous_pending.id
+            )
+
+        task_signature = self.memory.derive_task_signature(failed_step)
+        previous_reflections = self.memory.export_reflections_for_prompt(
+            task_signature=task_signature,
+            limit=3,
+        )
+        # 失敗状況と過去の学習履歴をまとめ、次回 plan() へ渡す Reflexion プロンプトを生成する。
+        reflection_prompt = build_reflection_prompt(
+            failed_step,
+            failure_reason,
+            detection_reports=detection_reports,
+            action_backlog=action_backlog,
+            previous_reflections=previous_reflections,
+        )
+        # 永続化ログへ改善案を追加し、plan() の文脈へ差し込めるように保持する。
+        self.memory.begin_reflection(
+            task_signature=task_signature,
+            failed_step=failed_step,
+            failure_reason=failure_reason,
+            improvement=reflection_prompt,
+            metadata={
+                "detection_reports": list(detection_reports),
+                "action_backlog": list(action_backlog),
+                "remaining_steps": list(remaining_steps),
+            },
+        )
+        self.memory.set("last_reflection_prompt", reflection_prompt)
 
         if detection_reports:
             await self._handle_detection_reports(
@@ -938,6 +996,11 @@ class AgentOrchestrator:
         )
         if remaining_text:
             replan_instruction += f" 未完了ステップ候補: {remaining_text}"
+
+        # Reflexion プロンプトを再計画メッセージの冒頭へ付与し、LLM へ明示的な振り返りを促す。
+        reflection_prompt = self.memory.get_active_reflection_prompt()
+        if reflection_prompt:
+            replan_instruction = f"{reflection_prompt}\n\n{replan_instruction}"
 
         self.logger.info(
             "requesting replan depth=%d instruction='%s' context=%s",
