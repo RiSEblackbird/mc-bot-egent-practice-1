@@ -2,6 +2,7 @@
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
 import { createBot, Bot } from 'mineflayer';
 import type { Item } from 'prismarine-item';
+import type { Vec3 } from 'vec3';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
 // そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
 import mineflayerPathfinder from 'mineflayer-pathfinder';
@@ -38,10 +39,11 @@ const WS_HOST = runtimeConfig.websocket.host;
 const WS_PORT = runtimeConfig.websocket.port;
 const AGENT_WS_URL = runtimeConfig.agentBridge.url;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
+const MINING_APPROACH_TOLERANCE = 1;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
-type CommandType = 'chat' | 'moveTo' | 'equipItem' | 'gatherStatus';
+type CommandType = 'chat' | 'moveTo' | 'equipItem' | 'gatherStatus' | 'mineOre';
 
 // WebSocket で受信するメッセージの基本形。
 interface CommandPayload {
@@ -355,6 +357,8 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleEquipItemCommand(args);
     case 'gatherStatus':
       return handleGatherStatusCommand(args);
+    case 'mineOre':
+      return handleMineOreCommand(args);
     default: {
       const exhaustiveCheck: never = type;
       void exhaustiveCheck;
@@ -544,6 +548,141 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
     console.error('[Pathfinder] failed to move', primaryError);
     return { ok: false, error: 'Pathfinding failed' };
   }
+}
+
+interface MineResultDetail {
+  x: number;
+  y: number;
+  z: number;
+  blockName: string;
+}
+
+// ---- 採掘関連の閾値 ----
+// スキャン半径や採掘対象数に安全なデフォルトを設け、暴走的な範囲破壊を防ぐ。
+const DEFAULT_MINE_SCAN_RADIUS = 12;
+const DEFAULT_MINE_MAX_TARGETS = 3;
+const MAX_MINE_SCAN_RADIUS = 32;
+const MAX_MINE_TARGETS = 8;
+
+/**
+ * mineOre コマンドを処理し、指定された種類の鉱石を探索して掘削する。
+ */
+async function handleMineOreCommand(args: Record<string, unknown>): Promise<CommandResponse> {
+  const oresRaw = Array.isArray(args.ores) ? args.ores : [];
+  const normalizedOres = oresRaw
+    .map((value) => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
+    .filter((value) => value.length > 0);
+
+  if (normalizedOres.length === 0) {
+    normalizedOres.push('redstone_ore', 'deepslate_redstone_ore');
+  }
+
+  const scanRadiusRaw = Number(args.scanRadius);
+  const scanRadius = Number.isFinite(scanRadiusRaw) && scanRadiusRaw > 0
+    ? Math.min(Math.floor(scanRadiusRaw), MAX_MINE_SCAN_RADIUS)
+    : DEFAULT_MINE_SCAN_RADIUS;
+
+  const maxTargetsRaw = Number(args.maxTargets);
+  const maxTargets = Number.isFinite(maxTargetsRaw) && maxTargetsRaw > 0
+    ? Math.min(Math.floor(maxTargetsRaw), MAX_MINE_TARGETS)
+    : DEFAULT_MINE_MAX_TARGETS;
+
+  const activeBot = getActiveBot();
+
+  if (!activeBot) {
+    console.warn('[MineOreCommand] rejected because bot is unavailable');
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
+  const data = minecraftData(activeBot.version);
+  const blocksByName = data.blocksByName as Record<string, { id: number; name: string }>;
+  const targetIds = new Set<number>();
+  const unknownOres: string[] = [];
+
+  for (const oreName of normalizedOres) {
+    const blockInfo = blocksByName[oreName];
+    if (blockInfo && typeof blockInfo.id === 'number') {
+      targetIds.add(blockInfo.id);
+    } else {
+      unknownOres.push(oreName);
+    }
+  }
+
+  if (targetIds.size === 0) {
+    console.warn('[MineOreCommand] no known ore ids resolved', { normalizedOres });
+    return { ok: false, error: 'Requested ore types are not recognized for this version' };
+  }
+
+  if (unknownOres.length > 0) {
+    console.warn('[MineOreCommand] some ore names were not resolved', { unknownOres });
+  }
+
+  const foundPositions: Vec3[] = activeBot.findBlocks({
+    matching: (block) => Boolean(block && targetIds.has(block.type)),
+    maxDistance: scanRadius,
+    count: maxTargets,
+  });
+
+  if (foundPositions.length === 0) {
+    console.warn(
+      `[MineOreCommand] target ores not found within radius ${scanRadius}`,
+      { normalizedOres },
+    );
+    return { ok: false, error: 'Target ore not found within scan radius' };
+  }
+
+  const results: MineResultDetail[] = [];
+  for (const position of foundPositions) {
+    const block = activeBot.blockAt(position);
+    if (!block || !targetIds.has(block.type)) {
+      continue;
+    }
+
+    const goal = new goals.GoalNear(position.x, position.y, position.z, MINING_APPROACH_TOLERANCE);
+    const movements = digPermissiveMovements ?? activeBot.pathfinder.movements;
+
+    try {
+      await gotoWithForcedMoveRetry(activeBot, goal, movements);
+    } catch (moveError) {
+      console.error('[MineOreCommand] failed to approach ore block', moveError);
+      continue;
+    }
+
+    const refreshed = activeBot.blockAt(position);
+    if (!refreshed || !targetIds.has(refreshed.type)) {
+      console.warn('[MineOreCommand] ore disappeared before digging', position);
+      continue;
+    }
+
+    try {
+      await activeBot.dig(refreshed, true);
+      lastMoveTarget = { x: position.x, y: position.y, z: position.z };
+      results.push({
+        x: position.x,
+        y: position.y,
+        z: position.z,
+        blockName: refreshed.name,
+      });
+      console.log(
+        `[MineOreCommand] mined ${refreshed.name} at (${position.x}, ${position.y}, ${position.z}) using tolerance ${MINING_APPROACH_TOLERANCE}`,
+      );
+    } catch (digError) {
+      console.error('[MineOreCommand] failed to dig ore block', digError);
+    }
+  }
+
+  if (results.length === 0) {
+    return { ok: false, error: 'Failed to mine target ores' };
+  }
+
+  return {
+    ok: true,
+    data: {
+      minedBlocks: results.length,
+      details: results,
+      unresolvedOres: unknownOres,
+    },
+  };
 }
 
 type EquipDestination = 'hand' | 'off-hand';

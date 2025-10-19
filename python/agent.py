@@ -542,6 +542,56 @@ class AgentOrchestrator:
 
         return None
 
+    def _infer_mining_request(self, text: str) -> Dict[str, Any]:
+        """採掘ステップから鉱石種類と探索パラメータを推測する。"""
+
+        normalized = text.lower()
+        targets: List[str] = []
+        keyword_map = (
+            (
+                ("レッドストーン", "redstone"),
+                ["redstone_ore", "deepslate_redstone_ore"],
+            ),
+            (("ダイヤ", "ダイア", "diamond"), ["diamond_ore", "deepslate_diamond_ore"]),
+            (("ラピス", "lapis"), ["lapis_ore", "deepslate_lapis_ore"]),
+            (("鉄", "iron"), ["iron_ore", "deepslate_iron_ore"]),
+            (("金", "gold"), ["gold_ore", "deepslate_gold_ore"]),
+            (("石炭", "coal"), ["coal_ore", "deepslate_coal_ore"]),
+        )
+
+        for keywords, ores in keyword_map:
+            if any(keyword in text for keyword in keywords) or any(
+                keyword in normalized for keyword in keywords
+            ):
+                for ore in ores:
+                    if ore not in targets:
+                        targets.append(ore)
+
+        if not targets:
+            # 指定がない場合はレッドストーン採掘を想定した既定値に倒す。
+            # プレイヤーが抽象的に「鉱石を掘って」と述べたケースでも、
+            # もっとも要望が多いレッドストーン収集に先回りで対応する。
+            targets = ["redstone_ore", "deepslate_redstone_ore"]
+
+        scan_radius = 12
+        if "広範囲" in text or "探し回" in text:
+            scan_radius = 18
+        elif "近く" in text or "付近" in text:
+            scan_radius = 8
+
+        max_targets = 3
+        if "大量" in text or "たくさん" in text or "複数" in text:
+            max_targets = 5
+        elif "一つ" in text or "ひとつ" in text:
+            max_targets = 1
+
+        request = {
+            "targets": targets,
+            "scan_radius": scan_radius,
+            "max_targets": max_targets,
+        }
+        return request
+
     async def _attempt_proactive_progress(
         self, step: str, last_target_coords: Optional[Tuple[int, int, int]]
     ) -> bool:
@@ -769,6 +819,35 @@ class AgentOrchestrator:
             await self._report_execution_barrier(
                 step,
                 f"装備コマンドが失敗しました: {error_detail}",
+            )
+            return True, last_target_coords
+
+        if category == "mine":
+            # 鉱石系の指示は Node 側の探索コマンドへ橋渡しし、
+            # 具体的な掘削まで一気通貫で行えるようにする。
+            mining_request = self._infer_mining_request(step)
+            self.logger.info(
+                "handling mine step='%s' request=%s", step, mining_request
+            )
+            resp = await self.actions.mine_ores(
+                mining_request["targets"],
+                scan_radius=mining_request["scan_radius"],
+                max_targets=mining_request["max_targets"],
+            )
+            if resp.get("ok"):
+                mined = resp.get("data", {}).get("minedBlocks")
+                self.logger.info(
+                    "mine command succeeded mined_blocks=%s resp=%s", mined, resp
+                )
+                return True, last_target_coords
+
+            error_detail = resp.get("error") or "鉱石採掘コマンドが拒否されました"
+            self.logger.error(
+                "mine command failed step='%s' error=%s resp=%s", step, error_detail, resp
+            )
+            await self._report_execution_barrier(
+                step,
+                f"採掘コマンドが失敗しました: {error_detail}",
             )
             return True, last_target_coords
 

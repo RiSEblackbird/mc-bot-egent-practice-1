@@ -40,6 +40,28 @@ class Actions:
         payload = {"type": "mineBlocks", "args": {"positions": positions}}
         return await self._dispatch("mineBlocks", payload)
 
+    async def mine_ores(
+        self,
+        ore_names: List[str],
+        *,
+        scan_radius: int = 12,
+        max_targets: int = 3,
+    ) -> Dict[str, Any]:
+        """周囲の鉱石を探索・採掘するコマンドを送信する。"""
+
+        # Mineflayer 側での探索範囲や対象鉱石の種類を完全に指定し、
+        # 再現性の高い採掘手順をリモート操作で実現する。
+
+        payload = {
+            "type": "mineOre",
+            "args": {
+                "ores": ore_names,
+                "scanRadius": scan_radius,
+                "maxTargets": max_targets,
+            },
+        }
+        return await self._dispatch("mineOre", payload)
+
     async def place_torch(self, position: Dict[str, int]) -> Dict[str, Any]:
         """たいまつを指定位置に設置するコマンドを送信する。"""
 
