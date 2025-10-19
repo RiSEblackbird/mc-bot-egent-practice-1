@@ -9,13 +9,7 @@ import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
-import {
-  detectDockerRuntime,
-  parseEnvInt,
-  resolveAgentWebSocketEndpoint,
-  resolveMinecraftHostValue,
-  resolveMoveGoalTolerance,
-} from './runtime/env.js';
+import { loadBotRuntimeConfig } from './runtime/config.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
@@ -28,56 +22,22 @@ const CURRENT_POSITION_KEYWORDS = ['現在値', '現在地', '現在位置', '�
 // ---- Minecraft プロトコル差分パッチ ----
 // 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
-// ---- プロトコルバージョン制御 ----
-// Paper サーバーと Mineflayer の既定バージョン整合性を保つため、ここで既定値を一元管理する。
-const DEFAULT_MC_VERSION = '1.21.1';
-const SUPPORTED_MINECRAFT_VERSIONS = new Set(
-  minecraftData.versions.pc.map((version) => version.minecraftVersion),
-);
-
-interface MinecraftVersionResolution {
-  version: string | undefined;
-  warnings: string[];
+// ---- 環境変数・定数設定 ----
+const { config: runtimeConfig, warnings: runtimeWarnings } = loadBotRuntimeConfig(process.env);
+for (const warning of runtimeWarnings) {
+  console.warn(`[Config] ${warning}`);
 }
 
-/**
- * Mineflayer が接続時に利用するプロトコルバージョンを決定する。
- * サーバーとの不整合で PartialReadError が発生しないよう、minecraft-data が認識するラベルへ正規化する。
- */
-function resolveMinecraftVersionLabel(requestedVersionRaw: string | undefined): MinecraftVersionResolution {
-  const warnings: string[] = [];
-  const sanitized = (requestedVersionRaw ?? '').trim();
-
-  if (sanitized.length === 0) {
-    if (SUPPORTED_MINECRAFT_VERSIONS.has(DEFAULT_MC_VERSION)) {
-      warnings.push(
-        `環境変数 MC_VERSION が未設定のため、既定プロトコル ${DEFAULT_MC_VERSION} を利用します。`,
-      );
-      return { version: DEFAULT_MC_VERSION, warnings };
-    }
-
-    warnings.push(
-      `環境変数 MC_VERSION が未設定ですが、既定プロトコル ${DEFAULT_MC_VERSION} が minecraft-data へ登録されていないため Mineflayer の自動判別に委ねます。`,
-    );
-    return { version: undefined, warnings };
-  }
-
-  if (SUPPORTED_MINECRAFT_VERSIONS.has(sanitized)) {
-    return { version: sanitized, warnings };
-  }
-
-  if (SUPPORTED_MINECRAFT_VERSIONS.has(DEFAULT_MC_VERSION)) {
-    warnings.push(
-      `MC_VERSION='${sanitized}' は minecraft-data の対応一覧に存在しないため ${DEFAULT_MC_VERSION} へフォールバックします。`,
-    );
-    return { version: DEFAULT_MC_VERSION, warnings };
-  }
-
-  warnings.push(
-    `MC_VERSION='${sanitized}' は minecraft-data の対応一覧に存在せず、既定プロトコル ${DEFAULT_MC_VERSION} も見つからないため Mineflayer の自動判別にフォールバックします。`,
-  );
-  return { version: undefined, warnings };
-}
+const MC_VERSION = runtimeConfig.minecraft.version;
+const MC_HOST = runtimeConfig.minecraft.host;
+const MC_PORT = runtimeConfig.minecraft.port;
+const BOT_USERNAME = runtimeConfig.minecraft.username;
+const AUTH_MODE = runtimeConfig.minecraft.authMode;
+const MC_RECONNECT_DELAY_MS = runtimeConfig.minecraft.reconnectDelayMs;
+const WS_HOST = runtimeConfig.websocket.host;
+const WS_PORT = runtimeConfig.websocket.port;
+const AGENT_WS_URL = runtimeConfig.agentBridge.url;
+const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -103,51 +63,6 @@ interface FoodInfo {
 }
 
 type FoodDictionary = Record<string, FoodInfo>;
-
-// ---- 環境変数・定数設定 ----
-const versionResolution = resolveMinecraftVersionLabel(process.env.MC_VERSION);
-for (const warning of versionResolution.warnings) {
-  console.warn(`[Bot] ${warning}`);
-}
-
-const MC_VERSION = versionResolution.version;
-
-const dockerDetected = detectDockerRuntime();
-const hostResolution = resolveMinecraftHostValue(process.env.MC_HOST, dockerDetected);
-
-if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {
-  console.warn(
-    '[Bot] MC_HOST points to localhost inside Docker. Falling back to host.docker.internal so the Paper server is reachable.',
-  );
-}
-
-const MC_HOST = hostResolution.host;
-const MC_PORT = parseEnvInt(process.env.MC_PORT, 25565);
-const BOT_USERNAME = process.env.BOT_USERNAME ?? 'HelperBot';
-const AUTH_MODE = (process.env.AUTH_MODE ?? 'offline') as 'offline' | 'microsoft';
-// WebSocket 接続に関する構成。Docker ネットワーク上でも受信できるよう 0.0.0.0 を既定にする。
-const WS_HOST = process.env.WS_HOST ?? '0.0.0.0';
-const WS_PORT = parseEnvInt(process.env.WS_PORT, 8765);
-const MC_RECONNECT_DELAY_MS = parseEnvInt(process.env.MC_RECONNECT_DELAY_MS, 5000);
-
-// Python 側のエージェント WebSocket サーバーへチャットを転送するための接続設定。
-const agentEndpointResolution = resolveAgentWebSocketEndpoint(
-  process.env.AGENT_WS_URL,
-  process.env.AGENT_WS_HOST,
-  process.env.AGENT_WS_PORT,
-  dockerDetected,
-);
-for (const warning of agentEndpointResolution.warnings) {
-  console.warn(`[Bot] ${warning}`);
-}
-const AGENT_WS_URL = agentEndpointResolution.url;
-
-// GoalNear の許容距離は LLM の挙動やステージ規模に合わせて調整できるよう環境変数化する。
-const moveGoalToleranceResolution = resolveMoveGoalTolerance(process.env.MOVE_GOAL_TOLERANCE);
-for (const warning of moveGoalToleranceResolution.warnings) {
-  console.warn(`[Bot] ${warning}`);
-}
-const MOVE_GOAL_TOLERANCE = moveGoalToleranceResolution.tolerance;
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
 // 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。

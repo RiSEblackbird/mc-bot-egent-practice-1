@@ -26,6 +26,9 @@ python/.openai/
 python/.secrets/
 python/.tokens/
 python/action_backlog*.json
+# Python agent のローカル設定ファイル（秘匿情報を含む可能性があるため除外）
+python/config.local.py
+python/config.local.json
 
 # OpenAI SDK が生成する可能性のある API 呼び出しログ（秘匿情報混入リスク）
 openai.log
