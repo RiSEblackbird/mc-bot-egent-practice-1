@@ -190,9 +190,21 @@ def resolve_request_temperature(model: str) -> Optional[float]:
     return requested
 
 # 期待する出力スキーマ（簡易）
+class ReActStep(BaseModel):
+    """ReAct 形式で LangGraph へ流す 1 ステップ分の思考と行動。"""
+
+    thought: str = ""
+    action: str = ""
+    observation: str = ""
+
+
 class PlanOut(BaseModel):
     plan: List[str] = Field(default_factory=list)  # 実行ステップ（高レベル）
     resp: str = ""  # プレイヤー向け日本語応答
+    react_trace: List[ReActStep] = Field(
+        default_factory=list,
+        description="Responses API から得た ReAct ループの素案。Observation は Mineflayer 実行結果で更新する。",
+    )
 
 
 class BarrierNotification(BaseModel):
@@ -241,6 +253,32 @@ def _build_plan_graph() -> CompiledStateGraph:
         priority = await manager.mark_success()
         return {"plan_out": plan_data, "priority": priority}
 
+    async def normalize_react_trace(state: _PlanState) -> Dict[str, Any]:
+        plan_out = state.get("plan_out")
+        if not isinstance(plan_out, PlanOut):
+            return {}
+
+        normalized_trace: List[ReActStep] = []
+        for entry in plan_out.react_trace:
+            # LLM 側が空文字で埋めた場合でも、Action テキストが存在するものだけを残す。
+            if not isinstance(entry, ReActStep):
+                continue
+            thought = entry.thought.strip()
+            action = entry.action.strip()
+            observation = entry.observation.strip()
+            if not action:
+                continue
+            normalized_trace.append(
+                ReActStep(
+                    thought=thought,
+                    action=action,
+                    observation=observation,
+                )
+            )
+
+        plan_out.react_trace = normalized_trace
+        return {"plan_out": plan_out}
+
     async def fallback_plan(state: _PlanState) -> Dict[str, Any]:
         logger.warning(
             "plan fallback triggered parse_error=%s llm_error=%s",
@@ -260,6 +298,7 @@ def _build_plan_graph() -> CompiledStateGraph:
     graph.add_node("prepare_payload", prepare_payload)
     graph.add_node("call_llm", call_llm)
     graph.add_node("parse_plan", parse_plan)
+    graph.add_node("normalize_react_trace", normalize_react_trace)
     graph.add_node("fallback_plan", fallback_plan)
     graph.add_node("finalize", finalize)
 
@@ -269,8 +308,9 @@ def _build_plan_graph() -> CompiledStateGraph:
     graph.add_conditional_edges(
         "parse_plan",
         lambda state: "success" if "plan_out" in state else "failure",
-        {"success": "finalize", "failure": "fallback_plan"},
+        {"success": "normalize_react_trace", "failure": "fallback_plan"},
     )
+    graph.add_edge("normalize_react_trace", "finalize")
     graph.add_edge("fallback_plan", "finalize")
     graph.add_edge("finalize", END)
 
@@ -294,8 +334,11 @@ SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然�
 了承してください。プレイヤーが座標や数量などの具体情報を伝えた場合
 は、同じ内容を繰り返し尋ねないでください。
 
-出力は必ず json 形式のオブジェクトで、キーは "plan": string[], "resp": string とする。
-推論の思考過程は出力に含めないこと。
+出力は必ず json 形式のオブジェクトで、キーは "plan": string[], "resp": string,
+"react_trace": {"thought": string, "action": string, "observation": string}[] とする。
+react_trace の observation は環境からの観測値で後から上書きされるため、
+空文字列のまま残してください。thought にはステップを採択した理由を
+日本語で 1 文以内で要約し、action には実行する具体的な操作を記述します。
 """
 BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞している作業の概要を理解し、
 プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
@@ -332,7 +375,15 @@ def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
 
 # 出力フォーマット
 json のみ。例：
-{{"plan": ["畑へ移動", "小麦を収穫", "パンを作る"], "resp": "了解しました。小麦を収穫してパンを作りますね。"}}
+{{
+  "plan": ["畑へ移動", "小麦を収穫", "パンを作る"],
+  "resp": "了解しました。小麦を収穫してパンを作りますね。",
+  "react_trace": [
+    {{"thought": "農作業を開始する準備が必要", "action": "畑へ移動", "observation": ""}},
+    {{"thought": "材料を確保する", "action": "小麦を収穫", "observation": ""}},
+    {{"thought": "食料を用意する", "action": "パンを作る", "observation": ""}}
+  ]
+}}
 """
 
 def _build_responses_input(system_prompt: str, user_prompt: str) -> List[Dict[str, Any]]:
