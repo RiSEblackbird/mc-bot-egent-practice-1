@@ -253,6 +253,32 @@ class AgentOrchestrator:
         (("盾", "シールド", "shield"), {"tool_type": "shield"}),
         (("松明", "たいまつ", "torch"), {"item_name": "torch"}),
     )
+    # 採掘に必要なツルハシのランクと、対応するアイテム名の評価指標。
+    # Mineflayer が返すアイテム名（name）は vanilla の ID に準拠するため、
+    # それぞれに序列を割り当てて比較する。木≒金 < 石 < 鉄 < ダイヤ < ネザライト。
+    _PICKAXE_TIER_BY_NAME = {
+        "wooden_pickaxe": 1,
+        "golden_pickaxe": 1,
+        "stone_pickaxe": 2,
+        "iron_pickaxe": 3,
+        "diamond_pickaxe": 4,
+        "netherite_pickaxe": 5,
+    }
+    # 各鉱石がドロップするために必要な最小ツルハシランクを定義する。
+    _ORE_PICKAXE_REQUIREMENTS = {
+        "diamond_ore": 3,
+        "deepslate_diamond_ore": 3,
+        "redstone_ore": 3,
+        "deepslate_redstone_ore": 3,
+        "gold_ore": 3,
+        "deepslate_gold_ore": 3,
+        "lapis_ore": 2,
+        "deepslate_lapis_ore": 2,
+        "iron_ore": 2,
+        "deepslate_iron_ore": 2,
+        "coal_ore": 1,
+        "deepslate_coal_ore": 1,
+    }
 
     def __init__(
         self,
@@ -885,6 +911,37 @@ class AgentOrchestrator:
             self.logger.info(
                 "handling mine step='%s' request=%s", step, mining_request
             )
+            # 直近の所持品スナップショットを参照し、必要なツルハシをすでに
+            # 保持していれば再採掘を避ける。Mineflayer 側への無駄なコマンド発行と
+            # 競合クラフトを防止する狙い。
+            candidate_pickaxe = self._select_pickaxe_for_targets(
+                mining_request["targets"]
+            )
+            if candidate_pickaxe:
+                display_name = str(
+                    candidate_pickaxe.get("displayName")
+                    or candidate_pickaxe.get("name")
+                    or "ツルハシ"
+                )
+                self.logger.info(
+                    "skip mining because suitable pickaxe already exists display=%s step='%s'",
+                    display_name,
+                    step,
+                )
+                equip_step = f"所持ツルハシ（{display_name}）を装備する"
+                equip_handled, _ = await self._handle_action_task(
+                    "equip",
+                    equip_step,
+                    last_target_coords=last_target_coords,
+                    backlog=backlog,
+                )
+                if not equip_handled:
+                    self.logger.warning(
+                        "equip fallback skipped because handler returned False step='%s'",
+                        equip_step,
+                    )
+                return True, last_target_coords
+
             resp = await self.actions.mine_ores(
                 mining_request["targets"],
                 scan_radius=mining_request["scan_radius"],
@@ -926,6 +983,88 @@ class AgentOrchestrator:
             step,
         )
         return True, last_target_coords
+
+    def _select_pickaxe_for_targets(
+        self, ore_names: Iterable[str]
+    ) -> Optional[Dict[str, Any]]:
+        """要求鉱石に適したツルハシが記憶済みインベントリにあるかを調べる。"""
+
+        inventory_detail = self.memory.get("inventory_detail")
+        if not isinstance(inventory_detail, dict):
+            return None
+
+        pickaxes = inventory_detail.get("pickaxes")
+        if not isinstance(pickaxes, list):
+            return None
+
+        # 対象鉱石の中でもっとも高い要求ランクを算出する。
+        required_tier = 1
+        for ore in ore_names:
+            tier = self._ORE_PICKAXE_REQUIREMENTS.get(ore, 1)
+            required_tier = max(required_tier, tier)
+
+        best_candidate: Optional[Dict[str, Any]] = None
+        best_tier = 0
+        for item in pickaxes:
+            if not isinstance(item, dict):
+                continue
+
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+
+            tier = self._PICKAXE_TIER_BY_NAME.get(name)
+            if tier is None or tier < required_tier:
+                continue
+
+            if not self._has_sufficient_pickaxe_durability(item):
+                continue
+
+            if tier > best_tier:
+                best_candidate = item
+                best_tier = tier
+
+        return best_candidate
+
+    def _has_sufficient_pickaxe_durability(self, item: Dict[str, Any]) -> bool:
+        """ツルハシの耐久値が残っているかを柔軟に判断する。"""
+
+        remaining = self._extract_pickaxe_remaining_durability(item)
+        if remaining is None:
+            # Mineflayer から耐久値が渡されないケースでは残量不明だが、
+            # 所持している限り利用可能と判断する。
+            return True
+
+        return remaining > 0
+
+    def _extract_pickaxe_remaining_durability(
+        self, item: Dict[str, Any]
+    ) -> Optional[float]:
+        """所持ツルハシ情報から残耐久を推定して数値として返す。"""
+
+        max_durability = item.get("maxDurability")
+        durability_used = item.get("durabilityUsed")
+        if isinstance(max_durability, (int, float)) and isinstance(
+            durability_used, (int, float)
+        ):
+            return float(max_durability) - float(durability_used)
+
+        for key in ("durabilityRemaining", "remainingDurability", "durability"):
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+
+        for key in ("durabilityRatio", "durability_ratio"):
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+
+        for key in ("durabilityPercent", "durability_percent"):
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                return float(value) / 100.0
+
+        return None
 
     async def _handle_action_backlog(
         self,
