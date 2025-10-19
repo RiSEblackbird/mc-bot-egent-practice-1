@@ -12,6 +12,12 @@ import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { loadBotRuntimeConfig } from './runtime/config.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
+import {
+  AgentRoleDescriptor,
+  AgentRoleState,
+  createInitialAgentRoleState,
+  resolveAgentRole,
+} from './runtime/roles.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
 const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
@@ -43,7 +49,13 @@ const MINING_APPROACH_TOLERANCE = 1;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
-type CommandType = 'chat' | 'moveTo' | 'equipItem' | 'gatherStatus' | 'mineOre';
+type CommandType =
+  | 'chat'
+  | 'moveTo'
+  | 'equipItem'
+  | 'gatherStatus'
+  | 'mineOre'
+  | 'setAgentRole';
 
 // WebSocket で受信するメッセージの基本形。
 interface CommandPayload {
@@ -56,6 +68,19 @@ interface CommandResponse {
   ok: boolean;
   error?: string;
   data?: unknown;
+}
+
+interface MultiAgentEventPayload {
+  channel: 'multi-agent';
+  event: 'roleUpdate' | 'position' | 'status';
+  agentId: string;
+  timestamp: number;
+  payload: Record<string, unknown>;
+}
+
+interface AgentEventEnvelope {
+  type: 'agentEvent';
+  args: { event: MultiAgentEventPayload };
 }
 
 type GatherStatusKind = 'position' | 'inventory' | 'general';
@@ -99,6 +124,7 @@ interface GeneralStatusSnapshot {
   saturation: number;
   oxygenLevel: number;
   digPermission: DigPermissionSnapshot;
+  agentRole: AgentRoleDescriptor;
   formatted: string;
 }
 
@@ -123,6 +149,8 @@ let lastForcedMoveAt = 0;
 let lastForcedMoveLoggedAt = 0;
 let cautiousMovements: MovementsClass | null = null;
 let digPermissiveMovements: MovementsClass | null = null;
+const agentRoleState: AgentRoleState = createInitialAgentRoleState();
+const PRIMARY_AGENT_ID = 'primary';
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
@@ -162,6 +190,124 @@ function startBotLifecycle(): void {
   bot = nextBot;
   nextBot.loadPlugin(pathfinder);
   registerBotEventHandlers(nextBot);
+}
+
+/**
+ * 現在の役割ステートを読み出すヘルパー。
+ */
+function getActiveAgentRole(): AgentRoleDescriptor {
+  return agentRoleState.activeRole;
+}
+
+/**
+ * 役割変更要求を適用し、共有イベント向けにメタ情報を更新する。
+ */
+function applyAgentRoleUpdate(roleId: string, source: string, reason?: string): AgentRoleDescriptor {
+  const descriptor = resolveAgentRole(roleId);
+  agentRoleState.activeRole = descriptor;
+  agentRoleState.lastEventId = randomUUID();
+  agentRoleState.lastUpdatedAt = Date.now();
+  console.log('[Role] switched agent role', {
+    roleId: descriptor.id,
+    label: descriptor.label,
+    source,
+    reason: reason ?? 'unspecified',
+  });
+  return descriptor;
+}
+
+/**
+ * Python 側の LangGraph 共有メモリへイベントを伝搬する補助ユーティリティ。
+ */
+async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
+  return new Promise((resolve) => {
+    const envelope: AgentEventEnvelope = { type: 'agentEvent', args: { event } };
+    const ws = new WebSocket(AGENT_WS_URL);
+    const timeout = setTimeout(() => {
+      console.warn('[AgentEvent] bridge timeout reached, terminating connection');
+      ws.terminate();
+      resolve();
+    }, 5_000);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.removeAllListeners();
+      resolve();
+    };
+
+    ws.once('open', () => {
+      ws.send(JSON.stringify(envelope));
+    });
+
+    ws.once('message', () => {
+      ws.close();
+      cleanup();
+    });
+
+    ws.once('close', () => {
+      cleanup();
+    });
+
+    ws.once('error', (error) => {
+      console.error('[AgentEvent] failed to deliver event', error);
+      cleanup();
+    });
+  }).catch((error) => {
+    console.error('[AgentEvent] unexpected error while emitting event', error);
+  });
+}
+
+/**
+ * 直近の座標変化を検知して LangGraph 共有メモリへ送信する。
+ */
+async function broadcastAgentPosition(targetBot: Bot): Promise<void> {
+  const { x, y, z } = targetBot.entity.position;
+  const rounded = { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
+  const previous = agentRoleState.lastBroadcastPosition;
+  if (previous && previous.x === rounded.x && previous.y === rounded.y && previous.z === rounded.z) {
+    return;
+  }
+  agentRoleState.lastBroadcastPosition = rounded;
+
+  await emitAgentEvent({
+    channel: 'multi-agent',
+    event: 'position',
+    agentId: PRIMARY_AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      ...rounded,
+      dimension: targetBot.game.dimension ?? 'unknown',
+      roleId: getActiveAgentRole().id,
+    },
+  });
+}
+
+/**
+ * 体力や満腹度の更新を LangGraph 側へ通知する。
+ */
+async function broadcastAgentStatus(targetBot: Bot, extraPayload: Record<string, unknown> = {}): Promise<void> {
+  const health = Math.round(targetBot.health);
+  const rawMaxHealth = Number((targetBot as Record<string, unknown>).maxHealth ?? 20);
+  const maxHealth = Number.isFinite(rawMaxHealth) ? rawMaxHealth : 20;
+  const food = Math.round(targetBot.food);
+  const saturation = Number.isFinite(targetBot.foodSaturation)
+    ? Math.round((targetBot.foodSaturation ?? 0) * 10) / 10
+    : 0;
+
+  await emitAgentEvent({
+    channel: 'multi-agent',
+    event: 'status',
+    agentId: PRIMARY_AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      health,
+      maxHealth,
+      food,
+      saturation,
+      roleId: getActiveAgentRole().id,
+      ...extraPayload,
+    },
+  });
 }
 
 /**
@@ -210,10 +356,17 @@ function registerBotEventHandlers(targetBot: Bot): void {
     targetBot.pathfinder.setMovements(cautiousMovementProfile);
     console.log('[Bot] movement profiles initialized (cautious default / digging fallback).');
     targetBot.chat('起動しました。（Mineflayer）');
+    void broadcastAgentStatus(targetBot, { lifecycle: 'spawn' });
+    void broadcastAgentPosition(targetBot);
   });
 
   targetBot.on('health', () => {
     void monitorCriticalHunger(targetBot);
+    void broadcastAgentStatus(targetBot);
+  });
+
+  targetBot.on('move', () => {
+    void broadcastAgentPosition(targetBot);
   });
 
   // サーバーから強制移動が通知された場合はタイムスタンプを更新し、
@@ -359,6 +512,8 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleGatherStatusCommand(args);
     case 'mineOre':
       return handleMineOreCommand(args);
+    case 'setAgentRole':
+      return handleSetAgentRoleCommand(args);
     default: {
       const exhaustiveCheck: never = type;
       void exhaustiveCheck;
@@ -709,6 +864,30 @@ async function handleMineOreCommand(args: Record<string, unknown>): Promise<Comm
   };
 }
 
+/**
+ * LangGraph からの役割変更要求を受け付け、Node 側の内部状態と共有メモリへ反映する。
+ */
+async function handleSetAgentRoleCommand(args: Record<string, unknown>): Promise<CommandResponse> {
+  const roleIdRaw = typeof args.roleId === 'string' ? args.roleId : '';
+  const reasonRaw = typeof args.reason === 'string' ? args.reason : '';
+  const descriptor = applyAgentRoleUpdate(roleIdRaw, 'command', reasonRaw);
+
+  await emitAgentEvent({
+    channel: 'multi-agent',
+    event: 'roleUpdate',
+    agentId: PRIMARY_AGENT_ID,
+    timestamp: Date.now(),
+    payload: {
+      roleId: descriptor.id,
+      label: descriptor.label,
+      responsibilities: descriptor.responsibilities,
+      reason: reasonRaw,
+    },
+  });
+
+  return { ok: true, data: { roleId: descriptor.id, label: descriptor.label } };
+}
+
 type EquipDestination = 'hand' | 'off-hand';
 
 const EQUIP_TOOL_MATCHERS: Record<string, (item: Item) => boolean> = {
@@ -935,6 +1114,7 @@ function buildGeneralStatusSnapshot(targetBot: Bot): GeneralStatusSnapshot {
     saturation,
     oxygenLevel,
     digPermission,
+    agentRole: getActiveAgentRole(),
     formatted,
   };
 }
