@@ -18,6 +18,9 @@ def test_load_agent_config_returns_defaults() -> None:
     assert config.agent_host == "0.0.0.0"
     assert config.agent_port == 9000
     assert config.default_move_target == (0, 64, 0)
+    assert config.minedojo.api_base_url == "https://api.minedojo.org/v1"
+    assert config.minedojo.cache_dir == "var/cache/minedojo"
+    assert config.minedojo.api_key is None
 
 
 def test_load_agent_config_emits_warning_on_invalid_port() -> None:

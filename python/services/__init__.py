@@ -13,6 +13,7 @@ from .building_service import (
     rollback_building_state,
 )
 from .vpt_controller import VPTController, VPTModelSpec
+from .minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
 
 __all__ = [
     "BuildingCheckpoint",
@@ -26,4 +27,7 @@ __all__ = [
     "rollback_building_state",
     "VPTController",
     "VPTModelSpec",
+    "MineDojoClient",
+    "MineDojoMission",
+    "MineDojoDemonstration",
 ]
