@@ -111,6 +111,43 @@ class _ActionState(TypedDict, total=False):
     skill_status: str
 
 
+async def _refresh_inventory_snapshot(
+    orchestrator: "AgentOrchestrator",
+) -> Tuple[bool, Dict[str, Any], Optional[str]]:
+    """最新の所持品情報を Mineflayer から取得し、メモリへ反映する。"""
+
+    # gather_status("inventory") の存在を確認して、Mineflayer 連携が無効な環境で
+    # 余計なエラーを発生させないようにする。新規参画者が初期設定を失念しても
+    # 障害内容を明示できるように分岐を設けている。
+    if not hasattr(orchestrator.actions, "gather_status"):
+        return False, {}, "Mineflayer 側で所持品取得 API が有効化されていません。"
+
+    try:
+        resp = await orchestrator.actions.gather_status("inventory")  # type: ignore[attr-defined]
+    except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
+        orchestrator.logger.exception(
+            "inventory refresh failed via gather_status",
+            exc_info=exc,
+        )
+        return False, {}, "所持品の再取得中に予期しない例外が発生しました。"
+
+    if not isinstance(resp, dict) or not resp.get("ok"):
+        error_detail = "Mineflayer が所持品を返しませんでした。"
+        if isinstance(resp, dict):
+            error_detail = str(resp.get("error") or error_detail)
+        return False, {}, error_detail
+
+    data = resp.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    summary = orchestrator._summarize_inventory_status(data)  # type: ignore[attr-defined]
+    orchestrator.memory.set("inventory", summary)  # type: ignore[attr-defined]
+    orchestrator.memory.set("inventory_detail", data)  # type: ignore[attr-defined]
+
+    return True, data, None
+
+
 class ActionGraph:
     """AgentOrchestrator 内のアクションタスク処理を LangGraph へ委譲する補助クラス。"""
 
@@ -320,6 +357,62 @@ class ActionGraph:
                     "handled": True,
                     "updated_target": state.get("last_target_coords"),
                     "failure_detail": None,
+                }
+
+            refresh_ok, inventory_detail, refresh_error = await _refresh_inventory_snapshot(
+                orchestrator
+            )
+            if not refresh_ok:
+                reason = (
+                    f"装備前に所持品を確認できず装備手順を中断しました（{refresh_error}）。"
+                )
+                await orchestrator._report_execution_barrier(step, reason)  # type: ignore[attr-defined]
+                return {
+                    "handled": False,
+                    "updated_target": state.get("last_target_coords"),
+                    "failure_detail": reason,
+                }
+
+            tool_type = equip_args.get("tool_type")
+            item_name = equip_args.get("item_name")
+
+            items = []
+            raw_items = inventory_detail.get("items") if isinstance(inventory_detail, dict) else []
+            if isinstance(raw_items, list):
+                items = [item for item in raw_items if isinstance(item, dict)]
+
+            item_found = False
+            if item_name:
+                target = item_name.lower()
+                for item in items:
+                    name = str(item.get("name") or "").lower()
+                    display = str(item.get("displayName") or "").lower()
+                    if target == name or target == display:
+                        item_found = True
+                        break
+
+            if not item_found and tool_type:
+                normalized_tool = tool_type.lower()
+                if normalized_tool == "pickaxe":
+                    pickaxes = inventory_detail.get("pickaxes")
+                    if isinstance(pickaxes, list) and any(isinstance(p, dict) for p in pickaxes):
+                        item_found = True
+                if not item_found:
+                    for item in items:
+                        name = str(item.get("name") or "").lower()
+                        display = str(item.get("displayName") or "").lower()
+                        if normalized_tool in name or normalized_tool in display:
+                            item_found = True
+                            break
+
+            if not item_found:
+                label = item_name or tool_type or "指定装備"
+                reason = f"インベントリに {label} が見つからず装備できませんでした。"
+                await orchestrator._report_execution_barrier(step, reason)  # type: ignore[attr-defined]
+                return {
+                    "handled": False,
+                    "updated_target": state.get("last_target_coords"),
+                    "failure_detail": reason,
                 }
 
             resp = await orchestrator.actions.equip_item(  # type: ignore[attr-defined]
