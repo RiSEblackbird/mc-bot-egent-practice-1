@@ -265,14 +265,57 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 - 1.21.1 以降で属性名が `minecraft:generic.movement_speed` へ統一されたため、Mineflayer が旧名 `minecraft:movement_speed` を送出しても自動で置き換え、Paper 側の `Ignoring unknown attribute` 警告を防ぎます。
 ## 6. 参考理論（READMEにURLを**必ず**記載）
 
-本プロジェクトは以下の理論/手法を採用します。**各論文のURLを本節に列挙してください。**
+本プロジェクトは以下の理論/手法を採用します。**各論文のURLを本節に列挙してください。** 研究成果が適用される処理フローは README 冒頭のアーキテクチャ記述と同じくプレイヤーチャット起点の 3 層構造で整理しており、社内 Wiki「Architecture/Minecraft-Agent-2025Q2」に掲載している参照順序と揃えています。
 
-* Voyager: [https://arxiv.org/abs/2305.16291](https://arxiv.org/abs/2305.16291)
-* ReAct: [https://arxiv.org/abs/2210.03629](https://arxiv.org/abs/2210.03629)
-* Reflexion: [https://arxiv.org/abs/2303.11366](https://arxiv.org/abs/2303.11366)
-* VPT: [https://arxiv.org/abs/2206.04615](https://arxiv.org/abs/2206.04615)
+| 理論/手法 | 主な狙い | 主な適用モジュール/ドキュメント | 現状適用度 |
+| --- | --- | --- | --- |
+| Voyager | LLM 主導での自律探索・ツール発見 | `python/planner.py` / `python/memory.py` / `docs/building_state_machine.md` | 部分対応 |
+| ReAct | 推論 (Reason) と行動 (Act) の往復で環境を制御 | `python/agent.py` / `python/planner.py` / `python/actions.py` | 実装済み |
+| Reflexion | 失敗経験を自己評価して行動計画へ反映 | `python/utils/logging.py` / `python/agent_orchestrator.py` / `tests/test_langgraph_scenarios.py` | 部分対応 |
+| VPT | 操作シーケンスの模倣学習による政策獲得 | `node-bot/bot.ts` / `node-bot/runtime/roles.ts` | 未対応 |
+| MineDojo | Minecraft タスクの大規模データセット化 | `docs/tunnel_mode_design.md` / `tests/e2e/test_multi_agent_roles.py` | 部分対応 |
 
-* MineDojo: [https://arxiv.org/abs/2206.08853](https://arxiv.org/abs/2206.08853)
+#### 研究適用フロー（社内 Wiki と共通の参照順）
+
+1. **プレイヤーチャット受付**（`node-bot/bot.ts`）: ReAct の「Act」フェーズとして、Mineflayer がチャットを検知し環境観測を添えて Python へ転送します。
+2. **LLM プランニング**（`python/planner.py`）: Voyager の探索指針と MineDojo のタスク分類をもとに LangGraph 内でステップを組み立て、Reason フェーズの思考をログ化します。
+3. **アクション合成・実行**（`python/actions.py` → `node-bot/runtime/roles.ts`）: ReAct の決定結果を具体的な Mineflayer コマンドへ落とし込み、VPT で想定する操作トレースに近い粒度で命令を分解します。
+4. **自己評価と再計画**（`python/agent_orchestrator.py`）: Reflexion の考え方で失敗ログを振り返り、必要に応じて Voyager 流の探索プランを再生成します。
+
+#### Voyager — [https://arxiv.org/abs/2305.16291](https://arxiv.org/abs/2305.16291)
+
+Voyager は Minecraft のようなオープンワールドで LLM に継続的な技能学習を促すため、行動履歴のライブラリ化と自律的なタスク発見を組み合わせた枠組みを提案しています。本プロジェクトでは LangGraph を通じてタスク分解とチェックポイントを管理し、建築ジョブや採掘ジョブを再利用できる形で蓄積することで、Voyager が示した「技能カタログ化」の利点を部分的に取り込んでいます。
+
+- 関連モジュール: [`python/planner.py`](python/planner.py), [`python/memory.py`](python/memory.py), [`docs/building_state_machine.md`](docs/building_state_machine.md)
+- 今後の改善ポイント: スキルライブラリの自動タグ付けと成功条件の定量評価を導入し、未達タスクの再挑戦優先度を自動算出できるようにする。
+
+#### ReAct — [https://arxiv.org/abs/2210.03629](https://arxiv.org/abs/2210.03629)
+
+ReAct は言語モデルに推論（Reason）と行動（Act）の交互実行をさせることで、環境に応じた柔軟な意思決定を実現する手法です。本プロジェクトのチャット解析は ReAct を前提に、LLM が状況説明と行動コマンドを交互に生成し、その結果を Python エージェントが構造化ログとして保持して次の判断に反映する設計になっています。
+
+- 関連モジュール: [`python/agent.py`](python/agent.py), [`python/planner.py`](python/planner.py), [`python/actions.py`](python/actions.py)
+- 今後の改善ポイント: Reason フェーズで取り扱う観測情報を Node 側のバイタルデータと統合し、Act の出力に安全制約を事前付与する仕組みを整える。
+
+#### Reflexion — [https://arxiv.org/abs/2303.11366](https://arxiv.org/abs/2303.11366)
+
+Reflexion は失敗体験を言語モデル自身が振り返り、学習した方策を自己修正するアプローチです。本プロジェクトでは構造化ログと LangGraph の再計画ノードを通じて、障害発生時の原因・対応履歴を記録し、次のプラン生成で参照できるようにすることで Reflexion の自律改善を部分的に実現しています。
+
+- 関連モジュール: [`python/utils/logging.py`](python/utils/logging.py), [`python/agent_orchestrator.py`](python/agent_orchestrator.py), [`tests/test_langgraph_scenarios.py`](tests/test_langgraph_scenarios.py)
+- 今後の改善ポイント: LLM が自己評価を行う際の成功/失敗ラベルを定量化し、再計画時に重み付けされたメモリ検索を行う仕組みを追加する。
+
+#### VPT — [https://arxiv.org/abs/2206.04615](https://arxiv.org/abs/2206.04615)
+
+VPT (Video PreTraining) は実プレイ映像と入力操作ログから模倣学習を行い、ゲーム内操作を一般化する方法論です。現状のボットは LLM による高レベル計画を Mineflayer のプリミティブへ写像しているのみで、操作シーケンスの模倣学習は未導入です。
+
+- 関連モジュール: [`node-bot/bot.ts`](node-bot/bot.ts), [`node-bot/runtime/roles.ts`](node-bot/runtime/roles.ts)
+- 今後の改善ポイント: 行動トレースを収集するロガーを追加し、将来的に VPT 互換のデータセットへ出力して Mineflayer の低レベル政策を強化できるようにする。
+
+#### MineDojo — [https://arxiv.org/abs/2206.08853](https://arxiv.org/abs/2206.08853)
+
+MineDojo は Minecraft の多様なタスクを大規模データセットとして整理し、汎用エージェントの学習を支援するプラットフォームを提案しています。本プロジェクトでは MineDojo のタスク分類を参照しつつ、継続採掘やマルチエージェント協調といった自前のジョブ設計を docs 配下に集約し、テストスイートでカテゴリごとの期待結果を検証する運用を行っています。
+
+- 関連モジュール: [`docs/tunnel_mode_design.md`](docs/tunnel_mode_design.md), [`tests/e2e/test_multi_agent_roles.py`](tests/e2e/test_multi_agent_roles.py)
+- 今後の改善ポイント: MineDojo の報酬設計を再評価し、LangGraph の優先度マネージャーにタスクカテゴリ別の KPI を組み込んで進捗を可視化する。
 
 ## 7. アーキテクチャ概要
 
