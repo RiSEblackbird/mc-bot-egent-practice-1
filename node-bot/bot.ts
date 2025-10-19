@@ -81,7 +81,7 @@ function resolveMinecraftVersionLabel(requestedVersionRaw: string | undefined): 
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
-type CommandType = 'chat' | 'moveTo';
+type CommandType = 'chat' | 'moveTo' | 'equipItem';
 
 // WebSocket で受信するメッセージの基本形。
 interface CommandPayload {
@@ -391,6 +391,8 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       return handleChatCommand(args);
     case 'moveTo':
       return handleMoveToCommand(args);
+    case 'equipItem':
+      return handleEquipItemCommand(args);
     default: {
       const exhaustiveCheck: never = type;
       void exhaustiveCheck;
@@ -579,6 +581,111 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
 
     console.error('[Pathfinder] failed to move', primaryError);
     return { ok: false, error: 'Pathfinding failed' };
+  }
+}
+
+type EquipDestination = 'hand' | 'off-hand';
+
+const EQUIP_TOOL_MATCHERS: Record<string, (item: Item) => boolean> = {
+  pickaxe: (item) => item.name.endsWith('_pickaxe'),
+  sword: (item) => item.name.endsWith('_sword'),
+  axe: (item) => item.name.endsWith('_axe') && !item.name.endsWith('_pickaxe'),
+  shovel: (item) => item.name.endsWith('_shovel') || item.name.endsWith('_spade'),
+  hoe: (item) => item.name.endsWith('_hoe'),
+  shield: (item) => item.name === 'shield',
+  torch: (item) => item.name === 'torch',
+};
+
+/**
+ * equipItem コマンドで渡された語を Mineflayer のアイテム名と整合する形式へ正規化する。
+ */
+function normalizeEquipToken(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  const withUnderscore = trimmed.replace(/\s+/g, '_');
+  return withUnderscore.replace(/[^a-z0-9_]/g, '');
+}
+
+/**
+ * ツール種別からインベントリ内の一致するアイテムを探索する。
+ */
+function findInventoryItemByToolType(targetBot: Bot, toolTypeRaw: string): Item | null {
+  const matcher = EQUIP_TOOL_MATCHERS[toolTypeRaw.toLowerCase()];
+
+  if (!matcher) {
+    return null;
+  }
+
+  return targetBot.inventory.items().find((item) => matcher(item)) ?? null;
+}
+
+/**
+ * 任意のアイテム名から対応するインベントリアイテムを推測する。
+ */
+function findInventoryItemByName(targetBot: Bot, itemNameRaw: string): Item | null {
+  const normalized = normalizeEquipToken(itemNameRaw);
+  const items = targetBot.inventory.items();
+
+  const byName = items.find((item) => normalizeEquipToken(item.name) === normalized);
+  if (byName) {
+    return byName;
+  }
+
+  const byDisplay = items.find((item) => normalizeEquipToken(item.displayName) === normalized);
+  if (byDisplay) {
+    return byDisplay;
+  }
+
+  return (
+    items.find((item) => normalizeEquipToken(item.name).includes(normalized)) ??
+    items.find((item) => normalizeEquipToken(item.displayName).includes(normalized)) ??
+    null
+  );
+}
+
+/**
+ * equipItem コマンドを処理し、指定された装備を右手または左手へ持ち替える。
+ */
+async function handleEquipItemCommand(args: Record<string, unknown>): Promise<CommandResponse> {
+  const toolTypeRaw = typeof args.toolType === 'string' ? args.toolType : undefined;
+  const itemNameRaw = typeof args.itemName === 'string' ? args.itemName : undefined;
+  const destinationRaw = typeof args.destination === 'string' ? args.destination : 'hand';
+  const destination: EquipDestination = destinationRaw === 'off-hand' ? 'off-hand' : 'hand';
+
+  if (!toolTypeRaw && !itemNameRaw) {
+    return { ok: false, error: 'Either toolType or itemName must be provided' };
+  }
+
+  const activeBot = getActiveBot();
+
+  if (!activeBot) {
+    console.warn('[EquipItemCommand] rejected because bot is unavailable');
+    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
+  }
+
+  let targetItem: Item | null = null;
+
+  if (itemNameRaw) {
+    targetItem = findInventoryItemByName(activeBot, itemNameRaw);
+  }
+
+  if (!targetItem && toolTypeRaw) {
+    targetItem = findInventoryItemByToolType(activeBot, toolTypeRaw);
+  }
+
+  if (!targetItem) {
+    console.warn('[EquipItemCommand] requested item not found', { toolTypeRaw, itemNameRaw });
+    return { ok: false, error: 'Requested item is not available in inventory' };
+  }
+
+  try {
+    await activeBot.equip(targetItem, destination);
+    console.log(
+      `[EquipItemCommand] equipped ${targetItem.displayName ?? targetItem.name} to ${destination}`,
+    );
+    return { ok: true };
+  } catch (error) {
+    console.error('[EquipItemCommand] failed to equip item', error);
+    return { ok: false, error: 'Failed to equip item' };
   }
 }
 
