@@ -142,3 +142,50 @@ def test_plan_timeout_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert plan_out.plan == []
     assert plan_out.resp == "了解しました。"
     assert priority == "high"
+
+
+def test_barrier_timeout_uses_short_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """障壁通知生成がタイムアウトしても短縮メッセージがチャットへ送信される。"""
+
+    class TimeoutAsyncOpenAI:
+        """障壁通知用の Responses.create がタイムアウトするスタブクライアント。"""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.responses = self
+
+        async def create(self, *args: Any, **kwargs: Any) -> Any:
+            raise asyncio.TimeoutError("simulated barrier timeout")
+
+    monkeypatch.setattr("planner.AsyncOpenAI", TimeoutAsyncOpenAI)
+
+    actions = ReplanActions()
+    memory = Memory()
+    orchestrator = AgentOrchestrator(actions, memory)
+
+    step = (
+        "地下採掘拠点へ向かう途中でモンスターと遭遇しつつ複数の資材を携行"
+        "した状態で緊急退避を試みる"
+    )
+    reason = (
+        "敵対モブの連続攻撃と落下ダメージで残り体力が危険水準まで低下し、装"
+        "備の耐久値も限界に近づいたため安全確保を優先する必要がある"
+    )
+
+    async def runner() -> None:
+        await orchestrator._report_execution_barrier(step, reason)
+
+    asyncio.run(runner())
+
+    assert actions.say_messages, "障壁メッセージが送信されていません"
+
+    expected_step = step.strip()
+    if len(expected_step) > 40:
+        expected_step = f"{expected_step[:40]}…"
+    expected_reason = reason.strip()
+    if len(expected_reason) > 60:
+        expected_reason = f"{expected_reason[:60]}…"
+    expected_message = (
+        f"手順「{expected_step}」で問題が発生しました: {expected_reason}"
+    )
+
+    assert actions.say_messages[0] == expected_message

@@ -214,6 +214,14 @@ class PlanOut(BaseModel):
     )
 
 
+class BarrierNotificationError(RuntimeError):
+    """障壁通知生成で通信系エラーが発生したことを示す基底例外。"""
+
+
+class BarrierNotificationTimeout(BarrierNotificationError):
+    """Responses API 呼び出しが所定時間内に完了しなかったことを示す例外。"""
+
+
 class BarrierNotification(BaseModel):
     """障壁通知用のメッセージをパースするためのスキーマ。"""
 
@@ -550,7 +558,28 @@ async def compose_barrier_notification(
     logger.info(f"Barrier prompt: {prompt}")
 
     request_payload = _build_responses_payload(BARRIER_SYSTEM, prompt)
-    resp = await client.responses.create(**request_payload)
+
+    try:
+        resp = await asyncio.wait_for(
+            client.responses.create(**request_payload),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        message = f"barrier notification timed out after {LLM_TIMEOUT_SECONDS:.1f} seconds"
+        logger.warning(
+            "barrier notification request timed out (step=%s): %s",
+            step,
+            message,
+        )
+        raise BarrierNotificationTimeout(message) from exc
+    except Exception as exc:
+        logger.warning(
+            "barrier notification request failed (step=%s): %s",
+            step,
+            exc,
+        )
+        raise BarrierNotificationError(str(exc)) from exc
+
     content = _extract_output_text(resp)
     logger.info(f"Barrier raw: {content}")
 
