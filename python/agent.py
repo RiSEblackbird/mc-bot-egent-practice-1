@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import re
 import time
 from pathlib import Path
@@ -25,9 +26,9 @@ from services.skill_repository import SkillRepository
 from actions import Actions
 from bridge_ws import BotBridge
 from memory import Memory
-from planner import PlanOut, compose_barrier_notification, plan
+from planner import PlanOut, ReActStep, compose_barrier_notification, plan
 from skills import SkillMatch
-from utils import setup_logger
+from utils import log_structured_event, setup_logger
 from agent_orchestrator import ActionGraph, ActionTaskRule, ChatTask
 
 logger = setup_logger("agent")
@@ -541,6 +542,7 @@ class AgentOrchestrator:
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
         detection_reports: List[Dict[str, str]] = []
         action_backlog: List[Dict[str, str]] = []
+        react_trace: List[ReActStep] = list(plan_out.react_trace)
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -550,7 +552,32 @@ class AgentOrchestrator:
                 step,
                 normalized,
             )
+            react_entry: Optional[ReActStep] = None
+            if 0 <= index - 1 < len(react_trace):
+                candidate = react_trace[index - 1]
+                if isinstance(candidate, ReActStep):
+                    react_entry = candidate
+
+            thought_text = react_entry.thought.strip() if react_entry else ""
+            observation_text = ""
+            status = "skipped"
+            event_level = "trace"
+            log_level = logging.INFO
+
             if not normalized:
+                observation_text = "ステップ文字列が空だったためスキップしました。"
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action="",
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 continue
 
             detection_category = self._classify_detection_task(normalized)
@@ -565,6 +592,29 @@ class AgentOrchestrator:
                 )
                 if detection_result:
                     detection_reports.append(detection_result)
+                    observation_text = str(
+                        detection_result.get("summary")
+                        or "ステータスを報告しました。"
+                    )
+                    status = "completed"
+                    event_level = "progress"
+                else:
+                    observation_text = "ステータス取得に失敗し障壁を報告しました。"
+                    status = "failed"
+                    event_level = "fault"
+                    log_level = logging.WARNING
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action=normalized,
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 continue
 
             coords = self._extract_coordinates(normalized)
@@ -582,6 +632,22 @@ class AgentOrchestrator:
                     explicit_coords=coords,
                 )
                 if not handled:
+                    observation_text = failure_detail or "座標移動の処理に失敗しました。"
+                    status = "failed"
+                    event_level = "fault"
+                    log_level = logging.WARNING
+                    if react_entry:
+                        react_entry.observation = observation_text
+                    self._emit_react_log(
+                        index=index,
+                        total_steps=total_steps,
+                        thought=thought_text,
+                        action=normalized,
+                        observation=observation_text,
+                        status=status,
+                        event_level=event_level,
+                        log_level=log_level,
+                    )
                     await self._handle_plan_failure(
                         failed_step=normalized,
                         failure_reason=
@@ -593,6 +659,28 @@ class AgentOrchestrator:
                         replan_depth=replan_depth,
                     )
                     return
+
+                target_coords = last_target_coords or coords
+                if target_coords:
+                    observation_text = (
+                        f"移動成功: X={target_coords[0]} / Y={target_coords[1]} / Z={target_coords[2]}"
+                    )
+                else:
+                    observation_text = "移動に成功しました。"
+                status = "completed"
+                event_level = "progress"
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action=normalized,
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 continue
 
             if self._is_status_check_step(normalized):
@@ -603,9 +691,37 @@ class AgentOrchestrator:
                     index,
                     normalized,
                 )
+                observation_text = "ステータス確認ステップのため実行不要と判断しました。"
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action=normalized,
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 continue
 
             if await self._attempt_proactive_progress(normalized, last_target_coords):
+                observation_text = "前回の目的地へ継続移動しました。"
+                status = "completed"
+                event_level = "progress"
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action=normalized,
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 continue
 
             action_category = self._classify_action_task(normalized)
@@ -622,8 +738,42 @@ class AgentOrchestrator:
                     backlog=action_backlog,
                 )
                 if handled:
+                    observation_text = f"{action_category} タスクを完了しました。"
+                    status = "completed"
+                    event_level = "progress"
+                    if react_entry:
+                        react_entry.observation = observation_text
+                    self._emit_react_log(
+                        index=index,
+                        total_steps=total_steps,
+                        thought=thought_text,
+                        action=normalized,
+                        observation=observation_text,
+                        status=status,
+                        event_level=event_level,
+                        log_level=log_level,
+                    )
                     continue
 
+                observation_text = (
+                    failure_detail
+                    or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。"
+                )
+                status = "failed"
+                event_level = "fault"
+                log_level = logging.WARNING
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action=normalized,
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 await self._handle_plan_failure(
                     failed_step=normalized,
                     failure_reason=
@@ -642,6 +792,21 @@ class AgentOrchestrator:
                     index,
                 )
                 await self.actions.say("進捗を確認しています。続報をお待ちください。")
+                observation_text = "進捗報告メッセージを送信しました。"
+                status = "completed"
+                event_level = "progress"
+                if react_entry:
+                    react_entry.observation = observation_text
+                self._emit_react_log(
+                    index=index,
+                    total_steps=total_steps,
+                    thought=thought_text,
+                    action=normalized,
+                    observation=observation_text,
+                    status=status,
+                    event_level=event_level,
+                    log_level=log_level,
+                )
                 continue
 
             self.logger.info(
@@ -649,10 +814,27 @@ class AgentOrchestrator:
                 index,
                 normalized,
             )
+            observation_text = "対応可能なアクションが見つからず障壁を通知しました。"
+            status = "failed"
+            event_level = "fault"
+            log_level = logging.WARNING
+            if react_entry:
+                react_entry.observation = observation_text
+            self._emit_react_log(
+                index=index,
+                total_steps=total_steps,
+                thought=thought_text,
+                action=normalized,
+                observation=observation_text,
+                status=status,
+                event_level=event_level,
+                log_level=log_level,
+            )
             await self._report_execution_barrier(
                 normalized,
                 "対応可能なアクションが見つからず停滞しています。計画ステップの表現を見直してください。",
             )
+            continue
 
         if detection_reports:
             await self._handle_detection_reports(
@@ -665,6 +847,37 @@ class AgentOrchestrator:
                 action_backlog,
                 already_responded=bool(plan_out.resp.strip()),
             )
+
+    def _emit_react_log(
+        self,
+        *,
+        index: int,
+        total_steps: int,
+        thought: str,
+        action: str,
+        observation: str,
+        status: str,
+        event_level: str,
+        log_level: int,
+    ) -> None:
+        """ReAct ループの Thought/Action/Observation を構造化ログへ出力する。"""
+
+        context = {
+            "step_index": index,
+            "total_steps": total_steps,
+            "thought": thought,
+            "action": action,
+            "observation": observation,
+            "status": status,
+        }
+        log_structured_event(
+            self.logger,
+            "react_step",
+            level=log_level,
+            event_level=event_level,
+            langgraph_node_id="agent.react_loop",
+            context=context,
+        )
 
     async def _handle_plan_failure(
         self,

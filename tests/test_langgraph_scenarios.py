@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
 import sys
+
+pytest.importorskip("langgraph")
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,8 @@ if str(PYTHON_DIR) not in sys.path:
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from planner import (  # type: ignore  # noqa: E402
+    PlanOut,
+    ReActStep,
     get_plan_priority,
     plan,
     reset_plan_priority,
@@ -43,6 +49,14 @@ class NoOpActions:
 
     async def move_to(self, x: int, y: int, z: int) -> Dict[str, Any]:
         return {"ok": True, "pos": (x, y, z)}
+
+    async def gather_status(self, category: str) -> Dict[str, Any]:
+        if category == "position":
+            return {
+                "ok": True,
+                "data": {"x": 0, "y": 64, "z": 0, "dimension": "overworld"},
+            }
+        return {"ok": True, "data": {}}
 
     async def equip_item(
         self,
@@ -143,7 +157,10 @@ def test_plan_graph_priority_updates(monkeypatch: pytest.MonkeyPatch) -> None:
 
     queue: List[Any] = [
         DummyResponse("not json"),
-        DummyResponse('{"plan": ["move"], "resp": "了解しました。"}'),
+        DummyResponse(
+            '{"plan": ["move"], "resp": "了解しました。", "react_trace": ['
+            '{"thought": "移動して対応", "action": "move", "observation": ""}]}'
+        ),
     ]
 
     monkeypatch.setattr(
@@ -163,3 +180,39 @@ def test_plan_graph_priority_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert asyncio.run(get_plan_priority()) == "normal"
 
     asyncio.run(reset_plan_priority())
+
+
+def test_react_loop_logs_observations(
+    caplog: pytest.LogCaptureFixture, orchestrator_noop: AgentOrchestrator
+) -> None:
+    plan_out = PlanOut(
+        plan=["南へ 10 ブロック移動", "現在位置を確認"],
+        resp="",
+        react_trace=[
+            ReActStep(thought="安全な位置へ移動する", action="南へ 10 ブロック移動"),
+            ReActStep(thought="現在位置を共有する", action="現在位置を確認"),
+        ],
+    )
+
+    caplog.set_level(logging.INFO, logger="agent")
+
+    async def runner() -> None:
+        await orchestrator_noop._execute_plan(plan_out, initial_target=(0, 64, 0))
+
+    asyncio.run(runner())
+
+    react_logs: List[Dict[str, Any]] = []
+    for record in caplog.records:
+        try:
+            payload = json.loads(record.message)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("message") == "react_step":
+            context = payload.get("context") or {}
+            react_logs.append(context)
+
+    assert len(react_logs) >= 2
+    assert react_logs[0]["thought"] == "安全な位置へ移動する"
+    assert "移動成功" in react_logs[0]["observation"]
+    assert "X=" in react_logs[1]["observation"] or "報告" in react_logs[1]["observation"]
+    assert plan_out.react_trace[0].observation.startswith("移動成功")
