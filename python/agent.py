@@ -12,7 +12,6 @@ import contextlib
 import json
 import re
 import time
-from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -26,6 +25,7 @@ from bridge_ws import BotBridge
 from memory import Memory
 from planner import PlanOut, compose_barrier_notification, plan
 from utils import setup_logger
+from agent_orchestrator import ActionGraph, ActionTaskRule, ChatTask
 
 logger = setup_logger("agent")
 
@@ -48,25 +48,6 @@ logger.info(
     AGENT_WS_PORT,
     DEFAULT_MOVE_TARGET,
 )
-
-
-@dataclass
-class ChatTask:
-    """Node 側から渡されるチャット指示をキュー化する際のデータ構造。"""
-
-    username: str
-    message: str
-
-
-@dataclass(frozen=True)
-class ActionTaskRule:
-    """行動系タスクをカテゴリ別に整理するためのルール定義。"""
-
-    keywords: Tuple[str, ...]
-    hints: Tuple[str, ...] = ()
-    label: str = ""
-    implemented: bool = False
-    priority: int = 0
 
 
 class AgentOrchestrator:
@@ -298,6 +279,8 @@ class AgentOrchestrator:
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
         self.default_move_target = self.config.default_move_target
         self.logger = setup_logger("agent.orchestrator")
+        # LangGraph ベースのタスクハンドラを初期化して、カテゴリ別モジュールを明確化する。
+        self._action_graph = ActionGraph(self)
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -957,133 +940,21 @@ class AgentOrchestrator:
             )
             return False, last_target_coords, None
 
-        if category == "move":
-            target = explicit_coords or self._extract_coordinates(step)
-            updated_target = target or last_target_coords
-            used_default_target = False
-            if updated_target is None:
-                updated_target = self.default_move_target
-                used_default_target = True
-
-            self.logger.info(
-                "handling move step='%s' target=%s used_default=%s",
-                step,
-                updated_target,
-                used_default_target,
-            )
-            move_ok, move_error = await self._move_to_coordinates(updated_target)
-            if used_default_target:
-                await self._report_execution_barrier(
-                    step,
-                    "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
-                )
-            if not move_ok:
-                error_detail = move_error or "Mineflayer 側で移動が拒否されました"
-                return False, last_target_coords, error_detail
-            return True, updated_target, None
-
-        if category == "equip":
-            equip_args = self._infer_equip_arguments(step)
-            if not equip_args:
-                self.logger.info("equip step inference failed step='%s'", step)
-                await self._report_execution_barrier(
-                    step,
-                    "装備するアイテムを推測できませんでした。ツール名や用途をもう少し具体的に指示してください。",
-                )
-                return True, last_target_coords, None
-
-            self.logger.info(
-                "handling equip step='%s' args=%s",
-                step,
-                equip_args,
-            )
-            resp = await self.actions.equip_item(
-                tool_type=equip_args.get("tool_type"),
-                item_name=equip_args.get("item_name"),
-                destination=equip_args.get("destination", "hand"),
-            )
-            if resp.get("ok"):
-                return True, last_target_coords, None
-
-            error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
-            return False, last_target_coords, f"装備コマンドが失敗しました: {error_detail}"
-
-        if category == "mine":
-            # 鉱石系の指示は Node 側の探索コマンドへ橋渡しし、
-            # 具体的な掘削まで一気通貫で行えるようにする。
-            mining_request = self._infer_mining_request(step)
-            self.logger.info(
-                "handling mine step='%s' request=%s", step, mining_request
-            )
-            # 直近の所持品スナップショットを参照し、必要なツルハシをすでに
-            # 保持していれば再採掘を避ける。Mineflayer 側への無駄なコマンド発行と
-            # 競合クラフトを防止する狙い。
-            candidate_pickaxe = self._select_pickaxe_for_targets(
-                mining_request["targets"]
-            )
-            if candidate_pickaxe:
-                display_name = str(
-                    candidate_pickaxe.get("displayName")
-                    or candidate_pickaxe.get("name")
-                    or "ツルハシ"
-                )
-                self.logger.info(
-                    "skip mining because suitable pickaxe already exists display=%s step='%s'",
-                    display_name,
-                    step,
-                )
-                equip_step = f"所持ツルハシ（{display_name}）を装備する"
-                equip_handled, _, equip_failure = await self._handle_action_task(
-                    "equip",
-                    equip_step,
-                    last_target_coords=last_target_coords,
-                    backlog=backlog,
-                )
-                if not equip_handled:
-                    self.logger.warning(
-                        "equip fallback skipped because handler returned False step='%s'",
-                        equip_step,
-                    )
-                    return False, last_target_coords, equip_failure
-                return True, last_target_coords, None
-
-            resp = await self.actions.mine_ores(
-                mining_request["targets"],
-                scan_radius=mining_request["scan_radius"],
-                max_targets=mining_request["max_targets"],
-            )
-            if resp.get("ok"):
-                mined = resp.get("data", {}).get("minedBlocks")
-                self.logger.info(
-                    "mine command succeeded mined_blocks=%s resp=%s", mined, resp
-                )
-                return True, last_target_coords, None
-
-            error_detail = resp.get("error") or "鉱石採掘コマンドが拒否されました"
-            self.logger.error(
-                "mine command failed step='%s' error=%s resp=%s", step, error_detail, resp
-            )
-            return False, last_target_coords, f"採掘コマンドが失敗しました: {error_detail}"
-
-        if rule.implemented:
-            self.logger.info(
-                "action category=%s has implemented flag but no handler step='%s'",
-                category,
-                step,
-            )
-            return False, last_target_coords, None
-
-        backlog.append({
-            "category": category,
-            "step": step,
-            "label": rule.label or category,
-        })
         self.logger.info(
-            "action category=%s queued to backlog (unimplemented) step='%s'",
+            "delegating action category=%s step='%s' to langgraph module=%s",
             category,
             step,
+            rule.label or category,
         )
-        return True, last_target_coords, None
+        handled, updated_target, failure_detail = await self._action_graph.run(
+            category=category,
+            step=step,
+            last_target_coords=last_target_coords,
+            backlog=backlog,
+            rule=rule,
+            explicit_coords=explicit_coords,
+        )
+        return handled, updated_target, failure_detail
 
     def _select_pickaxe_for_targets(
         self, ore_names: Iterable[str]

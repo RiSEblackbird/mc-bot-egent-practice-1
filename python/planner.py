@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # gpt-5-mini を用いたプランニング：自然文→PLAN/RESP の二分出力
+import asyncio
 import os
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -10,6 +11,8 @@ from utils import setup_logger
 from dotenv import load_dotenv
 import openai
 from openai.types.responses import EasyInputMessageParam, Response
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 logger = setup_logger("planner")
 load_dotenv()
@@ -47,6 +50,47 @@ ALLOWED_REASONING_EFFORT = {"low", "medium", "high"}
 # gpt-5-mini をはじめとした一部のモデルは温度固定で API が受け付けないため、
 # 送信時には temperature フィールドを省略する必要がある。
 TEMPERATURE_LOCKED_MODELS = {"gpt-5-mini"}
+
+
+class PlanPriorityManager:
+    """LLM 連携の成功/失敗に応じて優先度を調整するシンプルな状態管理。"""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._priority = "normal"
+
+    async def mark_success(self) -> str:
+        async with self._lock:
+            self._priority = "normal"
+            return self._priority
+
+    async def mark_failure(self) -> str:
+        async with self._lock:
+            self._priority = "high"
+            return self._priority
+
+    async def snapshot(self) -> str:
+        async with self._lock:
+            return self._priority
+
+
+class _PlanState(TypedDict, total=False):
+    """LangGraph の Responses API 呼び出しに利用する内部ステート。"""
+
+    user_msg: str
+    context: Dict[str, Any]
+    prompt: str
+    payload: Dict[str, Any]
+    response: Response
+    content: str
+    plan_out: "PlanOut"
+    parse_error: str
+    llm_error: str
+    priority: str
+
+
+_PRIORITY_MANAGER = PlanPriorityManager()
+_PLAN_GRAPH: Optional[CompiledStateGraph] = None
 
 
 def is_gpt5_family(model: str) -> bool:
@@ -155,6 +199,90 @@ class BarrierNotification(BaseModel):
     """障壁通知用のメッセージをパースするためのスキーマ。"""
 
     message: str = ""
+
+
+def _build_plan_graph() -> CompiledStateGraph:
+    manager = _PRIORITY_MANAGER
+    graph: StateGraph = StateGraph(_PlanState)
+
+    async def prepare_payload(state: _PlanState) -> Dict[str, Any]:
+        prompt = build_user_prompt(state["user_msg"], state["context"])
+        logger.info("LLM prompt: %s", prompt)
+        payload = _build_responses_payload(SYSTEM, prompt)
+        return {"prompt": prompt, "payload": payload}
+
+    async def call_llm(state: _PlanState) -> Dict[str, Any]:
+        from openai import AsyncOpenAI
+
+        try:
+            client = AsyncOpenAI()
+            resp = await client.responses.create(**state["payload"])
+        except Exception as exc:
+            logger.exception("plan graph failed to call Responses API")
+            priority = await manager.mark_failure()
+            return {"llm_error": str(exc), "content": "", "priority": priority}
+
+        content = _extract_output_text(resp)
+        logger.info("LLM raw: %s", content)
+        return {"response": resp, "content": content}
+
+    async def parse_plan(state: _PlanState) -> Dict[str, Any]:
+        if state.get("llm_error"):
+            priority = state.get("priority") or await manager.mark_failure()
+            return {"parse_error": state["llm_error"], "priority": priority}
+
+        try:
+            plan_data = PlanOut.model_validate_json(state.get("content") or "")
+        except Exception as exc:
+            logger.exception("plan graph failed to parse JSON plan")
+            priority = await manager.mark_failure()
+            return {"parse_error": str(exc), "priority": priority}
+
+        priority = await manager.mark_success()
+        return {"plan_out": plan_data, "priority": priority}
+
+    async def fallback_plan(state: _PlanState) -> Dict[str, Any]:
+        logger.warning(
+            "plan fallback triggered parse_error=%s llm_error=%s",
+            state.get("parse_error"),
+            state.get("llm_error"),
+        )
+        return {"plan_out": PlanOut(plan=[], resp="了解しました。")}
+
+    async def finalize(state: _PlanState) -> Dict[str, Any]:
+        priority = state.get("priority")
+        if priority:
+            logger.info("plan priority resolved=%s", priority)
+        if priority is not None:
+            return {"priority": priority}
+        return {}
+
+    graph.add_node("prepare_payload", prepare_payload)
+    graph.add_node("call_llm", call_llm)
+    graph.add_node("parse_plan", parse_plan)
+    graph.add_node("fallback_plan", fallback_plan)
+    graph.add_node("finalize", finalize)
+
+    graph.add_edge(START, "prepare_payload")
+    graph.add_edge("prepare_payload", "call_llm")
+    graph.add_edge("call_llm", "parse_plan")
+    graph.add_conditional_edges(
+        "parse_plan",
+        lambda state: "success" if "plan_out" in state else "failure",
+        {"success": "finalize", "failure": "fallback_plan"},
+    )
+    graph.add_edge("fallback_plan", "finalize")
+    graph.add_edge("finalize", END)
+
+    return graph.compile()
+
+
+def _get_plan_graph() -> CompiledStateGraph:
+    global _PLAN_GRAPH
+    if _PLAN_GRAPH is None:
+        _PLAN_GRAPH = _build_plan_graph()
+    return _PLAN_GRAPH
+
 
 # OpenAI Responses API で response_format=json_object を指定する場合も、
 # プロンプト内に "json" という語を含めておくと安定して構造化応答が得られる。
@@ -291,23 +419,38 @@ def _extract_output_text(response: Response) -> str:
 async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
     """ユーザーの日本語チャットを Responses API へ投げ、実行プランを復元する。"""
 
-    from openai import AsyncOpenAI
+    graph = _get_plan_graph()
+    safe_user_msg = str(user_msg or "")
+    safe_context = dict(context or {})
+    initial_state: _PlanState = {
+        "user_msg": safe_user_msg,
+        "context": safe_context,
+    }
+    result = await graph.ainvoke(initial_state)
+    plan_out = result.get("plan_out")
+    if isinstance(plan_out, PlanOut):
+        return plan_out
 
-    client = AsyncOpenAI()
-    prompt = build_user_prompt(user_msg, context)
-    logger.info(f"LLM prompt: {prompt}")
+    if isinstance(plan_out, dict):
+        try:
+            return PlanOut.model_validate(plan_out)
+        except Exception:
+            logger.warning("plan graph returned non PlanOut dict; fallback engaged")
 
-    request_payload = _build_responses_payload(SYSTEM, prompt)
-    resp = await client.responses.create(**request_payload)
-    content = _extract_output_text(resp)
-    logger.info(f"LLM raw: {content}")
+    logger.warning("plan graph returned unexpected payload; using default fallback")
+    return PlanOut(plan=[], resp="了解しました。")
 
-    try:
-        data = PlanOut.model_validate_json(content)
-    except Exception:
-        # 最低限のフォールバック
-        data = PlanOut(plan=[], resp="了解しました。")
-    return data
+
+async def get_plan_priority() -> str:
+    """現在のプラン優先度を LangGraph の状態から取得する。"""
+
+    return await _PRIORITY_MANAGER.snapshot()
+
+
+async def reset_plan_priority() -> None:
+    """テストやリカバリーでプラン優先度を初期状態へ戻す。"""
+
+    await _PRIORITY_MANAGER.mark_success()
 
 
 async def compose_barrier_notification(
