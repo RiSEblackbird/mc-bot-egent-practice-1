@@ -15,3 +15,7 @@ safety:
   max_positions_per_request: 1024
 logging:
   debug: false
+langgraph:
+  retry_endpoint: ""
+  api_key: ""
+  timeout_ms: 2000

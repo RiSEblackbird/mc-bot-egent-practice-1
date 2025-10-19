@@ -88,6 +88,12 @@ Python 側で LLM プランニングとアクション実行が行われます�
 建築カテゴリについては `docs/building_state_machine.md` に LangGraph ノードが従うべき
 フェーズ定義・遷移条件・ロールバック指針を整理しており、長期ジョブを中断しても
 安全に再開できるようチェックポイント設計の前提を共有しています。
+
+#### LangGraph 構造化ログとリカバリー
+
+* `python/utils/logging.py` に構造化ロギングユーティリティを追加し、LangGraph ノード ID・チェックポイント ID・イベントレベルを JSON 形式で出力します。`log_structured_event` を利用すると、ノード固有の `context` メタデータを辞書で渡せます。
+* `python/agent_orchestrator.py` の建築ノードはチェックポイント更新時に `action.handle_building` というノード名でログを記録し、`event_level="recovery"` かどうかでクラッシュ復旧か通常進行かを区別します。調達計画や配置バッチもログへ含めるため、資材不足の原因調査が簡単になります。
+* `python/bridge_client.py` の HTTP 再試行も構造化ログへ統一し、最終的に失敗した場合は `event_level="fault"` を付けて LangGraph 側の再試行ノード連携に備えます。
 2025 年 2 月時点では `python/agent_orchestrator.py` に LangGraph ベースのステートマシンを導入し、採掘・建築・防衛の
 モジュールをノード単位で独立させました。これにより再計画時の分岐が視覚化され、`mine` → `equip` のような連鎖的な
 処理もグラフ上で明示されます。同様に `python/planner.py` の LLM 呼び出しも LangGraph の条件分岐ノードに置き換え、
@@ -137,6 +143,7 @@ docker compose up --build
 3. Paper サーバーの `plugins/` へ配置し、初回起動後に生成される `plugins/AgentBridge/config.yml` の `api_key` を `.env` の `BRIDGE_API_KEY` と一致させます。
 
 HTTP サーバーは `config.yml` の `bind` / `port` で調整でき、`GET /v1/health` にアクセスすると WorldGuard/CoreProtect の有効状態を確認できます。`POST /v1/jobs/*` 系エンドポイントは必ず `X-API-Key` ヘッダーで保護してください。
+`langgraph.retry_endpoint` を設定すると、`POST /v1/events/disconnected` で接続断が通知された際に LangGraph リトライノードを HTTP 経由で呼び出し、Paper 側のログへノード ID とチェックポイント ID を構造化出力します。
 
 ### 3.5 継続採掘モード CLI
 
