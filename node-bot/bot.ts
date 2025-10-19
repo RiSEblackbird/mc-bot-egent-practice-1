@@ -38,6 +38,11 @@ for (const warning of runtimeWarnings) {
   console.warn(`[Config] ${warning}`);
 }
 
+// Mineflayer 制御ループの設定値はログ出力より前に初期化し、未定義参照によるクラッシュを防ぐ。
+const CONTROL_MODE = runtimeConfig.control.mode;
+const VPT_TICK_INTERVAL_MS = runtimeConfig.control.vpt.tickIntervalMs;
+const VPT_MAX_SEQUENCE_LENGTH = runtimeConfig.control.vpt.maxSequenceLength;
+
 console.log(`[Control] mode=${CONTROL_MODE} tick=${VPT_TICK_INTERVAL_MS}ms maxSeq=${VPT_MAX_SEQUENCE_LENGTH}`);
 
 const MC_VERSION = runtimeConfig.minecraft.version;
@@ -52,9 +57,6 @@ const AGENT_WS_URL = runtimeConfig.agentBridge.url;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 const MINING_APPROACH_TOLERANCE = 1;
 const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
-const CONTROL_MODE = runtimeConfig.control.mode;
-const VPT_TICK_INTERVAL_MS = runtimeConfig.control.vpt.tickIntervalMs;
-const VPT_MAX_SEQUENCE_LENGTH = runtimeConfig.control.vpt.maxSequenceLength;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。

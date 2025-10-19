@@ -47,6 +47,9 @@ Node 側のボット実装は TypeScript 化しており、`npm start` を実行
 Mineflayer 起動時の環境変数は `node-bot/runtime/config.ts` へ集約しており、Docker 実行時の `MC_HOST` 補正や `MC_VERSION` のフォールバック、`MOVE_GOAL_TOLERANCE` の上下限チェックを一括で行います。
 設定変更のテストは `node-bot/tests/config.test.ts` を実行すると安全に回帰確認できます。
 
+制御ループの設定値は `node-bot/bot.ts` の冒頭で初期化してからログへ出力するよう整理しました。`npm start` で Mineflayer ボットを再起動し、
+標準出力に `mode=... tick=... maxSeq=...` が表示されクラッシュが発生しないことを確認してください。未初期化定数を参照した際の例外はこの変更で解消されます。
+
 2025 年 10 月のアップデートでは `node-bot/runtime/roles.ts` に役割カタログを追加し、`setAgentRole` コマンドで LangGraph から防衛/補給/偵察などのロールへ即座に切り替えられるようになりました。Mineflayer から `agentEvent` チャネル経由で位置・体力・役割のスナップショットを Python 側へ push するため、イベント駆動で共有メモリが更新されます。
 
 `bot.ts` には `gatherStatus` WebSocket コマンドを実装しており、Python エージェントが現在位置・インベントリ・体力/満腹度と掘削許可のスナップショットを即座に取得できます。Mineflayer の `canDig` 設定やゲームモードから地下採掘の可否を判定し、所持ツルハシのエンチャント情報と併せて JSON で返すため、チャット経由で逐一質問せずとも自律的な計画を立てられます。
