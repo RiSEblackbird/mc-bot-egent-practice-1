@@ -10,13 +10,20 @@ from pydantic import BaseModel, Field
 from utils import setup_logger
 from dotenv import load_dotenv
 import openai
+from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam, Response
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from config import load_agent_config
 
 logger = setup_logger("planner")
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# AgentConfig は一度だけ読み込み、Responses API へのタイムアウト秒数を
+# LangGraph 内のノードから参照できるようモジュールレベルで公開する。
+_PLANNER_CONFIG_RESULT = load_agent_config()
+LLM_TIMEOUT_SECONDS = _PLANNER_CONFIG_RESULT.config.llm_timeout_seconds
 
 # OPENAI_BASE_URL を安全に正規化する。
 #   - スキームが欠けていれば http:// を補完して警告を表示
@@ -224,15 +231,35 @@ def _build_plan_graph() -> CompiledStateGraph:
         return {"prompt": prompt, "payload": payload}
 
     async def call_llm(state: _PlanState) -> Dict[str, Any]:
-        from openai import AsyncOpenAI
+        """Responses API を呼び出し、タイムアウト時は安全なフォールバックを返す。"""
+
+        async def _build_failure_payload(reason: str, *, log_as_warning: bool) -> Dict[str, Any]:
+            """例外発生時に優先度降格とフォールバックプランを組み立てる。"""
+
+            priority = await manager.mark_failure()
+            fallback = PlanOut(plan=[], resp="了解しました。")
+            if log_as_warning:
+                logger.warning("plan graph detected LLM timeout: %s", reason)
+            else:
+                logger.exception("plan graph failed to call Responses API: %s", reason)
+            return {
+                "llm_error": reason,
+                "content": "",
+                "priority": priority,
+                "fallback_plan_out": fallback,
+            }
 
         try:
             client = AsyncOpenAI()
-            resp = await client.responses.create(**state["payload"])
+            resp = await asyncio.wait_for(
+                client.responses.create(**state["payload"]),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            timeout_reason = f"timeout after {LLM_TIMEOUT_SECONDS:.1f} seconds"
+            return await _build_failure_payload(timeout_reason, log_as_warning=True)
         except Exception as exc:
-            logger.exception("plan graph failed to call Responses API")
-            priority = await manager.mark_failure()
-            return {"llm_error": str(exc), "content": "", "priority": priority}
+            return await _build_failure_payload(str(exc), log_as_warning=False)
 
         content = _extract_output_text(resp)
         logger.info("LLM raw: %s", content)
@@ -241,7 +268,11 @@ def _build_plan_graph() -> CompiledStateGraph:
     async def parse_plan(state: _PlanState) -> Dict[str, Any]:
         if state.get("llm_error"):
             priority = state.get("priority") or await manager.mark_failure()
-            return {"parse_error": state["llm_error"], "priority": priority}
+            result: Dict[str, Any] = {"parse_error": state["llm_error"], "priority": priority}
+            fallback_plan = state.get("fallback_plan_out")
+            if fallback_plan is not None:
+                result["fallback_plan_out"] = fallback_plan
+            return result
 
         try:
             plan_data = PlanOut.model_validate_json(state.get("content") or "")
@@ -285,6 +316,9 @@ def _build_plan_graph() -> CompiledStateGraph:
             state.get("parse_error"),
             state.get("llm_error"),
         )
+        fallback = state.get("fallback_plan_out")
+        if isinstance(fallback, PlanOut):
+            return {"plan_out": fallback}
         return {"plan_out": PlanOut(plan=[], resp="了解しました。")}
 
     async def finalize(state: _PlanState) -> Dict[str, Any]:
