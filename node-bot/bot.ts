@@ -426,8 +426,31 @@ function configureMovementProfile(movements: MovementsClass, allowDigging: boole
  * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
  * ブロックの段差や水流の影響で「目的地に着いたのに失敗扱い」になるケースが多い。
  * GoalNear を用いることで ±3 ブロックの範囲を許容し、柔軟に到着完了判定を行う。
-
  */
+
+/**
+ * GoalNear の許容距離を状況に応じて補正する。
+ *
+ * 梯子やツタを上る際に y 軸方向の差が 2 以上残っている段階で完了扱いになると、
+ * bot が入力を解除して落下してしまう。そのため縦方向の移動量が大きい場合は
+ * 許容範囲を 1 ブロックへ絞り、登り切るまで入力を維持させる。
+ */
+function resolveGoalNearTolerance(targetBot: Bot, target: { x: number; y: number; z: number }): number {
+  const entity = targetBot.entity;
+
+  if (!entity) {
+    return MOVE_GOAL_TOLERANCE;
+  }
+
+  const verticalGap = Math.abs(target.y - entity.position.y);
+
+  if (verticalGap >= 2) {
+    const tightenedTolerance = Math.min(MOVE_GOAL_TOLERANCE, 1);
+    return Math.max(1, tightenedTolerance);
+  }
+
+  return MOVE_GOAL_TOLERANCE;
+}
 
 /**
  * forcedMove 発生直後に GoalChanged 例外が出た場合は再試行可能と判断するヘルパー。
@@ -515,7 +538,8 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
   }
 
   lastMoveTarget = { x, y, z };
-  const goal = new goals.GoalNear(x, y, z, MOVE_GOAL_TOLERANCE);
+  const tolerance = resolveGoalNearTolerance(activeBot, { x, y, z });
+  const goal = new goals.GoalNear(x, y, z, tolerance);
   const preferredMovements = cautiousMovements ?? activeBot.pathfinder.movements;
   const fallbackMovements = digPermissiveMovements;
 
@@ -523,7 +547,7 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
     await gotoWithForcedMoveRetry(activeBot, goal, preferredMovements);
     const { position } = activeBot.entity;
     console.log(
-      `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE} profile=cautious`,
+      `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${tolerance} profile=cautious`,
     );
     return { ok: true };
   } catch (primaryError) {
@@ -536,7 +560,7 @@ async function handleMoveToCommand(args: Record<string, unknown>): Promise<Comma
         await gotoWithForcedMoveRetry(activeBot, goal, fallbackMovements);
         const { position } = activeBot.entity;
         console.log(
-          `[MoveToCommand] fallback pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${MOVE_GOAL_TOLERANCE} profile=dig-enabled`,
+          `[MoveToCommand] fallback pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${tolerance} profile=dig-enabled`,
         );
         return { ok: true };
       } catch (fallbackError) {
