@@ -102,6 +102,57 @@ class Actions:
         payload = {"type": "gatherStatus", "args": {"kind": kind}}
         return await self._dispatch("gatherStatus", payload)
 
+    async def register_skill(
+        self,
+        *,
+        skill_id: str,
+        title: str,
+        description: str,
+        steps: List[str],
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """スキル定義を Mineflayer 側へ登録する。"""
+
+        payload = {"type": "registerSkill", "args": {
+            "skillId": skill_id,
+            "title": title,
+            "description": description,
+            "steps": steps,
+        }}
+        if tags:
+            payload["args"]["tags"] = tags
+        return await self._dispatch("registerSkill", payload)
+
+    async def invoke_skill(
+        self,
+        skill_id: str,
+        *,
+        context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """登録済みスキルの再生を要求する。"""
+
+        args: Dict[str, Any] = {"skillId": skill_id}
+        if context:
+            args["context"] = context
+        payload = {"type": "invokeSkill", "args": args}
+        return await self._dispatch("invokeSkill", payload)
+
+    async def begin_skill_exploration(
+        self,
+        *,
+        skill_id: str,
+        description: str,
+        step_context: str,
+    ) -> Dict[str, Any]:
+        """未習得スキルの探索モードを Mineflayer へ通知する。"""
+
+        payload = {"type": "skillExplore", "args": {
+            "skillId": skill_id,
+            "description": description,
+            "context": step_context,
+        }}
+        return await self._dispatch("skillExplore", payload)
+
     async def _dispatch(self, command: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """共通の送信処理: 付番、送信時間、レスポンスを詳細に記録する。"""
 

@@ -1,0 +1,50 @@
+{
+  "roots": [
+    "travel-known-destination",
+    "gather-resources"
+  ],
+  "skills": [
+    {
+      "id": "travel-known-destination",
+      "title": "既知地点への移動",
+      "description": "過去に訪れた座標へ安全に移動するための基本行動をまとめたスキルです。",
+      "categories": ["move"],
+      "tags": ["move", "travel", "navigation"],
+      "keywords": ["移動", "座標", "向かう", "到着"],
+      "examples": ["XYZ 座標へ移動する", "目的地まで移動して到着を報告する"],
+      "prerequisites": [],
+      "followUps": ["torch-placement"],
+      "unlocked": true,
+      "usageCount": 0,
+      "successCount": 0
+    },
+    {
+      "id": "gather-resources",
+      "title": "資源の初期収集",
+      "description": "木材や石を確保し、基本的なツールクラフトへ繋げるための下準備です。",
+      "categories": ["mine", "craft"],
+      "tags": ["resource", "gather", "setup"],
+      "keywords": ["採集", "原木", "石", "ツルハシ"],
+      "examples": ["原木を集めて作業台を作る", "丸石を掘って石のツールを準備する"],
+      "prerequisites": [],
+      "followUps": ["torch-placement"],
+      "unlocked": true,
+      "usageCount": 0,
+      "successCount": 0
+    },
+    {
+      "id": "torch-placement",
+      "title": "坑道の松明設置",
+      "description": "坑道探索時に一定間隔で松明を設置し、安全な視界を確保する手順です。",
+      "categories": ["build"],
+      "tags": ["light", "safety", "build"],
+      "keywords": ["松明", "たいまつ", "設置", "照明"],
+      "examples": ["坑道の壁に松明を置く", "暗い場所へ松明を設置する"],
+      "prerequisites": ["gather-resources"],
+      "followUps": [],
+      "unlocked": false,
+      "usageCount": 0,
+      "successCount": 0
+    }
+  ]
+}
