@@ -19,6 +19,7 @@ public final class AgentBridgeConfig {
     private final FrontierConfig frontier;
     private final SafetyConfig safety;
     private final LoggingConfig logging;
+    private final LangGraphConfig langGraph;
 
     private AgentBridgeConfig(
             String bindAddress,
@@ -28,7 +29,8 @@ public final class AgentBridgeConfig {
             CoreProtectConfig coreProtect,
             FrontierConfig frontier,
             SafetyConfig safety,
-            LoggingConfig logging) {
+            LoggingConfig logging,
+            LangGraphConfig langGraph) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.apiKey = apiKey;
@@ -37,6 +39,7 @@ public final class AgentBridgeConfig {
         this.frontier = frontier;
         this.safety = safety;
         this.logging = logging;
+        this.langGraph = langGraph;
     }
 
     public String bindAddress() {
@@ -71,6 +74,10 @@ public final class AgentBridgeConfig {
         return logging;
     }
 
+    public LangGraphConfig langGraph() {
+        return langGraph;
+    }
+
     /**
      * Bukkit の設定ファイルから AgentBridgeConfig を構築する。
      * 必須項目が欠落している場合は例外を送出し、運用者に設定見直しを促す。
@@ -92,8 +99,20 @@ public final class AgentBridgeConfig {
                 raw.getBoolean("safety.liquids_stop", true),
                 Math.max(raw.getInt("safety.max_positions_per_request", 1024), 1));
         LoggingConfig loggingConfig = new LoggingConfig(raw.getBoolean("logging.debug", false));
-        return new AgentBridgeConfig(bind, port, apiKey, timeout, coreProtectConfig, frontierConfig, safetyConfig,
-                loggingConfig);
+        LangGraphConfig langGraphConfig = new LangGraphConfig(
+                raw.getString("langgraph.retry_endpoint", ""),
+                raw.getString("langgraph.api_key", ""),
+                Math.max(raw.getInt("langgraph.timeout_ms", 2000), 250));
+        return new AgentBridgeConfig(
+                bind,
+                port,
+                apiKey,
+                timeout,
+                coreProtectConfig,
+                frontierConfig,
+                safetyConfig,
+                loggingConfig,
+                langGraphConfig);
     }
 
     private static int clampPort(int candidate) {
@@ -189,6 +208,35 @@ public final class AgentBridgeConfig {
 
         public boolean debug() {
             return debug;
+        }
+    }
+
+    /** LangGraph リトライ連携に関する設定値。 */
+    public static final class LangGraphConfig {
+        private final String retryEndpoint;
+        private final String apiKey;
+        private final int timeoutMillis;
+
+        LangGraphConfig(String retryEndpoint, String apiKey, int timeoutMillis) {
+            this.retryEndpoint = Objects.toString(retryEndpoint, "").trim();
+            this.apiKey = Objects.toString(apiKey, "");
+            this.timeoutMillis = timeoutMillis;
+        }
+
+        public String retryEndpoint() {
+            return retryEndpoint;
+        }
+
+        public String apiKey() {
+            return apiKey;
+        }
+
+        public int timeoutMillis() {
+            return timeoutMillis;
+        }
+
+        public boolean enabled() {
+            return !retryEndpoint.isEmpty();
         }
     }
 }

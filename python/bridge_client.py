@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import json
+import json as jsonlib
 import logging
 import os
 import time
@@ -12,7 +12,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from utils import log_structured_event, setup_logger
+
+logger = setup_logger("bridge.http")
 
 BRIDGE_URL = os.getenv("BRIDGE_URL", "http://127.0.0.1:19071")
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "CHANGE_ME")
@@ -118,11 +120,33 @@ class BridgeClient:
                 if not response.content:
                     return None
                 return response.json()
-            except (httpx.HTTPError, json.JSONDecodeError) as exc:  # type: ignore[arg-type]
+            except (httpx.HTTPError, jsonlib.JSONDecodeError) as exc:  # type: ignore[arg-type]
                 attempt += 1
+                context = {
+                    "method": method,
+                    "path": path,
+                    "attempt": attempt,
+                    "max_attempts": BRIDGE_RETRY,
+                    "error": str(exc),
+                }
                 if attempt > BRIDGE_RETRY:
+                    log_structured_event(
+                        logger,
+                        "bridge http request failed permanently",
+                        level=logging.ERROR,
+                        event_level="fault",
+                        langgraph_node_id="bridge.http_request",
+                        context=context,
+                    )
                     raise BridgeError(f"HTTP request to AgentBridge failed: {exc}") from exc
-                logger.warning("Bridge request failed (%s), retrying...", exc)
+                log_structured_event(
+                    logger,
+                    "bridge http request failed, scheduling retry",
+                    level=logging.WARNING,
+                    event_level="retry",
+                    langgraph_node_id="bridge.http_request",
+                    context=context,
+                )
                 time.sleep(backoff)
                 backoff *= 2
 

@@ -4,6 +4,7 @@ import com.example.bridge.AgentBridgePlugin;
 import com.example.bridge.jobs.CardinalDirection;
 import com.example.bridge.jobs.JobRegistry;
 import com.example.bridge.jobs.MiningJob;
+import com.example.bridge.langgraph.LangGraphRetryHook;
 import com.example.bridge.util.AgentBridgeConfig;
 import com.example.bridge.util.CoreProtectFacade;
 import com.example.bridge.util.FunctionalBlockInspector;
@@ -51,6 +52,7 @@ public final class BridgeHttpServer {
     private final WorldGuardFacade worldGuardFacade;
     private final CoreProtectFacade coreProtectFacade;
     private final FunctionalBlockInspector functionalInspector;
+    private final LangGraphRetryHook retryHook;
     private final Logger logger;
     private final ObjectMapper mapper;
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -64,6 +66,7 @@ public final class BridgeHttpServer {
             WorldGuardFacade worldGuardFacade,
             CoreProtectFacade coreProtectFacade,
             FunctionalBlockInspector functionalInspector,
+            LangGraphRetryHook retryHook,
             Logger logger) {
         this.plugin = plugin;
         this.config = config;
@@ -71,6 +74,7 @@ public final class BridgeHttpServer {
         this.worldGuardFacade = worldGuardFacade;
         this.coreProtectFacade = coreProtectFacade;
         this.functionalInspector = functionalInspector;
+        this.retryHook = retryHook;
         this.logger = logger;
         this.mapper = new ObjectMapper();
         this.mapper.findAndRegisterModules();
@@ -86,6 +90,7 @@ public final class BridgeHttpServer {
         server.createContext("/v1/jobs/stop", new StopJobHandler());
         server.createContext("/v1/blocks/bulk_eval", new BulkEvalHandler());
         server.createContext("/v1/coreprotect/is_player_placed_bulk", new CoreProtectBulkHandler());
+        server.createContext("/v1/events/disconnected", new DisconnectionHandler());
         server.setExecutor(executor);
         server.start();
         logger.info(() -> "AgentBridge HTTP server started on " + address);
@@ -301,6 +306,23 @@ public final class BridgeHttpServer {
                 node.put("who", result.playerName().orElse(null));
                 response.add(node);
             }
+            sendJson(exchange, 200, response);
+        }
+    }
+
+    private final class DisconnectionHandler extends BaseHandler {
+        @Override
+        protected void handleAuthed(HttpExchange exchange) throws Exception {
+            ensureMethod(exchange, "POST");
+            JsonNode root = parseBody(exchange);
+            String nodeId = requiredText(root, "node_id");
+            String checkpointId = root.path("checkpoint_id").asText("");
+            String reason = root.path("reason").asText("disconnected");
+            String eventLevel = root.path("event_level").asText("error");
+            logger.info(() -> "LangGraph disconnect detected node=" + nodeId + " checkpoint=" + checkpointId);
+            retryHook.triggerRetry(nodeId, checkpointId, reason, eventLevel);
+            ObjectNode response = mapper.createObjectNode();
+            response.put("ok", true);
             sendJson(exchange, 200, response);
         }
     }

@@ -2,6 +2,8 @@ package com.example.bridge;
 
 import com.example.bridge.http.BridgeHttpServer;
 import com.example.bridge.jobs.JobRegistry;
+import com.example.bridge.langgraph.LangGraphRetryClient;
+import com.example.bridge.langgraph.LangGraphRetryHook;
 import com.example.bridge.util.AgentBridgeConfig;
 import com.example.bridge.util.CoreProtectFacade;
 import com.example.bridge.util.FunctionalBlockInspector;
@@ -58,11 +60,20 @@ public final class AgentBridgePlugin extends JavaPlugin {
         WorldGuardFacade worldGuardFacade = new WorldGuardFacade(getLogger());
         CoreProtectFacade coreProtectFacade = new CoreProtectFacade(getLogger());
         FunctionalBlockInspector inspector = new FunctionalBlockInspector();
+        LangGraphRetryHook retryHook = LangGraphRetryHook.noop(getLogger());
+        AgentBridgeConfig.LangGraphConfig langGraph = bridgeConfig.langGraph();
+        if (langGraph.enabled()) {
+            retryHook = new LangGraphRetryClient(
+                    langGraph.retryEndpoint(),
+                    langGraph.apiKey(),
+                    langGraph.timeoutMillis(),
+                    getLogger());
+        }
         if (httpServer != null) {
             httpServer.stop();
         }
         httpServer = new BridgeHttpServer(this, bridgeConfig, jobRegistry, worldGuardFacade, coreProtectFacade, inspector,
-                getLogger());
+                retryHook, getLogger());
         try {
             httpServer.start();
         } catch (IOException e) {

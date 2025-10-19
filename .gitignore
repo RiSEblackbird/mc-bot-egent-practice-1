@@ -73,6 +73,9 @@ paper-*.jar
 bridge-plugin/.gradle/
 bridge-plugin/build/
 bridge-plugin/libs/*.jar
+# AgentBridge のローカル上書き設定（LangGraph エンドポイントやシークレットを含むため除外）
+bridge-plugin/config.local.yml
+bridge-plugin/src/main/resources/config.local.yml
 
 # Editor and OS artifacts
 .DS_Store
