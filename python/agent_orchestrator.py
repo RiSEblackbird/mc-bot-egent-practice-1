@@ -181,6 +181,10 @@ class ActionGraph:
                     return {"skill_status": "none"}
                 handled, failure_detail = await orchestrator._execute_skill_match(match, step)  # type: ignore[attr-defined]
                 status = "handled" if handled else "failed"
+                if not handled and failure_detail is None:
+                    # Mineflayer 側で未登録スキルだった場合は skill_status を none に戻し、
+                    # LangGraph が通常の装備・採掘ヒューリスティックへ遷移できるようにする。
+                    status = "none"
                 return {
                     "handled": handled,
                     "failure_detail": failure_detail,

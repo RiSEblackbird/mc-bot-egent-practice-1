@@ -1385,7 +1385,19 @@ class AgentOrchestrator:
             return True, None
 
         await self.skill_repository.record_usage(match.skill.identifier, success=False)
-        error_detail = resp.get("error") or "Mineflayer 側でスキル再生が拒否されました"
+        error_detail = resp.get("error")
+        if isinstance(error_detail, str) and "is not registered" in error_detail:
+            # Mineflayer 側でスキルが未登録の場合はヒューリスティックへ委譲する。
+            # INFO ログのみ残して失敗理由を握りつぶすことで LangGraph が通常経路へ進み、
+            # 既存の装備・採掘処理へスムーズにフォールバックできるようにする。
+            self.logger.info(
+                "skill %s missing on Mineflayer; defer to heuristics error=%s",
+                match.skill.identifier,
+                error_detail,
+            )
+            return False, None
+
+        error_detail = error_detail or "Mineflayer 側でスキル再生が拒否されました"
         return False, f"スキル『{match.skill.title}』の再生に失敗しました: {error_detail}"
 
     async def _begin_skill_exploration(
