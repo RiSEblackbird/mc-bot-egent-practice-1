@@ -25,6 +25,7 @@ python/.cache/
 python/.openai/
 python/.secrets/
 python/.tokens/
+/.python_history
 python/action_backlog*.json
 # LangGraph 実行時のデバッグアーティファクト（秘匿情報が混入しうるため除外）
 .langgraph/
