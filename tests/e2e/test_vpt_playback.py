@@ -26,7 +26,7 @@ class DummyBridge(BotBridge):
         self.response = response
         self.requests: List[Dict[str, Any]] = []
 
-    async def send(self, payload: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
+    async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:  # type: ignore[override]
         self.requests.append(payload)
         return self.response
 
@@ -38,7 +38,7 @@ class RecordingBridge(BotBridge):
         super().__init__(ws_url="ws://dummy")
         self.sent_payloads: List[Dict[str, Any]] = []
 
-    async def send(self, payload: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[override]
+    async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:  # type: ignore[override]
         self.sent_payloads.append(payload)
         return {"ok": True, "echo": payload}
 

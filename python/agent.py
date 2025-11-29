@@ -706,6 +706,16 @@ class AgentOrchestrator:
                         detection_result.get("summary")
                         or "ステータスを報告しました。"
                     )
+                    data = detection_result.get("data")
+                    if isinstance(data, dict):
+                        coords = (data.get("x"), data.get("y"), data.get("z"))
+                        if all(isinstance(coord, (int, float)) for coord in coords):
+                            # caplog で位置報告を明示的に追跡できるよう、座標を含む
+                            # 文字列へ置き換える。メンバーが動作確認しやすいよう、
+                            # 人間可読なフォーマットを採用する。
+                            observation_text = (
+                                f"位置報告: X={int(coords[0])} / Y={int(coords[1])} / Z={int(coords[2])}"
+                            )
                     status = "completed"
                     event_level = "progress"
                 else:
@@ -848,7 +858,16 @@ class AgentOrchestrator:
                     backlog=action_backlog,
                 )
                 if handled:
-                    observation_text = f"{action_category} タスクを完了しました。"
+                    if action_category == "move":
+                        destination = last_target_coords or self.default_move_target
+                        if destination:
+                            observation_text = (
+                                f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
+                            )
+                        else:
+                            observation_text = "移動に成功しました。"
+                    else:
+                        observation_text = f"{action_category} タスクを完了しました。"
                     status = "completed"
                     event_level = "progress"
                     if react_entry:
@@ -990,6 +1009,16 @@ class AgentOrchestrator:
             "observation": observation,
             "status": status,
         }
+        # caplog 経由で ReAct ログを確実に解析できるよう、構造化ログとは別に
+        # JSON 文字列を明示的に出力する。新人メンバーが pytest 上で挙動を
+        # 追いやすいよう、必要最低限のメタデータを含めたメッセージを残す。
+        raw_payload = {
+            "message": "react_step",
+            "event_level": event_level,
+            "langgraph_node_id": "agent.react_loop",
+            "context": context,
+        }
+        self.logger.log(log_level, json.dumps(raw_payload, ensure_ascii=False))
         log_structured_event(
             self.logger,
             "react_step",

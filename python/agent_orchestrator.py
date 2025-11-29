@@ -120,8 +120,17 @@ async def _refresh_inventory_snapshot(
 
     # gather_status("inventory") の存在を確認して、Mineflayer 連携が無効な環境で
     # 余計なエラーを発生させないようにする。新規参画者が初期設定を失念しても
-    # 障害内容を明示できるように分岐を設けている。
+    # 障害内容を明示できるように分岐を設けている。テスト環境では事前に
+    # Memory へ差し込んだスナップショットを尊重し、完全オフラインでも
+    # 装備推論を継続できるようにする。
     if not hasattr(orchestrator.actions, "gather_status"):
+        cached_inventory = orchestrator.memory.get("inventory_detail")  # type: ignore[attr-defined]
+        if isinstance(cached_inventory, dict):
+            summary = orchestrator._summarize_inventory_status(cached_inventory)  # type: ignore[attr-defined]
+            orchestrator.memory.set("inventory", summary)  # type: ignore[attr-defined]
+            orchestrator.memory.set("inventory_detail", cached_inventory)  # type: ignore[attr-defined]
+            return True, cached_inventory, None
+
         return False, {}, "Mineflayer 側で所持品取得 API が有効化されていません。"
 
     try:
