@@ -22,6 +22,8 @@ def test_load_agent_config_returns_defaults() -> None:
     assert config.minedojo.cache_dir == "var/cache/minedojo"
     assert config.minedojo.api_key is None
     assert config.llm_timeout_seconds == 30.0
+    assert config.queue_max_size == 20
+    assert config.worker_task_timeout_seconds == 300.0
 
 
 def test_load_agent_config_emits_warning_on_invalid_port() -> None:
@@ -43,3 +45,16 @@ def test_load_agent_config_handles_invalid_llm_timeout() -> None:
 
     assert result.config.llm_timeout_seconds == 30.0
     assert any("タイムアウト値" in warning for warning in result.warnings)
+
+
+def test_load_agent_config_handles_invalid_queue_max_size() -> None:
+    result = load_agent_config({"AGENT_QUEUE_MAX_SIZE": "-1"})
+
+    assert result.config.queue_max_size == 20
+    assert any("キュー上限" in warning for warning in result.warnings)
+
+
+def test_load_agent_config_reads_worker_timeout() -> None:
+    result = load_agent_config({"WORKER_TASK_TIMEOUT_SECONDS": "45"})
+
+    assert result.config.worker_task_timeout_seconds == 45.0

@@ -24,6 +24,8 @@ _DEFAULT_MINEDOJO_API_BASE_URL = "https://api.minedojo.org/v1"
 _DEFAULT_MINEDOJO_CACHE_DIR = "var/cache/minedojo"
 _DEFAULT_MINEDOJO_REQUEST_TIMEOUT = 10.0
 _DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
+_DEFAULT_AGENT_QUEUE_MAX_SIZE = 20
+_DEFAULT_WORKER_TASK_TIMEOUT_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ class AgentConfig:
     skill_library_path: str
     minedojo: MineDojoConfig
     llm_timeout_seconds: float  # Responses API 呼び出しを強制終了するまでの猶予秒数
+    queue_max_size: int  # チャットキューの上限。0 なら無制限
+    worker_task_timeout_seconds: float  # 単一チャット処理のタイムアウト猶予
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,26 @@ def _parse_positive_float(raw: str | None, default: float) -> Tuple[float, List[
         return default, warnings
 
 
+def _parse_positive_int(raw: str | None, default: int) -> Tuple[int, List[str]]:
+    """正の整数を安全に解析する。"""
+
+    warnings: List[str] = []
+
+    if raw is None or raw.strip() == "":
+        return default, warnings
+
+    try:
+        value = int(raw)
+        if value < 0:
+            raise ValueError
+        return value, warnings
+    except ValueError:
+        warnings.append(
+            f"環境変数のキュー上限 '{raw}' が不正なため {default} を使用します。"
+        )
+        return default, warnings
+
+
 def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     """プロセス環境から Python エージェントの設定を読み取る。"""
 
@@ -145,6 +169,12 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     llm_timeout_seconds, llm_timeout_warnings = _parse_positive_float(
         source.get("LLM_TIMEOUT_SECONDS"), _DEFAULT_LLM_TIMEOUT_SECONDS
     )
+    queue_max_size, queue_warnings = _parse_positive_int(
+        source.get("AGENT_QUEUE_MAX_SIZE"), _DEFAULT_AGENT_QUEUE_MAX_SIZE
+    )
+    worker_task_timeout_seconds, worker_timeout_warnings = _parse_positive_float(
+        source.get("WORKER_TASK_TIMEOUT_SECONDS"), _DEFAULT_WORKER_TASK_TIMEOUT_SECONDS
+    )
 
     minedojo_cache_dir = minedojo_cache_dir_raw.strip() or _DEFAULT_MINEDOJO_CACHE_DIR
     minedojo_dataset = (
@@ -158,6 +188,8 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     _collect_warnings(warnings, move_warnings)
     _collect_warnings(warnings, timeout_warnings)
     _collect_warnings(warnings, llm_timeout_warnings)
+    _collect_warnings(warnings, queue_warnings)
+    _collect_warnings(warnings, worker_timeout_warnings)
 
     config = AgentConfig(
         ws_url=ws_url,
@@ -174,6 +206,8 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
             request_timeout=minedojo_timeout,
         ),
         llm_timeout_seconds=llm_timeout_seconds,
+        queue_max_size=queue_max_size,
+        worker_task_timeout_seconds=worker_task_timeout_seconds,
     )
 
     for warning in warnings:
