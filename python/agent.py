@@ -74,6 +74,9 @@ class AgentOrchestrator:
     # 再計画の連鎖が無限に進むとチャット出力が雪崩のように発生するため、
     # 自動リトライは上限回数で打ち切り、最悪時でも運用者が介入しやすくする。
     _MAX_REPLAN_DEPTH = 2
+    # チャット処理がタイムアウトした際の再試行上限。無制限リトライでキューを
+    # 埋め続けると新規指示を受け付けられなくなるため、再計画と同じ深さで早期開放する。
+    _MAX_TASK_TIMEOUT_RETRY = _MAX_REPLAN_DEPTH
 
     # Mineflayer へ渡す座標はプレイヤーの指示の表記揺れが多いため、複数の正規表現
     # を用意して柔軟に抽出する。スラッシュ区切り（-36 / 73 / -66）や全角スラッシュ、
@@ -310,8 +313,11 @@ class AgentOrchestrator:
             )
         # Voyager 互換のスキルライブラリを共有し、タスク実行前に再利用候補を即座に取得する。
         self.skill_repository = repo
-        self.queue: asyncio.Queue[ChatTask] = asyncio.Queue()
         self.config = config or AGENT_CONFIG
+        # 混雑時の背圧を明示的に制御するため、設定値に応じてキュー上限を固定する。
+        self.queue: asyncio.Queue[ChatTask] = asyncio.Queue(
+            maxsize=self.config.queue_max_size
+        )
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
         self.default_move_target = self.config.default_move_target
         self.logger = setup_logger("agent.orchestrator")
@@ -330,6 +336,9 @@ class AgentOrchestrator:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
 
         task = ChatTask(username=username, message=message)
+        # 直近の指示を優先するため、キュー満杯時は最古のタスクを破棄して新規指示の受付を確保する。
+        if self.queue.maxsize > 0 and self.queue.qsize() >= self.queue.maxsize:
+            await self._handle_queue_overflow(task)
         await self.queue.put(task)
         self.logger.info(
             "chat task enqueued username=%s message=%s queue_size=%d",
@@ -349,7 +358,10 @@ class AgentOrchestrator:
             task = await self.queue.get()
             try:
                 started_at = time.perf_counter()
-                await self._process_chat(task)
+                await asyncio.wait_for(
+                    self._process_chat(task),
+                    timeout=self.config.worker_task_timeout_seconds,
+                )
                 elapsed = time.perf_counter() - started_at
                 self.logger.info(
                     "worker processed username=%s duration=%.3fs remaining_queue=%d",
@@ -357,10 +369,73 @@ class AgentOrchestrator:
                     elapsed,
                     self.queue.qsize(),
                 )
+            except asyncio.TimeoutError:
+                elapsed = time.perf_counter() - started_at
+                log_structured_event(
+                    self.logger,
+                    "chat task timed out; re-queuing or dropping per retry limit",
+                    level=logging.WARNING,
+                    event_level="warning",
+                    context={
+                        "username": task.username,
+                        "duration_sec": round(elapsed, 3),
+                        "timeout_limit_sec": self.config.worker_task_timeout_seconds,
+                        "retry_count": task.retry_count,
+                        "retry_limit": self._MAX_TASK_TIMEOUT_RETRY,
+                    },
+                    exc_info=True,
+                )
+                if task.retry_count < self._MAX_TASK_TIMEOUT_RETRY:
+                    task.retry_count += 1
+                    if self.queue.maxsize > 0 and self.queue.qsize() >= self.queue.maxsize:
+                        await self._handle_queue_overflow(task)
+                    await self.queue.put(task)
+                    self.logger.warning(
+                        "chat task timeout requeued username=%s retry=%d",
+                        task.username,
+                        task.retry_count,
+                    )
+                else:
+                    await self.actions.say(
+                        "処理が長時間停止したため、この指示をスキップしました。最新の指示を優先します。"
+                    )
+                    self.logger.error(
+                        "chat task timeout dropped username=%s retry_limit=%d",
+                        task.username,
+                        self._MAX_TASK_TIMEOUT_RETRY,
+                    )
             except Exception:
                 self.logger.exception("failed to process chat task username=%s", task.username)
             finally:
                 self.queue.task_done()
+
+    async def _handle_queue_overflow(self, incoming: ChatTask) -> None:
+        """混雑時に最古のタスクを破棄し、最新チャットの受け付けを保証する。"""
+
+        dropped: Optional[ChatTask] = None
+        try:
+            dropped = self.queue.get_nowait()
+            # get() で取り出した分を完了扱いにして、未完了カウンタの不整合を防ぐ。
+            self.queue.task_done()
+        except asyncio.QueueEmpty:
+            dropped = None
+
+        log_structured_event(
+            self.logger,
+            "chat queue overflow detected; dropping oldest task to prioritize latest instruction",
+            level=logging.WARNING,
+            event_level="warning",
+            context={
+                "policy": "drop_oldest",
+                "queue_size": self.queue.qsize(),
+                "queue_max_size": self.queue.maxsize,
+                "incoming_username": incoming.username,
+                "dropped_username": getattr(dropped, "username", None),
+            },
+        )
+        await self.actions.say(
+            "処理が混雑しているため、古い指示をスキップし最新の指示を優先します。"
+        )
 
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""

@@ -29,6 +29,8 @@ class ChatTask:
 
     username: str
     message: str
+    # worker() のタイムアウト再試行回数を記録し、無限リトライを防止する。
+    retry_count: int = 0
 
 
 def build_reflection_prompt(
