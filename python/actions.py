@@ -4,7 +4,7 @@
 import itertools
 import logging
 import time
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from bridge_ws import BotBridge
 from utils import log_structured_event, setup_logger
@@ -49,12 +49,21 @@ def _require_non_empty_text(value: Optional[str], *, field: str) -> str:
 class Actions:
     """LLM が選択した高レベルアクションを Mineflayer コマンドへ変換するユーティリティ。"""
 
-    def __init__(self, bridge: BotBridge) -> None:
+    def __init__(
+        self,
+        bridge: BotBridge,
+        *,
+        on_bridge_retry: Optional[Callable[[int, str], Awaitable[None]]] = None,
+        on_bridge_give_up: Optional[Callable[[int, str], Awaitable[None]]] = None,
+    ) -> None:
         self.bridge = bridge
         # アクション実行のトレースを残して、Mineflayer 側での挙動と突き合わせできるようにする。
         self.logger = setup_logger("actions")
         # command_id を付番して、Node 側のログと相互参照しやすくする。
         self._command_seq = itertools.count(1)
+        # Bridge レベルのリトライをチャット通知などに転用するためのフック。
+        self._on_bridge_retry = on_bridge_retry
+        self._on_bridge_give_up = on_bridge_give_up
 
     async def say(self, text: str) -> Dict[str, Any]:
         """チャット送信コマンドを Mineflayer へ中継する。"""
@@ -303,7 +312,11 @@ class Actions:
             context={"command": command, "command_id": command_id, "payload": payload},
         )
         try:
-            resp = await self.bridge.send(payload)
+            resp = await self.bridge.send(
+                payload,
+                on_retry=self._on_bridge_retry,
+                on_give_up=self._on_bridge_give_up,
+            )
         except Exception as error:  # noqa: BLE001 - 送信失敗はそのまま上位へ伝搬させる
             log_structured_event(
                 self.logger,
