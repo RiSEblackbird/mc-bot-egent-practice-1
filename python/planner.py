@@ -10,11 +10,13 @@ from pydantic import BaseModel, Field
 from utils import setup_logger
 from dotenv import load_dotenv
 import openai
-from openai import AsyncOpenAI
 from openai.types.responses import EasyInputMessageParam, Response
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from config import load_agent_config
+
+# pytest でのモンキーパッチ互換性を維持するため、従来のエイリアスを公開しておく。
+AsyncOpenAI = openai.AsyncOpenAI
 
 logger = setup_logger("planner")
 load_dotenv()
@@ -258,7 +260,7 @@ def _build_plan_graph() -> CompiledStateGraph:
             }
 
         try:
-            client = AsyncOpenAI()
+            client = openai.AsyncOpenAI()
             resp = await asyncio.wait_for(
                 client.responses.create(**state["payload"]),
                 timeout=LLM_TIMEOUT_SECONDS,
@@ -551,9 +553,7 @@ async def compose_barrier_notification(
 ) -> str:
     """作業障壁を Responses API へ説明し、プレイヤー向け確認メッセージを得る。"""
 
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI()
+    client = openai.AsyncOpenAI()
     prompt = build_barrier_prompt(step, reason, context)
     logger.info(f"Barrier prompt: {prompt}")
 

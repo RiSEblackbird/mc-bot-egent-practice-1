@@ -96,6 +96,9 @@ async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
             cache_dir="/tmp/minedojo-cache",
             request_timeout=5.0,
         ),
+        llm_timeout_seconds=30.0,
+        queue_max_size=10,
+        worker_task_timeout_seconds=120.0,
     )
     actions = StubActions()
     memory = Memory()
