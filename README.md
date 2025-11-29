@@ -109,6 +109,24 @@ Responses API のタイムアウトは `LLM_TIMEOUT_SECONDS` で制御でき、�
 フェーズ定義・遷移条件・ロールバック指針を整理しており、長期ジョブを中断しても
 安全に再開できるようチェックポイント設計の前提を共有しています。
 
+#### 3.2.3 アクションコマンドとチャット対応表
+
+Python 側の `python/actions.py` では、以下の WebSocket コマンドを構造化ログ付きで組み立てます。ペイロードは Node 側の
+`node-bot/commands.md` のスキーマに合わせ、`event_level`・`context` を含む JSON ログを出力するため、チャット指示からの変換過程を後追いしやすくなっています。
+
+| チャット例 | 送信コマンド | ペイロード例 |
+| --- | --- | --- |
+| 「この座標まで掘り進んで」 | mineBlocks | `{ "type": "mineBlocks", "args": { "positions": [{"x":1,"y":64,"z":-3}] } }` |
+| 「このブロックをここに置いて」 | placeBlock | `{ "type": "placeBlock", "args": { "block": "oak_planks", "position": {"x":2,"y":65,"z":5}, "face": "north", "sneak": true } }` |
+| 「たいまつ置いて」 | placeTorch | `{ "type": "placeTorch", "args": { "x": 4, "y": 64, "z": 0 } }` |
+| 「私についてきて」 | followPlayer | `{ "type": "followPlayer", "args": { "target": "Taishi", "stopDistance": 2, "maintainLineOfSight": true } }` |
+| 「ゾンビを攻撃して」 | attackEntity | `{ "type": "attackEntity", "args": { "target": "zombie", "mode": "melee", "chaseDistance": 6 } }` |
+| 「木材を 3 個クラフトして」 | craftItem | `{ "type": "craftItem", "args": { "item": "oak_planks", "amount": 3, "useCraftingTable": false } }` |
+
+入力値は座標の整数性・空文字列の拒否・数量の正数チェックなどでバリデーションし、問題があれば `ActionValidationError`
+例外として即座に返します。Mineflayer 側への送信時には `event_level=progress/success/fault` とコマンド ID を `context` に含める
+ため、Node 側の構造化ログと突き合わせれば「どのチャット指示がどのペイロードに変換され、どう応答したか」を時系列で確認できます。
+
 #### MineDojo ミッション連携
 
 * Python エージェントは行動タスクの分類結果から MineDojo ミッション ID を推論し、該当カテゴリでは `python/services/minedojo_client.py` を介してミッション情報とデモを取得します。

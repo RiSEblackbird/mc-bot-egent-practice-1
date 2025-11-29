@@ -12,6 +12,7 @@ pnpm-debug.log*
 *.log
 logs/
 python/logs/
+var/logs/
 
 # Python artifacts and virtual environments
 __pycache__/

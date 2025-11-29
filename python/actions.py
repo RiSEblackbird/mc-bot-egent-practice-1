@@ -2,11 +2,48 @@
 """アクション実行の WebSocket コマンドをラップするモジュール。"""
 
 import itertools
+import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from bridge_ws import BotBridge
-from utils import setup_logger
+from utils import log_structured_event, setup_logger
+
+
+class ActionValidationError(ValueError):
+    """アクション呼び出し時の入力不備を明示する例外。"""
+
+
+def _require_position(position: Dict[str, Any], *, label: str = "position") -> Dict[str, int]:
+    """座標辞書に x/y/z の整数が含まれることを検証する補助関数。"""
+
+    missing_keys = {axis for axis in ("x", "y", "z") if axis not in position}
+    if missing_keys:
+        raise ActionValidationError(f"{label} は x, y, z を含む必要があります: missing={sorted(missing_keys)}")
+
+    validated: Dict[str, int] = {}
+    for axis in ("x", "y", "z"):
+        value = position[axis]
+        if not isinstance(value, int):
+            raise ActionValidationError(f"{label}.{axis} は int で指定してください: actual={type(value).__name__}")
+        validated[axis] = value
+    return validated
+
+
+def _require_positions(positions: Sequence[Dict[str, Any]]) -> List[Dict[str, int]]:
+    """座標配列が空でなく、各要素が座標辞書であることを検証する。"""
+
+    if not positions:
+        raise ActionValidationError("positions は 1 件以上の座標を含めてください")
+    return [_require_position(pos, label="positions[]") for pos in positions]
+
+
+def _require_non_empty_text(value: Optional[str], *, field: str) -> str:
+    """文字列フィールドが空でないことを検証する。"""
+
+    if value is None or not isinstance(value, str) or not value.strip():
+        raise ActionValidationError(f"{field} は 1 文字以上の文字列で指定してください")
+    return value.strip()
 
 
 class Actions:
@@ -22,13 +59,13 @@ class Actions:
     async def say(self, text: str) -> Dict[str, Any]:
         """チャット送信コマンドを Mineflayer へ中継する。"""
 
-        payload = {"type": "chat", "args": {"text": text}}
+        payload = {"type": "chat", "args": {"text": _require_non_empty_text(text, field="text")}}
         return await self._dispatch("chat", payload)
 
     async def move_to(self, x: int, y: int, z: int) -> Dict[str, Any]:
         """指定座標への移動を要求するコマンドを送信する。"""
 
-        payload = {"type": "moveTo", "args": {"x": x, "y": y, "z": z}}
+        payload = {"type": "moveTo", "args": _require_position({"x": x, "y": y, "z": z})}
         return await self._dispatch("moveTo", payload)
 
     async def mine_blocks(self, positions: List[Dict[str, int]]) -> Dict[str, Any]:
@@ -37,7 +74,7 @@ class Actions:
         Node 側では positions 配列を順次破壊する実装を想定し、ここでは
         Mineflayer 向けのシンプルなメッセージを送るだけに留める。"""
 
-        payload = {"type": "mineBlocks", "args": {"positions": positions}}
+        payload = {"type": "mineBlocks", "args": {"positions": _require_positions(positions)}}
         return await self._dispatch("mineBlocks", payload)
 
     async def mine_ores(
@@ -52,12 +89,15 @@ class Actions:
         # Mineflayer 側での探索範囲や対象鉱石の種類を完全に指定し、
         # 再現性の高い採掘手順をリモート操作で実現する。
 
+        if not ore_names:
+            raise ActionValidationError("ore_names は 1 件以上指定してください")
+
         payload = {
             "type": "mineOre",
             "args": {
                 "ores": ore_names,
-                "scanRadius": scan_radius,
-                "maxTargets": max_targets,
+                "scanRadius": int(scan_radius),
+                "maxTargets": int(max_targets),
             },
         }
         return await self._dispatch("mineOre", payload)
@@ -65,7 +105,7 @@ class Actions:
     async def place_torch(self, position: Dict[str, int]) -> Dict[str, Any]:
         """たいまつを指定位置に設置するコマンドを送信する。"""
 
-        payload = {"type": "placeTorch", "args": position}
+        payload = {"type": "placeTorch", "args": _require_position(position)}
         return await self._dispatch("placeTorch", payload)
 
     async def equip_item(
@@ -85,6 +125,27 @@ class Actions:
 
         payload = {"type": "equipItem", "args": args}
         return await self._dispatch("equipItem", payload)
+
+    async def place_block(
+        self,
+        block: str,
+        position: Dict[str, int],
+        *,
+        face: Optional[str] = None,
+        sneak: bool = False,
+    ) -> Dict[str, Any]:
+        """任意のブロックを指定位置へ設置するコマンドを送信する。"""
+
+        args: Dict[str, Any] = {
+            "block": _require_non_empty_text(block, field="block"),
+            "position": _require_position(position),
+            "sneak": bool(sneak),
+        }
+        if face:
+            args["face"] = face
+
+        payload = {"type": "placeBlock", "args": args}
+        return await self._dispatch("placeBlock", payload)
 
     async def set_role(self, role_id: str, *, reason: Optional[str] = None) -> Dict[str, Any]:
         """LangGraph からの役割切替を Node 側へ送信する。"""
@@ -137,6 +198,70 @@ class Actions:
         payload = {"type": "invokeSkill", "args": args}
         return await self._dispatch("invokeSkill", payload)
 
+    async def follow_player(
+        self,
+        target_name: str,
+        *,
+        stop_distance: int = 2,
+        maintain_line_of_sight: bool = True,
+    ) -> Dict[str, Any]:
+        """指定プレイヤーを追従するコマンドを送信する。"""
+
+        payload = {
+            "type": "followPlayer",
+            "args": {
+                "target": _require_non_empty_text(target_name, field="target"),
+                "stopDistance": int(stop_distance),
+                "maintainLineOfSight": bool(maintain_line_of_sight),
+            },
+        }
+        return await self._dispatch("followPlayer", payload)
+
+    async def attack_entity(
+        self,
+        entity_name: str,
+        *,
+        mode: str = "melee",
+        chase_distance: int = 6,
+    ) -> Dict[str, Any]:
+        """対象エンティティへの戦闘コマンドを送信する。"""
+
+        normalized_mode = mode.lower()
+        if normalized_mode not in {"melee", "ranged"}:
+            raise ActionValidationError("mode は 'melee' もしくは 'ranged' を指定してください")
+
+        payload = {
+            "type": "attackEntity",
+            "args": {
+                "target": _require_non_empty_text(entity_name, field="target"),
+                "mode": normalized_mode,
+                "chaseDistance": int(chase_distance),
+            },
+        }
+        return await self._dispatch("attackEntity", payload)
+
+    async def craft_item(
+        self,
+        item_name: str,
+        *,
+        amount: int = 1,
+        use_crafting_table: bool = True,
+    ) -> Dict[str, Any]:
+        """クラフトレシピを指定して作業台/インベントリで作成する。"""
+
+        if amount <= 0:
+            raise ActionValidationError("amount は 1 以上の整数で指定してください")
+
+        payload = {
+            "type": "craftItem",
+            "args": {
+                "item": _require_non_empty_text(item_name, field="item"),
+                "amount": int(amount),
+                "useCraftingTable": bool(use_crafting_table),
+            },
+        }
+        return await self._dispatch("craftItem", payload)
+
     async def play_vpt_actions(
         self,
         actions: List[Dict[str, Any]],
@@ -171,27 +296,38 @@ class Actions:
 
         command_id = next(self._command_seq)
         started_at = time.perf_counter()
-        self.logger.info(
-            "command[%03d] dispatch=%s payload=%s", command_id, command, payload
+        log_structured_event(
+            self.logger,
+            "dispatch prepared",
+            event_level="progress",
+            context={"command": command, "command_id": command_id, "payload": payload},
         )
-        resp = await self.bridge.send(payload)
-        elapsed = time.perf_counter() - started_at
-        if resp.get("ok"):
-            self.logger.info(
-                "command[%03d] %s succeeded duration=%.3fs resp=%s",
-                command_id,
-                command,
-                elapsed,
-                resp,
+        try:
+            resp = await self.bridge.send(payload)
+        except Exception as error:  # noqa: BLE001 - 送信失敗はそのまま上位へ伝搬させる
+            log_structured_event(
+                self.logger,
+                "dispatch failed",
+                level=logging.ERROR,
+                event_level="fault",
+                context={"command": command, "command_id": command_id, "payload": payload},
+                exc_info=error,
             )
-        else:
-            self.logger.error(
-                "command[%03d] %s failed duration=%.3fs resp=%s",
-                command_id,
-                command,
-                elapsed,
-                resp,
-            )
-        return resp
+            raise
 
-    # TODO: 採掘・設置・追従・戦闘・クラフト等を順次追加
+        elapsed = time.perf_counter() - started_at
+        event_level = "success" if resp.get("ok") else "fault"
+        log_structured_event(
+            self.logger,
+            "dispatch completed",
+            level=logging.INFO if resp.get("ok") else logging.ERROR,
+            event_level=event_level,
+            context={
+                "command": command,
+                "command_id": command_id,
+                "payload": payload,
+                "response": resp,
+                "duration_sec": round(elapsed, 3),
+            },
+        )
+        return resp
