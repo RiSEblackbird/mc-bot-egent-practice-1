@@ -76,6 +76,22 @@ cp ../env.example ../.env
 python agent.py
 ```
 
+#### 3.2.1 動作確認済み環境と依存バージョン
+
+- OS: Ubuntu 24.04.3 LTS（ローカル検証コンテナ）
+- Python: 3.12.12
+- Node.js: 22.x（`.nvmrc` の指定に従う）
+- Python 依存（固定版）: `openai==1.109.1` / `python-dotenv==1.0.1` / `websockets==12.0` / `httpx==0.27.2` / `pydantic==2.8.2` / `watchfiles==0.21.0` / `langgraph==0.1.16`
+
+`pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/agent.py` の起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。
+
+#### 3.2.2 依存更新時のチェックリスト
+
+1. **クリーン環境での検証**: `.venv` を作り直し、`pip install -r ../requirements.txt` を実行して新しい制約でも解決できるか確認する。
+2. **自動テスト**: 依存追加・更新後は少なくとも `pytest tests/test_agent_config.py tests/test_structured_logging.py` を走らせ、設定読み込みと構造化ログの互換性を確認する。LangGraph/LLM 周辺を触った場合は `pytest tests/test_langgraph_scenarios.py` も追加で実行する。
+3. **手動起動チェック**: `cp ../env.example ../.env` の後に `python python/agent.py --help` を実行し、WebSocket バインドまで到達すること、`openai.types.responses.Response` などの型解決が通ることを目視する。
+4. **破壊的変更のサイン検知**: `client.responses.create` 呼び出しシグネチャや `EasyInputMessageParam` のフィールドに差分が出ていないかを確認し、変更があれば `python/planner.py` のペイロード生成ロジックを追従させる。
+
 Python エージェントは `AGENT_WS_HOST` / `AGENT_WS_PORT` で指定したポートに WebSocket サーバーを公開します。
 Mineflayer 側（Node.js）がチャットを受信すると、自動的にこのサーバーへ `type=chat` の JSON を送信し、
 Python 側で LLM プランニングとアクション実行が行われます。`DEFAULT_MOVE_TARGET` を変更すると、
