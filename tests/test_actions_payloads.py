@@ -22,7 +22,7 @@ class RecordingBridge:
         self.sent: List[Dict[str, Any]] = []
         self.response = response or {"ok": True, "marker": "test"}
 
-    async def send(self, payload: Dict[str, Any]) -> Dict[str, Any]:  # noqa: D401 - テスト用スタブ
+    async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:  # noqa: D401 - テスト用スタブ
         self.sent.append(payload)
         return self.response | {"echo": payload}
 
