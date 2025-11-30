@@ -17,6 +17,7 @@ from .logging import (
     span_context,
     setup_logger,
 )
+from .langsmith_tracer import ThoughtActionObservationTracer
 
 __all__ = [
     "StructuredLogContext",
@@ -27,4 +28,5 @@ __all__ = [
     "log_structured_event",
     "span_context",
     "setup_logger",
+    "ThoughtActionObservationTracer",
 ]

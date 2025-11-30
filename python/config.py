@@ -23,9 +23,14 @@ _DEFAULT_SKILL_LIBRARY_PATH = "var/skills/library.json"
 _DEFAULT_MINEDOJO_API_BASE_URL = "https://api.minedojo.org/v1"
 _DEFAULT_MINEDOJO_CACHE_DIR = "var/cache/minedojo"
 _DEFAULT_MINEDOJO_REQUEST_TIMEOUT = 10.0
+_DEFAULT_MINEDOJO_SIM_ENV = "creative"
+_DEFAULT_MINEDOJO_SIM_SEED = 42
+_DEFAULT_MINEDOJO_SIM_MAX_STEPS = 120
 _DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 _DEFAULT_AGENT_QUEUE_MAX_SIZE = 20
 _DEFAULT_WORKER_TASK_TIMEOUT_SECONDS = 300.0
+_DEFAULT_LANGSMITH_API_URL = "https://api.smith.langchain.com"
+_DEFAULT_LANGSMITH_PROJECT = "mc-bot"
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,20 @@ class MineDojoConfig:
     dataset_dir: str | None
     cache_dir: str
     request_timeout: float
+    sim_env: str
+    sim_seed: int
+    sim_max_steps: int
+
+
+@dataclass(frozen=True)
+class LangSmithConfig:
+    """LangSmith 連携で利用する接続設定とタグの集合。"""
+
+    api_url: str
+    api_key: str | None
+    project: str | None
+    enabled: bool
+    tags: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -50,6 +69,7 @@ class AgentConfig:
     default_move_target_raw: str
     skill_library_path: str
     minedojo: MineDojoConfig
+    langsmith: LangSmithConfig
     llm_timeout_seconds: float  # Responses API 呼び出しを強制終了するまでの猶予秒数
     queue_max_size: int  # チャットキューの上限。0 なら無制限
     worker_task_timeout_seconds: float  # 単一チャット処理のタイムアウト猶予
@@ -145,6 +165,19 @@ def _parse_positive_int(raw: str | None, default: int) -> Tuple[int, List[str]]:
         return default, warnings
 
 
+def _parse_bool(raw: str | None, default: bool) -> bool:
+    """真偽値の文字列表現を解釈する。"""
+
+    if raw is None or raw.strip() == "":
+        return default
+    lowered = raw.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     """プロセス環境から Python エージェントの設定を読み取る。"""
 
@@ -163,6 +196,13 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     minedojo_api_key = source.get("MINEDOJO_API_KEY")
     minedojo_dataset_dir = source.get("MINEDOJO_DATASET_DIR")
     minedojo_cache_dir_raw = source.get("MINEDOJO_CACHE_DIR", _DEFAULT_MINEDOJO_CACHE_DIR)
+    minedojo_sim_env = source.get("MINEDOJO_SIM_ENV", _DEFAULT_MINEDOJO_SIM_ENV)
+    minedojo_sim_seed, sim_seed_warnings = _parse_positive_int(
+        source.get("MINEDOJO_SIM_SEED"), _DEFAULT_MINEDOJO_SIM_SEED
+    )
+    minedojo_sim_max_steps, sim_step_warnings = _parse_positive_int(
+        source.get("MINEDOJO_SIM_MAX_STEPS"), _DEFAULT_MINEDOJO_SIM_MAX_STEPS
+    )
     minedojo_timeout, timeout_warnings = _parse_positive_float(
         source.get("MINEDOJO_REQUEST_TIMEOUT"), _DEFAULT_MINEDOJO_REQUEST_TIMEOUT
     )
@@ -174,6 +214,16 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     )
     worker_task_timeout_seconds, worker_timeout_warnings = _parse_positive_float(
         source.get("WORKER_TASK_TIMEOUT_SECONDS"), _DEFAULT_WORKER_TASK_TIMEOUT_SECONDS
+    )
+    langsmith_api_url = source.get("LANGSMITH_API_URL", _DEFAULT_LANGSMITH_API_URL)
+    langsmith_api_key = source.get("LANGSMITH_API_KEY")
+    langsmith_project = source.get("LANGSMITH_PROJECT", _DEFAULT_LANGSMITH_PROJECT)
+    langsmith_enabled = _parse_bool(source.get("LANGSMITH_ENABLED"), False)
+    langsmith_tags_raw = source.get("LANGSMITH_TAGS", "")
+    langsmith_tags: Tuple[str, ...] = tuple(
+        token.strip()
+        for token in langsmith_tags_raw.split(",")
+        if token.strip()
     )
 
     minedojo_cache_dir = minedojo_cache_dir_raw.strip() or _DEFAULT_MINEDOJO_CACHE_DIR
@@ -190,6 +240,8 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     _collect_warnings(warnings, llm_timeout_warnings)
     _collect_warnings(warnings, queue_warnings)
     _collect_warnings(warnings, worker_timeout_warnings)
+    _collect_warnings(warnings, sim_seed_warnings)
+    _collect_warnings(warnings, sim_step_warnings)
 
     config = AgentConfig(
         ws_url=ws_url,
@@ -204,6 +256,18 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
             dataset_dir=minedojo_dataset,
             cache_dir=minedojo_cache_dir,
             request_timeout=minedojo_timeout,
+            sim_env=minedojo_sim_env.strip() or _DEFAULT_MINEDOJO_SIM_ENV,
+            sim_seed=minedojo_sim_seed,
+            sim_max_steps=minedojo_sim_max_steps,
+        ),
+        langsmith=LangSmithConfig(
+            api_url=langsmith_api_url.strip() or _DEFAULT_LANGSMITH_API_URL,
+            api_key=(
+                langsmith_api_key.strip() if langsmith_api_key and langsmith_api_key.strip() else None
+            ),
+            project=langsmith_project.strip() or _DEFAULT_LANGSMITH_PROJECT,
+            enabled=langsmith_enabled,
+            tags=langsmith_tags,
         ),
         llm_timeout_seconds=llm_timeout_seconds,
         queue_max_size=queue_max_size,

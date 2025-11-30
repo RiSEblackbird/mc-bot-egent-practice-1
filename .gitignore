@@ -109,3 +109,7 @@ var/memory/
 var/vpt/
 python/vpt_cache/
 python/services/vpt_checkpoints/
+# LangSmith SDK が生成するローカルキャッシュやトレースダンプ（API キーやチャット内容が含まれうるため除外）
+.langsmith/
+python/.langsmith/
+langsmith.db
