@@ -45,7 +45,7 @@ python/openai.log
 python/responses_cache.json
 
 # Cursor エディタのセッション情報（秘匿情報が混入する恐れがあるため除外）
-.cursor/
+!.cursor/rules/
 python/.cursor/
 
 # Local runtime artifacts created while 検証・デバッグした際に生成される履歴ファイル
