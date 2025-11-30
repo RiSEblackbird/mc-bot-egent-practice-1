@@ -2,7 +2,7 @@
 # gpt-5-mini を用いたプランニング：自然文→PLAN/RESP の二分出力
 import asyncio
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
@@ -216,6 +216,20 @@ class PlanArguments(BaseModel):
         default_factory=dict,
         description="補足情報（自由形式）。",
     )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="引数推定の確信度 (0.0～1.0)。",
+    )
+    clarification_needed: Literal["none", "confirmation", "data_gap"] = Field(
+        default="none",
+        description="追加確認の種類 (none/confirmation/data_gap)。",
+    )
+    detected_modalities: List[str] = Field(
+        default_factory=list,
+        description="入力に含まれるモダリティ（例: text, image）。",
+    )
 
 
 class PlanOut(BaseModel):
@@ -236,6 +250,28 @@ class PlanOut(BaseModel):
     react_trace: List[ReActStep] = Field(
         default_factory=list,
         description="Responses API から得た ReAct ループの素案。Observation は Mineflayer 実行結果で更新する。",
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="プラン全体の確信度 (0.0～1.0)。",
+    )
+    clarification_needed: Literal["none", "confirmation", "data_gap"] = Field(
+        default="none",
+        description="追加確認が必要かどうか (none/confirmation/data_gap)。",
+    )
+    detected_modalities: List[str] = Field(
+        default_factory=list,
+        description="入力内で認識したモダリティ（text/image など）。",
+    )
+    backlog: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="ActionGraph へ差し戻すためのバックログ候補。",
+    )
+    next_action: str = Field(
+        default="execute",
+        description="graph からの推奨遷移 (execute/chat など)。",
     )
 
 
@@ -423,6 +459,77 @@ def _build_plan_graph() -> CompiledStateGraph:
         )
         return result
 
+    async def intent_negotiation(state: _PlanState) -> Dict[str, Any]:
+        """曖昧さが残る場合にフォローアップ質問を準備し、バックログへ差し戻す。"""
+
+        plan_out = state.get("plan_out")
+        backlog: List[Dict[str, str]] = list(state.get("backlog") or [])
+        confirmation_required = False
+        follow_up_message = ""
+
+        if isinstance(plan_out, PlanOut):
+            follow_up_message = plan_out.resp.strip()
+            confirmation_required = bool(
+                plan_out.blocking or plan_out.clarification_needed != "none"
+            )
+            if confirmation_required and follow_up_message:
+                backlog.append(
+                    {
+                        "category": "chat",
+                        "label": "ユーザー確認",
+                        "message": follow_up_message,
+                        "reason": plan_out.clarification_needed
+                        or ("blocking" if plan_out.blocking else "none"),
+                    }
+                )
+                plan_out.next_action = "chat"
+            else:
+                plan_out.next_action = "execute"
+            plan_out.backlog = backlog
+
+        result = {
+            "plan_out": plan_out,
+            "backlog": backlog,
+            "confirmation_required": confirmation_required,
+            "follow_up_message": follow_up_message,
+        }
+        result.update(
+            record_structured_step(
+                state,
+                step_label="intent_negotiation",
+                inputs={
+                    "blocking": getattr(plan_out, "blocking", False),
+                    "clarification_needed": getattr(plan_out, "clarification_needed", "none"),
+                },
+                outputs={
+                    "backlog_count": len(backlog),
+                    "next_action": getattr(plan_out, "next_action", "execute"),
+                    "confirmation_required": confirmation_required,
+                },
+            )
+        )
+        return result
+
+    async def route_to_chat(state: _PlanState) -> Dict[str, Any]:
+        """確認フローへ進む場合に next_action を chat へ固定する。"""
+
+        plan_out = state.get("plan_out")
+        backlog: List[Dict[str, str]] = list(state.get("backlog") or [])
+        if isinstance(plan_out, PlanOut):
+            plan_out.backlog = backlog
+            plan_out.next_action = "chat"
+
+        result = {"plan_out": plan_out, "backlog": backlog, "next_action": "chat"}
+        result.update(
+            record_structured_step(
+                state,
+                step_label="route_to_chat",
+                inputs={"backlog_count": len(backlog)},
+                outputs={"next_action": "chat"},
+            )
+        )
+        return result
+
     async def fallback_plan(state: _PlanState) -> Dict[str, Any]:
         logger.warning(
             "plan fallback triggered parse_error=%s llm_error=%s",
@@ -455,6 +562,8 @@ def _build_plan_graph() -> CompiledStateGraph:
     graph.add_node("call_llm", call_llm)
     graph.add_node("parse_plan", parse_plan)
     graph.add_node("normalize_react_trace", normalize_react_trace)
+    graph.add_node("intent_negotiation", intent_negotiation)
+    graph.add_node("route_to_chat", route_to_chat)
     graph.add_node("fallback_plan", fallback_plan)
     graph.add_node("finalize", finalize)
 
@@ -466,7 +575,17 @@ def _build_plan_graph() -> CompiledStateGraph:
         lambda state: "success" if "plan_out" in state else "failure",
         {"success": "normalize_react_trace", "failure": "fallback_plan"},
     )
-    graph.add_edge("normalize_react_trace", "finalize")
+    graph.add_conditional_edges(
+        "normalize_react_trace",
+        lambda state: "needs_chat" if state.get("confirmation_required") else "ready",
+        {"ready": "intent_negotiation", "needs_chat": "intent_negotiation"},
+    )
+    graph.add_conditional_edges(
+        "intent_negotiation",
+        lambda state: "chat" if state.get("confirmation_required") else "execute",
+        {"execute": "finalize", "chat": "route_to_chat"},
+    )
+    graph.add_edge("route_to_chat", "finalize")
     graph.add_edge("fallback_plan", "finalize")
     graph.add_edge("finalize", END)
 
@@ -488,17 +607,25 @@ SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然�
 プレイヤーへ返す丁寧な日本語メッセージを用意してください。行動開始
 前に許可を求める質問は挟まず、指示された作業に着手する前提で端的に
 了承してください。プレイヤーが座標や数量などの具体情報を伝えた場合
-は、同じ内容を繰り返し尋ねないでください。
+は、同じ内容を繰り返し尋ねないでください。曖昧さを定量化するため、
+確信度と追加確認の要否を必ず判定し、必要に応じて丁寧なフォローアップ
+質問を用意してください。
 
 出力は必ず json 形式のオブジェクトで、キーは "plan": string[], "resp": string,
 "intent": string, "arguments": object, "blocking": boolean,
-"react_trace": {"thought": string, "action": string, "observation": string}[] とする。
+"react_trace": {"thought": string, "action": string, "observation": string}[],
+"confidence": number (0.0-1.0), "clarification_needed": "none" | "confirmation" | "data_gap",
+"detected_modalities": string[], "backlog": object[], "next_action": string とする。
 react_trace の observation は環境からの観測値で後から上書きされるため、
 空文字列のまま残してください。thought にはステップを採択した理由を
 日本語で 1 文以内で要約し、action には実行する具体的な操作を記述します。
 "intent" には move/build/gather など主な行動タイプを、"arguments" には
 座標や数量、対象名を含む構造化パラメータを含め、"blocking" は実行前に
-プレイヤー確認が必要なら true を返してください。
+プレイヤー確認が必要なら true を返してください。曖昧さが残る場合は
+clarification_needed を confirmation（全体方針の確認）または data_gap（追加データの不足）
+で指定し、resp に日本語の確認質問を含め、backlog に chat 用のタスク概要
+を入れて next_action="chat" としてください。確認不要なら next_action="execute" とし、
+confidence は計画の確からしさを 0.0～1.0 で数値化してください。
 """
 BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞している作業の概要を理解し、
 プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
@@ -543,9 +670,17 @@ json のみ。例：
     "coordinates": {{"x": -10, "y": 64, "z": 20}},
     "quantity": 12,
     "target": "wheat",
-    "notes": {{"needs_tools": true}}
+    "notes": {{"needs_tools": true}},
+    "confidence": 0.82,
+    "clarification_needed": "none",
+    "detected_modalities": ["text"]
   }},
   "blocking": false,
+  "confidence": 0.82,
+  "clarification_needed": "none",
+  "detected_modalities": ["text"],
+  "backlog": [],
+  "next_action": "execute",
   "react_trace": [
     {{"thought": "農作業を開始する準備が必要", "action": "畑へ移動", "observation": ""}},
     {{"thought": "材料を確保する", "action": "小麦を収穫", "observation": ""}},
@@ -648,12 +783,24 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
     }
     result = await graph.ainvoke(initial_state)
     plan_out = result.get("plan_out")
+
+    def _attach_plan_metadata(plan: PlanOut) -> PlanOut:
+        """LangGraph から戻る補助情報を PlanOut へ再適用する。"""
+
+        backlog = result.get("backlog")
+        if isinstance(backlog, list):
+            plan.backlog = list(backlog)
+        next_action = result.get("next_action")
+        if isinstance(next_action, str) and next_action:
+            plan.next_action = next_action
+        return plan
+
     if isinstance(plan_out, PlanOut):
-        return plan_out
+        return _attach_plan_metadata(plan_out)
 
     if isinstance(plan_out, dict):
         try:
-            return PlanOut.model_validate(plan_out)
+            return _attach_plan_metadata(PlanOut.model_validate(plan_out))
         except Exception:
             logger.warning("plan graph returned non PlanOut dict; fallback engaged")
 

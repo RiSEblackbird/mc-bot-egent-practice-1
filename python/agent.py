@@ -929,11 +929,28 @@ class AgentOrchestrator:
                 として利用する。
         """
 
-        if plan_out.blocking:
-            await self._report_execution_barrier(
-                "プラン確認",
-                "LLM がユーザー確認を求めているため、作業を一時停止します。指示内容をご確認ください。",
+        action_backlog: List[Dict[str, str]] = list(getattr(plan_out, "backlog", []) or [])
+        if plan_out.blocking or plan_out.clarification_needed != "none" or plan_out.next_action == "chat":
+            follow_up_message = plan_out.resp.strip() or "作業内容を確認させてください。"
+            self.logger.info(
+                "plan execution paused for confirmation: blocking=%s clarification=%s confidence=%.2f backlog=%s",
+                plan_out.blocking,
+                plan_out.clarification_needed,
+                plan_out.confidence,
+                action_backlog,
             )
+            if follow_up_message:
+                await self.actions.say(follow_up_message)
+            # チャット送信後も再試行可能な形で ActionGraph のバックログへ戻す。
+            action_backlog.append(
+                {
+                    "category": "chat",
+                    "label": "フォローアップ質問",
+                    "message": follow_up_message,
+                    "reason": plan_out.clarification_needed or ("blocking" if plan_out.blocking else "none"),
+                }
+            )
+            await self._handle_action_backlog(action_backlog, already_responded=True)
             return
 
         total_steps = len(plan_out.plan)
@@ -951,7 +968,6 @@ class AgentOrchestrator:
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
         detection_reports: List[Dict[str, str]] = []
-        action_backlog: List[Dict[str, str]] = []
         react_trace: List[ReActStep] = list(plan_out.react_trace)
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
