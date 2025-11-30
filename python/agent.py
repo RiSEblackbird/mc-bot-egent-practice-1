@@ -24,7 +24,12 @@ from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
 from websockets.server import serve
 
 from config import AgentConfig, load_agent_config
-from services.minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
+from services.minedojo_client import (
+    MineDojoClient,
+    MineDojoDemoMetadata,
+    MineDojoDemonstration,
+    MineDojoMission,
+)
 from services.skill_repository import SkillRepository
 from actions import Actions
 from bridge_client import BridgeClient, BridgeError
@@ -39,7 +44,7 @@ from planner import (
     compose_barrier_notification,
     plan,
 )
-from skills import SkillMatch
+from skills import SkillMatch, SkillNode
 from utils import ThoughtActionObservationTracer, log_structured_event, setup_logger
 from agent_orchestrator import (
     ActionGraph,
@@ -357,6 +362,7 @@ class AgentOrchestrator:
         self._active_minedojo_mission: Optional[MineDojoMission] = None
         self._active_minedojo_demos: List[MineDojoDemonstration] = []
         self._active_minedojo_mission_id: Optional[str] = None
+        self._active_minedojo_demo_metadata: Optional[MineDojoDemoMetadata] = None
         # 周辺環境の安全性を評価するため、Bridge HTTP クライアントを初期化しておく。
         self._bridge_client = BridgeClient()
 
@@ -1821,7 +1827,22 @@ class AgentOrchestrator:
         """ステップ文から再利用可能なスキルを検索する。"""
 
         try:
-            return await self.skill_repository.match_skill(step, category=category)
+            mission_id = self._active_minedojo_mission_id
+            context_tags: List[str] = []
+            if self._active_minedojo_demo_metadata:
+                context_tags.extend(list(self._active_minedojo_demo_metadata.tags))
+                context_tags.append("minedojo")
+                context_tags.append(self._active_minedojo_demo_metadata.mission_id)
+            if self._active_minedojo_mission:
+                context_tags.extend(list(self._active_minedojo_mission.tags))
+            normalized_tags = tuple(dict.fromkeys(tag for tag in context_tags if str(tag).strip()))
+
+            return await self.skill_repository.match_skill(
+                step,
+                category=category,
+                tags=normalized_tags,
+                mission_id=mission_id,
+            )
         except Exception:
             self.logger.exception("skill matching failed category=%s step='%s'", category, step)
             return None
@@ -1916,18 +1937,31 @@ class AgentOrchestrator:
         self._active_minedojo_mission = mission
         self._active_minedojo_demos = demos
         self._active_minedojo_mission_id = mission_id if (mission or demos) else None
+        metadata_list: List[MineDojoDemoMetadata] = []
+        if demos:
+            mission_tags = mission.tags if mission else ()
+            metadata_list = [demo.to_metadata(mission_tags=mission_tags) for demo in demos]
+            self._active_minedojo_demo_metadata = metadata_list[0]
+        else:
+            self._active_minedojo_demo_metadata = None
 
-        context_payload = self._build_minedojo_context_payload(mission, demos)
+        context_payload = self._build_minedojo_context_payload(mission, demos, metadata_list)
         if context_payload:
             self.memory.set("minedojo_context", context_payload)
 
-        if demos:
-            await self._prime_actions_with_demo(mission_id, demos[0])
+        if demos and self._active_minedojo_demo_metadata:
+            await self._prime_actions_with_demo(demos[0], self._active_minedojo_demo_metadata)
+            await self._register_minedojo_demo_skill(
+                mission,
+                self._active_minedojo_demo_metadata,
+                demos[0],
+            )
 
     def _build_minedojo_context_payload(
         self,
         mission: Optional[MineDojoMission],
         demos: List[MineDojoDemonstration],
+        metadata_list: List[MineDojoDemoMetadata],
     ) -> Optional[Dict[str, Any]]:
         """LLM プロンプトへ差し込む MineDojo 情報を整形する。"""
 
@@ -1939,11 +1973,15 @@ class AgentOrchestrator:
             payload["mission"] = mission.to_prompt_payload()
         if demos:
             payload["demonstrations"] = [
-                self._format_minedojo_demo_for_context(demo) for demo in demos if demo
+                self._format_minedojo_demo_for_context(demo, metadata_list[index])
+                for index, demo in enumerate(demos)
+                if demo and index < len(metadata_list)
             ]
         return payload
 
-    def _format_minedojo_demo_for_context(self, demo: MineDojoDemonstration) -> Dict[str, Any]:
+    def _format_minedojo_demo_for_context(
+        self, demo: MineDojoDemonstration, metadata: MineDojoDemoMetadata
+    ) -> Dict[str, Any]:
         """デモを LLM 用に要約し、過剰なデータ転送を避ける。"""
 
         action_types: List[str] = []
@@ -1954,12 +1992,14 @@ class AgentOrchestrator:
         return {
             "demo_id": demo.demo_id,
             "summary": demo.summary,
+            "mission_id": metadata.mission_id,
+            "tags": list(metadata.tags),
             "action_types": action_types,
             "action_count": len(demo.actions),
         }
 
     async def _prime_actions_with_demo(
-        self, mission_id: str, demo: MineDojoDemonstration
+        self, demo: MineDojoDemonstration, metadata: MineDojoDemoMetadata
     ) -> None:
         """取得したデモを Actions へ送信し、Mineflayer 側で事前ロードする。"""
 
@@ -1973,26 +2013,90 @@ class AgentOrchestrator:
         if not actions_payload:
             return
 
-        metadata = demo.to_metadata()
-        metadata["mission_id"] = mission_id
+        metadata_dict = metadata.to_dict()
         try:
-            resp = await self.actions.play_vpt_actions(actions_payload, metadata=metadata)
+            resp = await self.actions.play_vpt_actions(actions_payload, metadata=metadata_dict)
         except Exception:
-            self.logger.exception("MineDojo demo preload failed mission=%s demo=%s", mission_id, demo.demo_id)
+            self.logger.exception(
+                "MineDojo demo preload failed mission=%s demo=%s",
+                metadata.mission_id,
+                demo.demo_id,
+            )
             return
 
         if resp.get("ok"):
             self.memory.set(
                 "minedojo_last_demo_metadata",
-                {"mission_id": mission_id, "demo_id": demo.demo_id, "metadata": metadata},
+                {"mission_id": metadata.mission_id, "demo_id": demo.demo_id, "metadata": metadata_dict},
             )
         else:
             self.logger.warning(
                 "MineDojo demo preload command failed mission=%s demo=%s resp=%s",
-                mission_id,
+                metadata.mission_id,
                 demo.demo_id,
                 resp,
             )
+
+    async def _register_minedojo_demo_skill(
+        self,
+        mission: Optional[MineDojoMission],
+        metadata: MineDojoDemoMetadata,
+        demo: MineDojoDemonstration,
+    ) -> None:
+        """MineDojo デモをスキルライブラリへ登録し、Mineflayer 側にも伝搬する。"""
+
+        # ミッション単位でスキル ID を固定し、NDJSON ログと照合しやすいタグを束ねる。
+        skill_id = f"minedojo::{metadata.mission_id}::{metadata.demo_id}"
+        tree = await self.skill_repository.get_tree()
+        already_exists = skill_id in tree.nodes
+
+        tags: List[str] = [
+            "minedojo",
+            metadata.mission_id,
+            f"mission:{metadata.mission_id}",
+            *list(metadata.tags),
+        ]
+        if mission:
+            tags.extend(list(mission.tags))
+        normalized_tags = tuple(dict.fromkeys(tag for tag in tags if str(tag).strip()))
+
+        description_parts: List[str] = []
+        if mission:
+            description_parts.append(mission.objective)
+        description_parts.append(f"demo={metadata.summary}")
+
+        keywords: List[str] = []
+        if mission:
+            keywords.extend([mission.title, mission.objective])
+        keywords.append(metadata.summary)
+
+        node = SkillNode(
+            identifier=skill_id,
+            title=mission.title if mission else f"MineDojo {metadata.mission_id}",
+            description=" / ".join(part for part in description_parts if part) or metadata.summary,
+            categories=tuple(mission.tags) if mission else (),
+            tags=normalized_tags,
+            keywords=tuple(keyword for keyword in keywords if keyword),
+            examples=(metadata.summary,),
+        )
+        await self.skill_repository.register_skill(node)
+
+        if not hasattr(self.actions, "register_skill"):
+            return
+        if already_exists:
+            # Mineflayer 側に重複登録してもログが汚れるだけなので回避する。
+            return
+
+        try:
+            await self.actions.register_skill(  # type: ignore[attr-defined]
+                skill_id=skill_id,
+                title=node.title,
+                description=node.description,
+                steps=[demo.summary or metadata.summary],
+                tags=list(normalized_tags),
+            )
+        except Exception:
+            self.logger.warning("register_skill dispatch failed for %s", skill_id)
 
     async def _handle_action_task(
         self,

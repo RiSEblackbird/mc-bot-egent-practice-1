@@ -29,26 +29,43 @@ class SkillRepository:
         async with self._lock:
             return await self._ensure_tree()
 
-    async def match_skill(self, text: str, *, category: Optional[str] = None) -> Optional[SkillMatch]:
-        """計画ステップのテキストから最適なスキル候補を検索する。"""
+    async def match_skill(
+        self,
+        text: str,
+        *,
+        category: Optional[str] = None,
+        tags: tuple[str, ...] = (),
+        mission_id: Optional[str] = None,
+    ) -> Optional[SkillMatch]:
+        """計画ステップのテキストとタグ文脈から最適なスキル候補を検索する。"""
 
         async with self._lock:
             tree = await self._ensure_tree()
-            match = tree.find_best_match(text, category=category, include_locked=True)
+            match = tree.find_best_match(
+                text,
+                category=category,
+                include_locked=True,
+                tags=tags,
+                mission_id=mission_id,
+            )
             if match:
                 self._logger.info(
-                    "skill match text='%s' category=%s skill=%s score=%.2f unlocked=%s",
+                    "skill match text='%s' category=%s mission=%s tags=%s skill=%s score=%.2f unlocked=%s",
                     text,
                     category,
+                    mission_id,
+                    tags,
                     match.skill.identifier,
                     match.score,
                     match.unlocked,
                 )
             else:
                 self._logger.info(
-                    "skill match text='%s' category=%s result=none",
+                    "skill match text='%s' category=%s mission=%s tags=%s result=none",
                     text,
                     category,
+                    mission_id,
+                    tags,
                 )
             return match
 

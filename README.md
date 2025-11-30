@@ -144,6 +144,7 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 
 * Python エージェントは行動タスクの分類結果から MineDojo ミッション ID を推論し、該当カテゴリでは `python/services/minedojo_client.py` を介してミッション情報とデモを取得します。
 * 取得したデモは `Actions.play_vpt_actions` に対して自動送信され、Mineflayer 側で低レベル操作を事前ロードします。同時に LLM コンテキストへミッション概要とデモ要約（アクション種別・件数）が注入されるため、計画生成時に具体的な事例を参照できます。
+* MineDojo デモを受信すると `Actions.registerSkill` と `SkillRepository` へミッション ID・`minedojo` タグ付きで自動登録し、`mission:<id>` タグをキーに LangGraph 側から即時再利用できるようになりました。曖昧な「もう一度同じミッション」のような指示でもスキル呼び出しへ誘導され、再学習なしでデモ由来スキルを呼び出せます。
 * API 経由で MineDojo を利用する場合は `.env`（または環境変数）へ `MINEDOJO_API_KEY` を設定してください。ローカルデータセットを参照する場合は `MINEDOJO_DATASET_DIR` に JSON の配置ディレクトリ（`missions/mission_id.json`・`demos/mission_id.json`）を指定します。
 * キャッシュは `MINEDOJO_CACHE_DIR`（既定: `var/cache/minedojo`）へ保存されます。API 応答やデモ軌跡にはライセンス制限・個人データが含まれる可能性があるため、リポジトリへコミットしないでください。`.gitignore` にも除外設定を追加済みです。
 * 具体的なディレクトリ構成やデータ利用ポリシーは `docs/minedojo_integration.md` を参照してください。MineDojo 利用規約に従い、商用利用可否や二次配布の扱いをチーム内で確認してください。

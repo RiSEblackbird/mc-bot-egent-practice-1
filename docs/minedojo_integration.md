@@ -44,8 +44,14 @@ Python エージェントから MineDojo のミッション/デモを参照す�
 
 1. エージェントはタスク分類結果からカテゴリを決定し、`python/agent.py` の `_MINEDOJO_MISSION_BINDINGS` でミッション ID を解決します。
 2. `MineDojoClient` がキャッシュ→ローカル→API の順にミッション情報とデモを探索し、成功した場合は `Actions.play_vpt_actions` にデモを自動送信します。
-3. LLM プロンプトへはミッション概要とデモ要約が `minedojo_context` キーとして注入されます。反省ログや検出レポートと同様に `Memory` へ保存されるため、後続の再計画でも参照可能です。
-4. MineDojo から得た情報は `tests/integration/test_minedojo_adapter.py` で検証しており、スタブクライアントを差し込むことで外部サービスへアクセスせずに回帰テストを実行できます。
+3. LLM プロンプトへはミッション概要とデモ要約が `minedojo_context` キーとして注入されます。ミッション ID・タグを含む構造化メタデータを LangGraph 状態へ残すため、後続のステップでも同一ミッションかどうかを判別しやすくなりました。
+4. MineDojo から得た情報は `tests/integration/test_minedojo_adapter.py` で検証しており、スタブクライアントを差し込むことで外部サービスへアクセスせずに回帰テストを実行できます。デモの自動登録と再利用の流れは `tests/integration/test_minedojo_skill_registration.py` で統合的に確認できます。
+
+## 6. 自動スキル登録とタグ検索
+
+* 取得したデモは `Actions.registerSkill` へも送信され、`SkillRepository` にミッション ID と `mission:<id>`/`minedojo` タグ付きで永続化されます。Mineflayer 側の NDJSON ログと同じタグを付与することで、スキルの有無を即座に突き合わせられます。
+* スキル照合はミッション ID やタグを重み付けに利用するため、「同じミッションをもう一度」などの曖昧なリクエストでも既存スキルを優先的に `invoke_skill` 経由で呼び出します。再学習を挟まずにデモ由来スキルを再利用できる点をユーザーへ明示してください。
+* デモメタデータは `mission_id`・`demo_id`・`tags`・`summary` を含む構造体として LangGraph 状態・Memory に残り、Mineflayer 側のタグ付けフォーマットと揃えています。MineDojo のタグやミッション ID が意図せず漏えいしないよう、`.gitignore` に登録済みのキャッシュディレクトリから外へ持ち出さない運用を徹底してください。
 
 ## 5. トラブルシューティング
 
