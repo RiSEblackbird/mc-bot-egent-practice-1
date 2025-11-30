@@ -18,7 +18,7 @@ from services.building_service import (
     restore_checkpoint,
 )
 
-from utils import log_structured_event
+from utils import log_structured_event, span_context
 from langgraph_state import UnifiedPlanState, record_structured_step
 from planner import PlanOut, plan
 
@@ -175,7 +175,18 @@ class ActionGraph:
             "role_transitioned": False,
             "structured_events": [],
         }
-        result = await self._graph.ainvoke(state)
+        with span_context(
+            "langgraph.action_graph.run",
+            langgraph_node_id="action_graph",
+            event_level="info",
+            attributes={
+                "action.category": category,
+                "action.step": step,
+                "action.role": self._orchestrator.current_role,
+            },
+        ):
+            result = await self._graph.ainvoke(state)
+
         handled = bool(result.get("handled"))
         updated_target = result.get("updated_target", last_target_coords)
         failure_detail = result.get("failure_detail")

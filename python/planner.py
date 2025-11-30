@@ -7,7 +7,9 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
-from utils import setup_logger
+from opentelemetry.trace import Status, StatusCode
+
+from utils import setup_logger, span_context
 from langgraph_state import UnifiedPlanState, record_structured_step
 from dotenv import load_dotenv
 import openai
@@ -272,56 +274,72 @@ def _build_plan_graph() -> CompiledStateGraph:
     async def call_llm(state: _PlanState) -> Dict[str, Any]:
         """Responses API を呼び出し、タイムアウト時は安全なフォールバックを返す。"""
 
-        async def _build_failure_payload(reason: str, *, log_as_warning: bool) -> Dict[str, Any]:
-            """例外発生時に優先度降格とフォールバックプランを組み立てる。"""
+        with span_context(
+            "llm.responses.create",
+            langgraph_node_id="plan.call_llm",
+            event_level="info",
+            attributes={"llm.model": MODEL},
+        ) as span:
 
-            priority = await manager.mark_failure()
-            fallback = PlanOut(plan=[], resp="了解しました。")
-            if log_as_warning:
-                logger.warning("plan graph detected LLM timeout: %s", reason)
-            else:
-                logger.exception("plan graph failed to call Responses API: %s", reason)
-            payload = {
-                "llm_error": reason,
-                "content": "",
-                "priority": priority,
-                "fallback_plan_out": fallback,
-            }
+            async def _build_failure_payload(reason: str, *, log_as_warning: bool) -> Dict[str, Any]:
+                """例外発生時に優先度降格とフォールバックプランを組み立てる。"""
+
+                priority = await manager.mark_failure()
+                fallback = PlanOut(plan=[], resp="了解しました。")
+                if log_as_warning:
+                    logger.warning("plan graph detected LLM timeout: %s", reason)
+                else:
+                    logger.exception("plan graph failed to call Responses API: %s", reason)
+                if span.is_recording():
+                    span.set_status(Status(StatusCode.ERROR, reason))
+                payload = {
+                    "llm_error": reason,
+                    "content": "",
+                    "priority": priority,
+                    "fallback_plan_out": fallback,
+                }
+                payload.update(
+                    record_structured_step(
+                        state,
+                        step_label="call_llm",
+                        inputs={"model": MODEL},
+                        outputs={"priority": priority, "fallback": True},
+                        error=reason,
+                    )
+                )
+                return payload
+
+            try:
+                client = openai.AsyncOpenAI()
+                resp = await asyncio.wait_for(
+                    client.responses.create(**state["payload"]),
+                    timeout=LLM_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                timeout_reason = f"timeout after {LLM_TIMEOUT_SECONDS:.1f} seconds"
+                if span.is_recording():
+                    span.set_attribute("llm.timeout_seconds", LLM_TIMEOUT_SECONDS)
+                return await _build_failure_payload(timeout_reason, log_as_warning=True)
+            except Exception as exc:
+                if span.is_recording():
+                    span.record_exception(exc)
+                    span.set_status(Status(StatusCode.ERROR, str(exc)))
+                return await _build_failure_payload(str(exc), log_as_warning=False)
+
+            content = _extract_output_text(resp)
+            logger.info("LLM raw: %s", content)
+            payload = {"response": resp, "content": content}
             payload.update(
                 record_structured_step(
                     state,
                     step_label="call_llm",
                     inputs={"model": MODEL},
-                    outputs={"priority": priority, "fallback": True},
-                    error=reason,
+                    outputs={"content_length": len(content)},
                 )
             )
+            if span.is_recording():
+                span.set_attribute("llm.content_length", len(content))
             return payload
-
-        try:
-            client = openai.AsyncOpenAI()
-            resp = await asyncio.wait_for(
-                client.responses.create(**state["payload"]),
-                timeout=LLM_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            timeout_reason = f"timeout after {LLM_TIMEOUT_SECONDS:.1f} seconds"
-            return await _build_failure_payload(timeout_reason, log_as_warning=True)
-        except Exception as exc:
-            return await _build_failure_payload(str(exc), log_as_warning=False)
-
-        content = _extract_output_text(resp)
-        logger.info("LLM raw: %s", content)
-        payload = {"response": resp, "content": content}
-        payload.update(
-            record_structured_step(
-                state,
-                step_label="call_llm",
-                inputs={"model": MODEL},
-                outputs={"content_length": len(content)},
-            )
-        )
-        return payload
 
     async def parse_plan(state: _PlanState) -> Dict[str, Any]:
         if state.get("llm_error"):
