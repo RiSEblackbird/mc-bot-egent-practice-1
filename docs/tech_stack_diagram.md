@@ -187,4 +187,28 @@ graph LR
    - MineDojo 連携の細部: `docs/minedojo_integration.md`  
    本ファイルは「鳥瞰図」の役割であり、詳細なアルゴリズムやプロンプト設計はこれらのドキュメントで補完されます。
 
+---
+
+## 4. 能動的世界文脈配信ロードマップ
+
+Paper 側でプロアクティブに危険通知やジョブ状況を配信し、LangGraph 側の `detection_reports`（`python/agent_orchestrator.py::build_reflection_prompt`）へ自動で取り込むための計画をまとめる。
+
+### 4.1 Paper → LangGraph Push
+
+- `bridge-plugin/src/main/java/com/example/bridge/AgentBridgePlugin.java` で Paper イベントリスナー（WorldGuard／CoreProtect／液体検知）を登録し、`BridgeEventHub` へ `region_hazard` / `job_state` / `world_alert` などの `BridgeEvent` を publish する。
+- HTTP 層では既存の SSE `/v1/events/stream` を強化しつつ、新たに WebSocket `/v1/events/ws` を追加して LangGraph ノードが pull せずともリアルタイムに push を受け取れるようにする。`bridge-plugin/src/main/java/com/example/bridge/http/BridgeHttpServer.java` の `EventStreamHandler` を共通のイベントマルチプレクサに差し替える想定。
+- Python 側では `BridgeClient.consume_event_stream()` と `agent.py::_handle_bridge_event()` を使い回し、チャットレス運用でも `BridgeEvent` が `bridge_event_reports` → `detection_reports` に自動でマージされる。これにより「今どこを掘れるか」を毎回ユーザーが質問する必要がなくなる。
+
+### 4.2 LangGraph 逆通知の再設計
+
+- `LangGraphRetryHook`（`bridge-plugin/src/main/java/com/example/bridge/langgraph/LangGraphRetryHook.java`）を `LangGraphEventGateway` に拡張し、`triggerRetry` に加えて `pushEvent(LangGraphEvent event)` を提供する。`LangGraphRetryClient` も push 用エンドポイント（例: `/callbacks/agentbridge/events`）を持つクライアントへ差し替える。
+- `BridgeEvent` publish 時に `pushEvent` を呼び、LangGraph 側の専用ノードへ「どの保護領域で何が起きたか」「危険度」「最新ジョブ ID」を直接通知する。LangGraph ノードでは `bridge_event_reports` を `state["detection_reports"]` に積み増し、`build_reflection_prompt()` が失敗理由へ自動添付できる。
+- 逆通知を同じゲートウェイにまとめることで、Paper → LangGraph の危険共有と LangGraph → Paper のリトライ指示が単一の設定 (`langgraph.*` セクション) に収まる。設定値は API キーと両方向のエンドポイントを environment config で一元管理する。
+
+### 4.3 CLI / 運用フロー
+
+- blazity の CLI/Client パターンに倣い、`python/cli.py` へ `agentbridge jobs watch` サブコマンドを追加して SSE/WS を購読し、`job_started` や `danger_detected` のタイムラインをターミナルへ streaming 表示する。`--job-id` フィルタや `--format json` などのフラグで運用向けの絞り込みを用意する。
+- CLI からも `BRIDGE_EVENT_STREAM_PATH` / `BRIDGE_EVENT_STREAM_ENABLED` を尊重し、サーバーを UI なしで観測できるようにする。Paper 側のイベントを LangGraph だけでなく SRE/運用担当にも共有することで、チャット不在時でも危険通知が可視化される。
+- 上記 2 つの取り組みにより、「Python 側から問い合わせない限り Paper が沈黙する」という現状を解消し、LangGraph と CLI の両方で保護領域や危険ブロックを push で受け取れる構造に進化させる。
+
 
