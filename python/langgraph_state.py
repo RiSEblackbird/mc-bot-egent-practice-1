@@ -56,6 +56,8 @@ class UnifiedPlanState(TypedDict, total=False):
     outputs: Mapping[str, Any]
     error: Optional[str]
     structured_events: List[Dict[str, Any]]
+    structured_event_history: List[Dict[str, Any]]
+    perception_history: List[Dict[str, Any]]
 
 
 def _serialize_for_log(data: Mapping[str, Any]) -> Dict[str, Any]:
