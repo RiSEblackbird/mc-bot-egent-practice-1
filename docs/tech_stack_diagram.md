@@ -198,6 +198,7 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 - `bridge-plugin/src/main/java/com/example/bridge/AgentBridgePlugin.java` で Paper イベントリスナー（WorldGuard／CoreProtect／液体検知）を登録し、`BridgeEventHub` へ `region_hazard` / `job_state` / `world_alert` などの `BridgeEvent` を publish する。
 - HTTP 層では既存の SSE `/v1/events/stream` を強化しつつ、新たに WebSocket `/v1/events/ws` を追加して LangGraph ノードが pull せずともリアルタイムに push を受け取れるようにする。`bridge-plugin/src/main/java/com/example/bridge/http/BridgeHttpServer.java` の `EventStreamHandler` を共通のイベントマルチプレクサに差し替える想定。
 - Python 側では `BridgeClient.consume_event_stream()` と `agent.py::_handle_bridge_event()` を使い回し、チャットレス運用でも `BridgeEvent` が `bridge_event_reports` → `detection_reports` に自動でマージされる。これにより「今どこを掘れるか」を毎回ユーザーが質問する必要がなくなる。
+- 2025/11 アップデートでは `BridgeEvent` に `attributes` フィールドを追加し、ジョブ ID・危険カテゴリ・WorldGuard リージョン・液体/空洞カウントを SSE 上で共有できるようになった。Python 側はこれを `perception_summary` と統合し、周辺状況を 1 行で LLM へ渡す。
 
 ---
 

@@ -2,7 +2,7 @@
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
 import { createBot, Bot } from 'mineflayer';
 import type { Item } from 'prismarine-item';
-import type { Vec3 } from 'vec3';
+import Vec3, { Vec3 as Vec3Type } from 'vec3';
 import { SpanStatusCode } from '@opentelemetry/api';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
 // そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
@@ -67,6 +67,10 @@ const AGENT_EVENT_QUEUE_MAX_SIZE = runtimeConfig.agentBridge.queueMaxSize;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 const MINING_APPROACH_TOLERANCE = 1;
 const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
+const PERCEPTION_ENTITY_RADIUS = runtimeConfig.perception.entityRadius;
+const PERCEPTION_BLOCK_RADIUS = runtimeConfig.perception.blockRadius;
+const PERCEPTION_BLOCK_HEIGHT = runtimeConfig.perception.blockHeight;
+const PERCEPTION_BROADCAST_INTERVAL_MS = runtimeConfig.perception.broadcastIntervalMs;
 
 // ---- OpenTelemetry 初期化 ----
 const telemetry = initializeTelemetry(runtimeConfig.telemetry);
@@ -75,6 +79,8 @@ const commandDurationHistogram = telemetry.commandDurationMs;
 const agentBridgeEventCounter = telemetry.agentBridgeEventCounter;
 const reconnectCounter = telemetry.reconnectCounter;
 const directiveCounter = telemetry.directiveCounter;
+const perceptionSnapshotHistogram = telemetry.perceptionSnapshotDurationMs;
+const perceptionErrorCounter = telemetry.perceptionErrorCounter;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -107,7 +113,7 @@ interface CommandResponse {
 
 interface MultiAgentEventPayload {
   channel: 'multi-agent';
-  event: 'roleUpdate' | 'position' | 'status';
+  event: 'roleUpdate' | 'position' | 'status' | 'perception';
   agentId: string;
   timestamp: number;
   payload: Record<string, unknown>;
@@ -120,7 +126,7 @@ interface AgentEventEnvelope {
 
 type AgentBridgeSessionState = 'disconnected' | 'connecting' | 'connected';
 
-type GatherStatusKind = 'position' | 'inventory' | 'general';
+type GatherStatusKind = 'position' | 'inventory' | 'general' | 'environment';
 
 interface PositionSnapshot {
   kind: 'position';
@@ -168,6 +174,77 @@ interface GeneralStatusSnapshot {
   digPermission: DigPermissionSnapshot;
   agentRole: AgentRoleDescriptor;
   formatted: string;
+  perception?: PerceptionSnapshot | null;
+}
+
+interface PositionReference {
+  x: number;
+  y: number;
+  z: number;
+  distance: number;
+  bearing: string;
+}
+
+interface NearbyEntitySummary {
+  name: string;
+  kind: string;
+  distance: number;
+  bearing: string;
+  position: { x: number; y: number; z: number };
+}
+
+interface HazardSummary {
+  liquids: number;
+  lava: number;
+  magma: number;
+  voids: number;
+  warnings: string[];
+  closestLiquid: PositionReference | null;
+  closestVoid: PositionReference | null;
+}
+
+interface LightingSummary {
+  sky: number | null;
+  block: number | null;
+}
+
+interface WeatherSummary {
+  isRaining: boolean;
+  rainLevel: number;
+  thunderLevel: number;
+  label: string;
+}
+
+interface PerceptionSnapshot {
+  kind: 'perception';
+  timestamp: number;
+  position: { x: number; y: number; z: number; dimension: string };
+  health?: number;
+  food_level?: number;
+  weather: WeatherSummary;
+  time: {
+    age: number;
+    day: number;
+    timeOfDay: number;
+    isDay: boolean;
+  };
+  lighting: LightingSummary;
+  hazards: HazardSummary;
+  nearby_entities: {
+    total: number;
+    hostiles: number;
+    players: number;
+    details: NearbyEntitySummary[];
+  };
+  warnings: string[];
+  summary?: string;
+}
+
+interface EnvironmentSnapshot {
+  kind: 'environment';
+  perception: PerceptionSnapshot | null;
+  role: AgentRoleDescriptor;
+  eventQueueSize: number;
 }
 
 type VptControlName =
@@ -286,6 +363,8 @@ let agentBridgeBatchTimer: NodeJS.Timeout | null = null;
 let agentBridgeHealthcheckTimer: NodeJS.Timeout | null = null;
 let agentBridgeFlushInFlight: Promise<void> | null = null;
 let lastAgentBridgePongAt = 0;
+let lastPerceptionSnapshot: PerceptionSnapshot | null = null;
+let lastPerceptionBroadcastAt = 0;
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
@@ -772,6 +851,25 @@ async function broadcastAgentStatus(targetBot: Bot, extraPayload: Record<string,
   });
 }
 
+async function broadcastAgentPerception(targetBot: Bot, options: { force?: boolean } = {}): Promise<void> {
+  if (!options.force && Date.now() - lastPerceptionBroadcastAt < PERCEPTION_BROADCAST_INTERVAL_MS) {
+    return;
+  }
+  const snapshot = buildPerceptionSnapshotSafe(targetBot, 'agent-event');
+  if (!snapshot) {
+    return;
+  }
+  lastPerceptionBroadcastAt = Date.now();
+  lastPerceptionSnapshot = snapshot;
+  await emitAgentEvent({
+    channel: 'multi-agent',
+    event: 'perception',
+    agentId: PRIMARY_AGENT_ID,
+    timestamp: Date.now(),
+    payload: snapshot,
+  });
+}
+
 /**
  * Bot ごとに必要なイベントハンドラを登録し、切断時には再接続をスケジュールする。
  */
@@ -820,15 +918,18 @@ function registerBotEventHandlers(targetBot: Bot): void {
     targetBot.chat('起動しました。（Mineflayer）');
     void broadcastAgentStatus(targetBot, { lifecycle: 'spawn' });
     void broadcastAgentPosition(targetBot);
+    void broadcastAgentPerception(targetBot, { force: true });
   });
 
   targetBot.on('health', () => {
     void monitorCriticalHunger(targetBot);
     void broadcastAgentStatus(targetBot);
+    void broadcastAgentPerception(targetBot);
   });
 
   targetBot.on('move', () => {
     void broadcastAgentPosition(targetBot);
+    void broadcastAgentPerception(targetBot);
   });
 
   // サーバーから強制移動が通知された場合はタイムスタンプを更新し、
@@ -1483,7 +1584,7 @@ async function handleMineOreCommand(args: Record<string, unknown>): Promise<Comm
     console.warn('[MineOreCommand] some ore names were not resolved', { unknownOres });
   }
 
-  const foundPositions: Vec3[] = activeBot.findBlocks({
+  const foundPositions: Vec3Type[] = activeBot.findBlocks({
     matching: (block) => Boolean(block && targetIds.has(block.type)),
     maxDistance: scanRadius,
     count: maxTargets,
@@ -1688,7 +1789,7 @@ async function handleEquipItemCommand(args: Record<string, unknown>): Promise<Co
  */
 async function handleGatherStatusCommand(args: Record<string, unknown>): Promise<CommandResponse> {
   const kindRaw = typeof args.kind === 'string' ? args.kind.trim().toLowerCase() : '';
-  const supportedKinds: GatherStatusKind[] = ['position', 'inventory', 'general'];
+  const supportedKinds: GatherStatusKind[] = ['position', 'inventory', 'general', 'environment'];
   const normalizedKind = supportedKinds.find((candidate) => candidate === kindRaw) ?? null;
 
   if (!normalizedKind) {
@@ -1710,6 +1811,8 @@ async function handleGatherStatusCommand(args: Record<string, unknown>): Promise
       return { ok: true, data: buildInventorySnapshot(activeBot) };
     case 'general':
       return { ok: true, data: buildGeneralStatusSnapshot(activeBot) };
+    case 'environment':
+      return { ok: true, data: buildEnvironmentSnapshot(activeBot) };
     default: {
       const exhaustiveCheck: never = normalizedKind;
       void exhaustiveCheck;
@@ -1737,7 +1840,7 @@ function handleGatherVptObservationCommand(args: Record<string, unknown>): Comma
     y: Number(entity.position.y),
     z: Number(entity.position.z),
   };
-  const velocity = entity.velocity ?? ({ x: 0, y: 0, z: 0 } as Vec3);
+  const velocity = entity.velocity ?? ({ x: 0, y: 0, z: 0 } as Vec3Type);
   const yawDegrees = radToDeg(entity.yaw ?? 0);
   const pitchDegrees = radToDeg(entity.pitch ?? 0);
   const general = buildGeneralStatusSnapshot(activeBot);
@@ -2095,9 +2198,329 @@ function buildGeneralStatusSnapshot(targetBot: Bot): GeneralStatusSnapshot {
     digPermission,
     agentRole: getActiveAgentRole(),
     formatted,
+    perception: samplePerceptionSnapshot(targetBot),
   };
 }
 
+function buildEnvironmentSnapshot(targetBot: Bot): EnvironmentSnapshot {
+  return {
+    kind: 'environment',
+    perception: samplePerceptionSnapshot(targetBot, 'environment-status'),
+    role: getActiveAgentRole(),
+    eventQueueSize: agentEventQueue.length,
+  };
+}
+
+function clonePerceptionSnapshot(snapshot: PerceptionSnapshot | null): PerceptionSnapshot | null {
+  if (!snapshot) {
+    return null;
+  }
+  return JSON.parse(JSON.stringify(snapshot)) as PerceptionSnapshot;
+}
+
+function samplePerceptionSnapshot(targetBot: Bot, reason: string = 'general-status'): PerceptionSnapshot | null {
+  const snapshot = buildPerceptionSnapshotSafe(targetBot, reason);
+  if (snapshot) {
+    lastPerceptionSnapshot = snapshot;
+    return clonePerceptionSnapshot(snapshot);
+  }
+  return clonePerceptionSnapshot(lastPerceptionSnapshot);
+}
+
+function buildPerceptionSnapshotSafe(targetBot: Bot, reason: string): PerceptionSnapshot | null {
+  const startedAt = Date.now();
+  try {
+    const snapshot = buildPerceptionSnapshot(targetBot);
+    perceptionSnapshotHistogram.record(Date.now() - startedAt, {
+      'perception.reason': reason,
+      'perception.dimension': snapshot.position.dimension,
+    });
+    return snapshot;
+  } catch (error) {
+    perceptionErrorCounter.add(1, { 'perception.reason': reason });
+    console.warn('[Perception] failed to build snapshot', error);
+    return null;
+  }
+}
+
+function buildPerceptionSnapshot(targetBot: Bot): PerceptionSnapshot {
+  const entity = targetBot.entity;
+  if (!entity) {
+    throw new Error('Bot entity is not initialized');
+  }
+  const floored = entity.position.clone().floored();
+  const dimension = targetBot.game.dimension ?? 'unknown';
+  const weather = resolveWeatherSummary(targetBot);
+  const timeInfo = resolveTimeSummary(targetBot);
+  const lighting = resolveLightingSummary(targetBot, floored);
+  const nearbyEntities = scanNearbyEntities(targetBot, entity.position);
+  const hazards = scanHazardsAround(targetBot, floored);
+  const warnings = [
+    ...hazards.warnings,
+    ...resolveLightingWarnings(lighting),
+    ...resolveEntityWarnings(nearbyEntities),
+  ];
+  const summary = buildPerceptionSummary(nearbyEntities, hazards, weather, lighting);
+
+  return {
+    kind: 'perception',
+    timestamp: Date.now(),
+    position: { x: floored.x, y: floored.y, z: floored.z, dimension },
+    health: Math.round(targetBot.health),
+    food_level: Math.round(targetBot.food),
+    weather,
+    time: timeInfo,
+    lighting,
+    hazards,
+    nearby_entities: nearbyEntities,
+    warnings,
+    summary,
+  };
+}
+
+function resolveWeatherSummary(targetBot: Bot): WeatherSummary {
+  const rainLevel = Number((targetBot as Record<string, unknown>).rainLevel ?? 0);
+  const thunderLevel = Number((targetBot as Record<string, unknown>).thunderLevel ?? 0);
+  const isRainingFlag = Boolean((targetBot as Record<string, unknown>).isRaining ?? rainLevel > 0);
+  const label = isRainingFlag ? (thunderLevel > 0 ? 'thunder' : 'rain') : 'clear';
+  return {
+    isRaining: isRainingFlag,
+    rainLevel,
+    thunderLevel,
+    label,
+  };
+}
+
+function resolveTimeSummary(targetBot: Bot) {
+  const time = targetBot.time ?? { age: 0, day: 0, timeOfDay: 0 };
+  const timeOfDay = Number(time.timeOfDay ?? 0);
+  const age = Number(time.age ?? 0);
+  const day = Number(time.day ?? 0);
+  const isDay = timeOfDay >= 0 && timeOfDay < 12_000;
+  return {
+    age,
+    day,
+    timeOfDay,
+    isDay,
+  };
+}
+
+function resolveLightingSummary(targetBot: Bot, position: Vec3Type): LightingSummary {
+  const world = (targetBot as Record<string, any>).world;
+  const readLevel = (method: 'getSkyLight' | 'getBlockLight'): number | null => {
+    if (world && typeof world[method] === 'function') {
+      try {
+        return world[method](position);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  return {
+    sky: readLevel('getSkyLight'),
+    block: readLevel('getBlockLight'),
+  };
+}
+
+function resolveLightingWarnings(lighting: LightingSummary): string[] {
+  const warnings: string[] = [];
+  if (typeof lighting.block === 'number' && lighting.block < 7) {
+    warnings.push(`周囲の明るさが低く敵対モブが湧きやすい状態です (block=${lighting.block})`);
+  }
+  return warnings;
+}
+
+function resolveEntityWarnings(nearbyEntities: PerceptionSnapshot['nearby_entities']): string[] {
+  if (nearbyEntities.hostiles <= 0) {
+    return [];
+  }
+  const labels = nearbyEntities.details
+    .filter((entity) => entity.kind === 'hostile')
+    .slice(0, 3)
+    .map((entity) => `${entity.name}(${entity.distance.toFixed(1)}m${entity.bearing})`);
+  return [`敵対モブを検知: ${labels.join('、')}`];
+}
+
+function buildPerceptionSummary(
+  nearbyEntities: PerceptionSnapshot['nearby_entities'],
+  hazards: HazardSummary,
+  weather: WeatherSummary,
+  lighting: LightingSummary,
+): string {
+  const parts: string[] = [];
+  if (nearbyEntities.hostiles > 0) {
+    parts.push(`敵対モブ${nearbyEntities.hostiles}体`);
+  }
+  if (hazards.liquids > 0) {
+    parts.push(`液体${hazards.liquids}`);
+  }
+  if (hazards.voids > 0) {
+    parts.push(`落下リスク${hazards.voids}`);
+  }
+  parts.push(`天候:${weather.label}`);
+  if (typeof lighting.block === 'number') {
+    parts.push(`明るさ:${lighting.block}`);
+  }
+  return parts.join(' / ');
+}
+
+function scanNearbyEntities(targetBot: Bot, origin: Vec3Type): PerceptionSnapshot['nearby_entities'] {
+  const hostiles: NearbyEntitySummary[] = [];
+  const allDetails: NearbyEntitySummary[] = [];
+  const players: NearbyEntitySummary[] = [];
+  const originVec = origin.clone();
+
+  for (const entity of Object.values(targetBot.entities)) {
+    if (!entity || !entity.position || entity === targetBot.entity) {
+      continue;
+    }
+    const distance = entity.position.distanceTo(originVec);
+    if (!Number.isFinite(distance) || distance > PERCEPTION_ENTITY_RADIUS) {
+      continue;
+    }
+    const dx = entity.position.x - originVec.x;
+    const dz = entity.position.z - originVec.z;
+    const bearing = resolveBearingLabel(dx, dz);
+    const detail: NearbyEntitySummary = {
+      name: entity.displayName ?? entity.name ?? entity.uuid ?? 'unknown',
+      kind: classifyEntityKind(entity),
+      distance,
+      bearing,
+      position: {
+        x: Math.floor(entity.position.x),
+        y: Math.floor(entity.position.y),
+        z: Math.floor(entity.position.z),
+      },
+    };
+    allDetails.push(detail);
+    if (detail.kind === 'hostile') {
+      hostiles.push(detail);
+    } else if (detail.kind === 'player') {
+      players.push(detail);
+    }
+  }
+
+  allDetails.sort((a, b) => a.distance - b.distance);
+  return {
+    total: allDetails.length,
+    hostiles: hostiles.length,
+    players: players.length,
+    details: allDetails.slice(0, 5),
+  };
+}
+
+function classifyEntityKind(entity: any): string {
+  const type = (entity?.type ?? '').toString().toLowerCase();
+  const kind = (entity?.kind ?? '').toString().toLowerCase();
+  if (type === 'player') {
+    return 'player';
+  }
+  if (kind.includes('hostile')) {
+    return 'hostile';
+  }
+  if (kind.includes('passive')) {
+    return 'passive';
+  }
+  return 'other';
+}
+
+function scanHazardsAround(targetBot: Bot, center: Vec3Type): HazardSummary {
+  const radius = PERCEPTION_BLOCK_RADIUS;
+  const height = PERCEPTION_BLOCK_HEIGHT;
+  let liquids = 0;
+  let lava = 0;
+  let magma = 0;
+  let voids = 0;
+  let closestLiquid: PositionReference | null = null;
+  let closestVoid: PositionReference | null = null;
+
+  for (let dx = -radius; dx <= radius; dx++) {
+    for (let dy = -height; dy <= height; dy++) {
+      for (let dz = -radius; dz <= radius; dz++) {
+        const checkPos = new Vec3(center.x + dx, center.y + dy, center.z + dz);
+        let block: any = null;
+        try {
+          block = targetBot.blockAt(checkPos, true);
+        } catch {
+          block = null;
+        }
+        if (!block) {
+          continue;
+        }
+        const name = String(block.name ?? '');
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const reference: PositionReference = {
+          x: checkPos.x,
+          y: checkPos.y,
+          z: checkPos.z,
+          distance,
+          bearing: resolveBearingLabel(dx, dz),
+        };
+
+        if (block.liquid || name.includes('water') || name.includes('lava')) {
+          liquids += 1;
+          if (name.includes('lava')) {
+            lava += 1;
+          }
+          if (!closestLiquid || reference.distance < closestLiquid.distance) {
+            closestLiquid = reference;
+          }
+        }
+        if (name === 'magma_block') {
+          magma += 1;
+        }
+        if ((block.boundingBox === 'empty' || name.includes('air')) && dy < 0) {
+          const below = new Vec3(checkPos.x, checkPos.y - 1, checkPos.z);
+          let belowBlock: any = null;
+          try {
+            belowBlock = targetBot.blockAt(below, true);
+          } catch {
+            belowBlock = null;
+          }
+          if (!belowBlock || belowBlock.boundingBox === 'empty') {
+            voids += 1;
+            if (!closestVoid || reference.distance < closestVoid.distance) {
+              closestVoid = reference;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const warnings: string[] = [];
+  if (liquids > 0) {
+    warnings.push('周囲に液体を検知しました');
+  }
+  if (voids > 0) {
+    warnings.push('足元に空洞が存在します');
+  }
+
+  return {
+    liquids,
+    lava,
+    magma,
+    voids,
+    warnings,
+    closestLiquid,
+    closestVoid,
+  };
+}
+
+function resolveBearingLabel(dx: number, dz: number): string {
+  const angle = (Math.atan2(-dx, dz) * 180) / Math.PI;
+  const normalized = (angle + 360) % 360;
+  if (normalized >= 337.5 || normalized < 22.5) return '北';
+  if (normalized >= 22.5 && normalized < 67.5) return '北東';
+  if (normalized >= 67.5 && normalized < 112.5) return '東';
+  if (normalized >= 112.5 && normalized < 157.5) return '南東';
+  if (normalized >= 157.5 && normalized < 202.5) return '南';
+  if (normalized >= 202.5 && normalized < 247.5) return '南西';
+  if (normalized >= 247.5 && normalized < 292.5) return '西';
+  return '北西';
+}
 function evaluateDigPermission(targetBot: Bot): DigPermissionSnapshot {
   const gameMode = targetBot.game.gameMode ?? 'survival';
   const fallbackMovements = digPermissiveMovements as MutableMovements | null;

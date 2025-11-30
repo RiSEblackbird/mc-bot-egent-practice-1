@@ -7,6 +7,7 @@ import {
   ControlModeResolution,
   HostResolutionResult,
   MoveGoalToleranceResolution,
+  PerceptionResolution,
   VptPlaybackResolution,
   detectDockerRuntime,
   parseEnvInt,
@@ -15,6 +16,7 @@ import {
   resolveControlMode,
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
+  resolvePerceptionConfig,
   resolveVptPlaybackConfig,
 } from './env.js';
 
@@ -121,6 +123,7 @@ export interface BotRuntimeConfig {
     modeResolution: ControlModeResolution;
     vpt: VptPlaybackResolution;
   };
+  perception: PerceptionResolution;
 }
 
 export interface ConfigLoadResult {
@@ -169,6 +172,12 @@ export function loadBotRuntimeConfig(
     env.VPT_TICK_INTERVAL_MS,
     env.VPT_MAX_SEQUENCE_LENGTH,
   );
+  const perceptionResolution = resolvePerceptionConfig(
+    env.PERCEPTION_ENTITY_RADIUS,
+    env.PERCEPTION_BLOCK_RADIUS,
+    env.PERCEPTION_BLOCK_HEIGHT,
+    env.PERCEPTION_BROADCAST_INTERVAL_MS,
+  );
 
   const skillHistoryPathRaw = env.SKILL_HISTORY_PATH?.trim() ?? '';
   const skillHistoryPath =
@@ -206,6 +215,7 @@ export function loadBotRuntimeConfig(
       modeResolution: controlModeResolution,
       vpt: vptPlaybackResolution,
     },
+    perception: perceptionResolution,
   };
 
   const warnings: string[] = [
@@ -215,6 +225,7 @@ export function loadBotRuntimeConfig(
     ...controlModeResolution.warnings,
     ...vptPlaybackResolution.warnings,
     ...telemetryResolution.warnings,
+    ...perceptionResolution.warnings,
   ];
 
   if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {

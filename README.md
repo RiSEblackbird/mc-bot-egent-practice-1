@@ -50,6 +50,11 @@ Mineflayer 起動時の環境変数は `node-bot/runtime/config.ts` へ集約し
 制御ループの設定値は `node-bot/bot.ts` の冒頭で初期化してからログへ出力するよう整理しました。`npm start` で Mineflayer ボットを再起動し、
 標準出力に `mode=... tick=... maxSeq=...` が表示されクラッシュが発生しないことを確認してください。未初期化定数を参照した際の例外はこの変更で解消されます。
 
+2025年11月のアップデートでは `gatherStatus` に `environment` 種別を追加し、近傍エンティティ・照度・液体/空洞ヒートマップなどの観測値を一括取得できるようになりました。
+Mineflayer 側は一定間隔で `perception` イベントを WebSocket へ push し、Python エージェントは最新の認知スナップショットを常に共有メモリへ保持します。
+`PERCEPTION_*` 環境変数でスキャン範囲やブロードキャスト間隔を細かく調整できます（既定: `PERCEPTION_ENTITY_RADIUS=12`, `PERCEPTION_BLOCK_RADIUS=4`,
+`PERCEPTION_BLOCK_HEIGHT=2`, `PERCEPTION_BROADCAST_INTERVAL_MS=1500`）。暗い坑道や液体検知の頻度が高い場合はこれらの値を上げることで安全性を優先した認知に切り替えられます。
+
 LangGraph 共有メモリへ送る `agentEvent` 系の WebSocket 配信はセッション常駐化し、`AGENT_WS_*` と `AGENT_EVENT_*` でヘルスチェック間隔・接続/送信タイムアウト・リトライ回数・バッチ間隔・キュー上限を細かく調整できます。位置やステータス更新がバーストした場合でも一度確立したセッションとバッチャを介してまとめて配送するため、接続確立コストが増大せず、ログにも送信結果とエラー内容が構造化 JSON で残ります。
 
 2025 年 10 月のアップデートでは `node-bot/runtime/roles.ts` に役割カタログを追加し、`setAgentRole` コマンドで LangGraph から防衛/補給/偵察などのロールへ即座に切り替えられるようになりました。Mineflayer から `agentEvent` チャネル経由で位置・体力・役割のスナップショットを Python 側へ push するため、イベント駆動で共有メモリが更新されます。
@@ -150,6 +155,12 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 - `recovery_hints` … 直近の障壁や Reflexion プロンプトから引き継いだ教訓。`langgraph_state.record_recovery_hints()` を通じて再計画ノードへも共有され、同じ失敗の再発を防ぎます。
 
 Python エージェントは directive メタデータを `Actions.begin_directive_scope()` → `_dispatch()` を経由して WebSocket ペイロードの `meta` に添付します。`node-bot/runtime/telemetry.ts` は `command.meta.directive_id` / `command.meta.executor` を span 属性へ記録し、`mineflayer.directive.received` カウンターとしてメトリクス化するため、OpenTelemetry 上で「どの目的の指示がどの executor へ渡ったか」を直接観測できます。
+
+#### 3.2.6 周囲状況の即時共有
+
+Node 側が push する `perception` イベントや `gatherStatus(kind=\"environment\")` の結果は `AgentOrchestrator._ingest_perception_snapshot()` で正規化され、`perception_history` と `perception_summary` に蓄積されます。
+要約には敵対モブ数・危険ブロック・照度・天候などが 1 行で記録され、LangGraph の状態・LLM プロンプト・障壁通知・ActionGraph のバックログ判断にそのまま利用されます。
+`bridge_event_reports` に含まれる attributes（例: job_id, hazard, world）も summary へ取り込まれるため、Paper 側で発生した危険と Mineflayer 近傍の観測値をセットで追跡できるようになりました。
 
 #### MineDojo ミッション連携
 

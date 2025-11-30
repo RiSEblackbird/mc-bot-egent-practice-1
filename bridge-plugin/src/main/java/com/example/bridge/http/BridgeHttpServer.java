@@ -27,7 +27,9 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -207,12 +209,21 @@ public final class BridgeHttpServer {
             response.put("job_id", jobId.toString());
             response.set("frontier", toFrontierNode(job.window()));
             sendJson(exchange, 200, response);
+            Map<String, Object> attributes = new HashMap<>();
+            attributes.put("job_id", jobId.toString());
+            attributes.put("world", worldName);
+            attributes.put("owner", owner);
+            attributes.put("length", length);
+            attributes.put("section_width", width);
+            attributes.put("section_height", height);
+            attributes.put("direction", direction.name());
             publishEvent(
                     "job_started",
                     "ジョブが登録されました",
                     "info",
                     regionName(jobId),
-                    job.window().min());
+                    job.window().min(),
+                    attributes);
         }
     }
 
@@ -238,12 +249,18 @@ public final class BridgeHttpServer {
             response.set("frontier", toFrontierNode(frontier));
             response.put("finished", job.isFinished());
             sendJson(exchange, 200, response);
+            Map<String, Object> attributes = new HashMap<>();
+            attributes.put("job_id", jobId.toString());
+            attributes.put("world", job.world().getName());
+            attributes.put("steps", steps);
+            attributes.put("finished", job.isFinished());
             publishEvent(
                     "job_progress",
                     "ジョブのフロンティアが更新されました",
                     "info",
                     regionName(jobId),
-                    frontier.max());
+                    frontier.max(),
+                    attributes);
         }
     }
 
@@ -262,12 +279,16 @@ public final class BridgeHttpServer {
             ObjectNode response = mapper.createObjectNode();
             response.put("ok", true);
             sendJson(exchange, 200, response);
+            Map<String, Object> attributes = new HashMap<>();
+            attributes.put("job_id", jobId.toString());
+            attributes.put("world", job.world().getName());
             publishEvent(
                     "job_stopped",
                     "ジョブが停止されました",
                     "info",
                     regionName(jobId),
-                    null);
+                    null,
+                    attributes);
         }
     }
 
@@ -470,37 +491,77 @@ public final class BridgeHttpServer {
         List<BlockEvaluation> list = new ArrayList<>();
         BlockVector3 firstLiquid = null;
         BridgeEvent hazardEvent = null;
+        int liquidBlocks = 0;
+        int functionalTouches = 0;
+        int regionMatches = 0;
         for (BlockVector3 pos : positions) {
             Block block = world.getBlockAt(pos.getBlockX(), pos.getBlockY(), pos.getBlockZ());
             Material type = block.getType();
+            String blockId = type.getKey().toString();
             boolean isAir = type.isAir();
             boolean isLiquid = type.isLiquid();
             boolean nearFunctional = functionalInspector.isNearFunctional(
                     world, pos.getBlockX(), pos.getBlockY(), pos.getBlockZ(), config.safety().functionalNearRadius());
             boolean inRegion = region != null && contains(region, pos);
+            if (isLiquid) {
+                liquidBlocks++;
+            }
+            if (nearFunctional) {
+                functionalTouches++;
+            }
+            if (inRegion) {
+                regionMatches++;
+            }
             if (isLiquid && inRegion && firstLiquid == null) {
                 // 液体検知時は最初の座標を保持し、Mineflayer に安全停止を促す。
                 firstLiquid = pos;
+                Map<String, Object> attributes = new HashMap<>();
+                attributes.put("world", world.getName());
+                attributes.put("block_id", blockId);
+                attributes.put("job_region", regionName);
+                attributes.put("hazard", "liquid");
                 hazardEvent = new BridgeEvent(
                         "danger_detected",
                         "採掘領域内で液体を検知しました",
                         "warning",
                         regionName,
-                        pos);
+                        pos,
+                        attributes);
             } else if (hazardEvent == null && nearFunctional) {
+                Map<String, Object> attributes = new HashMap<>();
+                attributes.put("world", world.getName());
+                attributes.put("block_id", blockId);
+                attributes.put("job_region", regionName);
+                attributes.put("hazard", "functional_block");
                 hazardEvent = new BridgeEvent(
                         "danger_detected",
                         "機能ブロックへ近接しました",
                         "warning",
                         regionName,
-                        pos);
+                        pos,
+                        attributes);
             }
-            String blockId = type.getKey().toString();
             list.add(new BlockEvaluation(pos, blockId, isAir, isLiquid, nearFunctional, inRegion));
         }
         if (hazardEvent != null) {
             eventHub.publish(hazardEvent);
         }
+        Map<String, Object> scanAttributes = new HashMap<>();
+        scanAttributes.put("world", world.getName());
+        scanAttributes.put("positions_evaluated", positions.size());
+        scanAttributes.put("liquid_blocks", liquidBlocks);
+        scanAttributes.put("functional_blocks", functionalTouches);
+        scanAttributes.put("region_matches", regionMatches);
+        if (regionName != null) {
+            scanAttributes.put("job_region", regionName);
+        }
+        publishEvent(
+                "environment_scan",
+                "採掘領域の周辺状況をスキャンしました",
+                "info",
+                regionName,
+                null,
+                scanAttributes);
         return new BlockEvaluationResult(list, firstLiquid != null, firstLiquid);
     }
 
@@ -583,6 +644,11 @@ public final class BridgeHttpServer {
     }
 
     private void publishEvent(String type, String message, String eventLevel, String region, BlockVector3 blockPos) {
-        eventHub.publish(new BridgeEvent(type, message, eventLevel, region, blockPos));
+        publishEvent(type, message, eventLevel, region, blockPos, null);
+    }
+
+    private void publishEvent(
+            String type, String message, String eventLevel, String region, BlockVector3 blockPos, Map<String, Object> attrs) {
+        eventHub.publish(new BridgeEvent(type, message, eventLevel, region, blockPos, attrs));
     }
 }

@@ -61,6 +61,9 @@ class UnifiedPlanState(TypedDict, total=False):
     structured_events: List[Dict[str, Any]]
     structured_event_history: List[Dict[str, Any]]
     perception_history: List[Dict[str, Any]]
+    perception_summary: str
+    perception_profile: Dict[str, Any]
+    perception_confidence: Optional[float]
     recovery_hints: List[str]
 
 
