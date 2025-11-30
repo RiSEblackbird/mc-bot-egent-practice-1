@@ -167,6 +167,8 @@ class ActionGraph:
         backlog: List[Dict[str, str]],
         rule: ActionTaskRule,
         explicit_coords: Optional[Tuple[int, int, int]] = None,
+        structured_event_history: Optional[List[Dict[str, Any]]] = None,
+        perception_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
         """LangGraph を実行し、処理結果を元のインターフェースへ変換する。"""
 
@@ -181,6 +183,8 @@ class ActionGraph:
             "active_role": self._orchestrator.current_role,
             "role_transitioned": False,
             "structured_events": [],
+            "structured_event_history": list(structured_event_history or []),
+            "perception_history": list(perception_history or []),
         }
         with span_context(
             "langgraph.action_graph.run",
@@ -278,7 +282,11 @@ class ActionGraph:
                 step_label="initialize_action",
                 base=base,
                 inputs={"category": state.get("category"), "step": state.get("step")},
-                outputs={"active_role": base["active_role"]},
+                outputs={
+                    "active_role": base["active_role"],
+                    "perception_samples": len(state.get("perception_history") or []),
+                    "event_samples": len(state.get("structured_event_history") or []),
+                },
             )
 
         async def seek_skill(state: _ActionState) -> Dict[str, Any]:
@@ -440,6 +448,10 @@ class ActionGraph:
             step = state["step"]
             explicit_coords = state.get("explicit_coords")
             last_target = state.get("last_target_coords")
+            perception_history = state.get("perception_history") or []
+            recent_perception = perception_history[-1] if perception_history else {}
+            hunger_level = recent_perception.get("food_level")
+            weather = recent_perception.get("weather")
             target = explicit_coords or orchestrator._extract_coordinates(step)  # type: ignore[attr-defined]
             if target is None:
                 target = last_target
@@ -471,6 +483,17 @@ class ActionGraph:
                     "updated_target": last_target,
                     "failure_detail": error_detail,
                 }
+            if isinstance(hunger_level, (int, float)) and hunger_level <= orchestrator.low_food_threshold:  # type: ignore[attr-defined]
+                # コンテキストを LangGraph の後続ノードへ共有し、空腹時のフォローアップを促す。
+                state["backlog"].append(
+                    {
+                        "category": "status",
+                        "step": step,
+                        "label": "空腹度が低いため、食料補給を検討してください",
+                        "weather": weather,
+                        "food_level": hunger_level,
+                    }
+                )
             if state.get("role_transitioned"):
                 active_role = state.get("active_role", "")
                 reason = state.get("role_transition_reason") or ""
@@ -911,10 +934,13 @@ class UnifiedAgentGraph:
     async def run(self, user_msg: str, context: Dict[str, Any]) -> UnifiedPlanState:
         """ユーザー発話を起点に統合 LangGraph を実行する。"""
 
+        structured_events, perception_history = self._orchestrator._collect_recent_mineflayer_context()  # type: ignore[attr-defined]
         initial_state: UnifiedPlanState = {
             "user_msg": user_msg,
             "context": context,
             "structured_events": [],
+            "structured_event_history": structured_events,
+            "perception_history": perception_history,
         }
         return await self._graph.ainvoke(initial_state)
 

@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -68,6 +69,9 @@ STATUS_REFRESH_BACKOFF_SECONDS = float(os.getenv("STATUS_REFRESH_BACKOFF_SECONDS
 BLOCK_EVAL_RADIUS = int(os.getenv("BLOCK_EVAL_RADIUS", "3"))
 BLOCK_EVAL_TIMEOUT_SECONDS = float(os.getenv("BLOCK_EVAL_TIMEOUT_SECONDS", "3.0"))
 BLOCK_EVAL_HEIGHT_DELTA = int(os.getenv("BLOCK_EVAL_HEIGHT_DELTA", "1"))
+STRUCTURED_EVENT_HISTORY_LIMIT = int(os.getenv("STRUCTURED_EVENT_HISTORY_LIMIT", "10"))
+PERCEPTION_HISTORY_LIMIT = int(os.getenv("PERCEPTION_HISTORY_LIMIT", "5"))
+LOW_FOOD_THRESHOLD = int(os.getenv("LOW_FOOD_THRESHOLD", "6"))
 
 logger.info(
     "Agent configuration loaded (ws_url=%s, bind=%s:%s, default_target=%s)",
@@ -344,6 +348,10 @@ class AgentOrchestrator:
         self._current_role_id: str = "generalist"
         self._pending_role: Optional[Tuple[str, Optional[str]]] = None
         self._shared_agents: Dict[str, Dict[str, Any]] = {}
+        # LangGraph 側での意思決定に活用する閾値や履歴上限をまとめて保持する。
+        self.low_food_threshold = LOW_FOOD_THRESHOLD
+        self.structured_event_history_limit = STRUCTURED_EVENT_HISTORY_LIMIT
+        self.perception_history_limit = PERCEPTION_HISTORY_LIMIT
         # MineDojo クライアントを初期化し、テスト時にはスタブを差し込めるようにする。
         self.minedojo_client = minedojo_client or MineDojoClient(self.config.minedojo)
         self._active_minedojo_mission: Optional[MineDojoMission] = None
@@ -653,9 +661,126 @@ class AgentOrchestrator:
             self.memory.set("general_status_detail", data)
             if isinstance(data, dict) and "digPermission" in data:
                 self.memory.set("dig_permission", data.get("digPermission"))
+            self._record_structured_event_history(data)
+            self._store_perception_from_status(data)
             return
 
         self.logger.info("cache_status skipped unknown kind=%s", kind)
+
+    def _record_structured_event_history(self, payload: Dict[str, Any]) -> None:
+        """Mineflayer 側の構造化イベント配列を履歴に蓄積する。"""
+
+        history = self._load_history("structured_event_history")
+        limit = getattr(self, "structured_event_history_limit", STRUCTURED_EVENT_HISTORY_LIMIT)
+        for key in ("structuredEvents", "events", "eventHistory"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                new_events = [item for item in candidate if isinstance(item, dict)]
+                if new_events:
+                    history.extend(new_events)
+                break
+
+        trimmed = history[-limit:]
+        self.memory.set("structured_event_history", trimmed)
+
+    def _store_perception_from_status(self, status: Dict[str, Any]) -> None:
+        """general ステータスに含まれる perception 情報を履歴へ追加する。"""
+
+        perception_payload = None
+        for key in ("perception", "perceptionSnapshot", "perception_snapshot"):
+            candidate = status.get(key)
+            if isinstance(candidate, dict):
+                perception_payload = candidate
+                break
+
+        snapshot = self._build_perception_snapshot(perception_payload)
+        if snapshot is None:
+            return
+
+        history = self._append_perception_snapshot(snapshot)
+        self.memory.set("perception_snapshots", history)
+
+    def _build_perception_snapshot(self, extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """位置・空腹度・天候をまとめた perception スナップショットを生成する。"""
+
+        pos_detail = self.memory.get("player_pos_detail") or {}
+        general_detail = self.memory.get("general_status_detail") or {}
+        if not isinstance(pos_detail, dict):
+            pos_detail = {}
+        if not isinstance(general_detail, dict):
+            general_detail = {}
+        base = extra if isinstance(extra, dict) else {}
+
+        position = None
+        if all(axis in pos_detail for axis in ("x", "y", "z")):
+            position = {
+                "x": pos_detail.get("x"),
+                "y": pos_detail.get("y"),
+                "z": pos_detail.get("z"),
+                "dimension": pos_detail.get("dimension") or pos_detail.get("world"),
+            }
+
+        hunger = base.get("food") or base.get("foodLevel") or base.get("hunger")
+        if hunger is None:
+            hunger = (
+                general_detail.get("food")
+                or general_detail.get("foodLevel")
+                or general_detail.get("hunger")
+            )
+
+        weather = base.get("weather") or general_detail.get("weather")
+
+        snapshot = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "position": position,
+            "food_level": hunger,
+            "health": base.get("health") or general_detail.get("health"),
+            "weather": weather,
+            "is_raining": base.get("isRaining") or general_detail.get("isRaining"),
+        }
+
+        if not any(value is not None for value in snapshot.values()):
+            return None
+
+        return snapshot
+
+    def _append_perception_snapshot(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """perception スナップショットを履歴へ追加し、上限件数で丸める。"""
+
+        history = self._load_history("perception_snapshots")
+        limit = getattr(self, "perception_history_limit", PERCEPTION_HISTORY_LIMIT)
+        history.append(snapshot)
+        return history[-limit:]
+
+    def _load_history(self, key: str) -> List[Dict[str, Any]]:
+        """メモリに格納された履歴リストを辞書のみ抽出して返す。"""
+
+        raw = self.memory.get(key, [])
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+
+    def _collect_recent_mineflayer_context(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Mineflayer 由来の履歴を LangGraph へ渡すためにまとめて取得する。"""
+
+        structured_event_history = self._load_history("structured_event_history")
+        perception_history = self._load_history("perception_snapshots")
+
+        # 直近のメモリ内容から最新スナップショットを生成し、欠損時にも状態復元できるようにする。
+        snapshot = self._build_perception_snapshot()
+        if snapshot:
+            perception_history.append(snapshot)
+        event_limit = getattr(self, "structured_event_history_limit", STRUCTURED_EVENT_HISTORY_LIMIT)
+        perception_limit = getattr(self, "perception_history_limit", PERCEPTION_HISTORY_LIMIT)
+        structured_event_history = structured_event_history[-event_limit:]
+        perception_history = perception_history[-perception_limit:]
+
+        if snapshot:
+            self.memory.set("perception_snapshots", perception_history)
+        if structured_event_history:
+            self.memory.set("structured_event_history", structured_event_history)
+
+        return structured_event_history, perception_history
 
     async def _collect_block_evaluations(self) -> None:
         """Bridge から近傍ブロックの情報を収集し、危険度の概略をメモリへ保持する。"""
@@ -1874,6 +1999,7 @@ class AgentOrchestrator:
             )
             return False, last_target_coords, None
 
+        structured_event_history, perception_history = self._collect_recent_mineflayer_context()
         self.logger.info(
             "delegating action category=%s step='%s' to langgraph module=%s",
             category,
@@ -1888,6 +2014,8 @@ class AgentOrchestrator:
             backlog=backlog,
             rule=rule,
             explicit_coords=explicit_coords,
+            structured_event_history=structured_event_history,
+            perception_history=perception_history,
         )
         return handled, updated_target, failure_detail
 
