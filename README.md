@@ -158,7 +158,7 @@ Python エージェントは directive メタデータを `Actions.begin_directi
 
 #### 3.2.6 周囲状況の即時共有
 
-Node 側が push する `perception` イベントや `gatherStatus(kind=\"environment\")` の結果は `AgentOrchestrator._ingest_perception_snapshot()` で正規化され、`perception_history` と `perception_summary` に蓄積されます。
+Node 側が push する `perception` イベントや `gatherStatus(kind=\"environment\")` の結果は Python 側の `Agent._ingest_perception_snapshot()`（`python/agent.py`）で正規化され、`perception_history` と `perception_summary` に蓄積されます。
 要約には敵対モブ数・危険ブロック・照度・天候などが 1 行で記録され、LangGraph の状態・LLM プロンプト・障壁通知・ActionGraph のバックログ判断にそのまま利用されます。
 `bridge_event_reports` に含まれる attributes（例: job_id, hazard, world）も summary へ取り込まれるため、Paper 側で発生した危険と Mineflayer 近傍の観測値をセットで追跡できるようになりました。
 
@@ -269,40 +269,68 @@ python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --sect
 
 ## 4. .env
 
-`env.example` を `.env` にコピーし、中身を設定します（Python側で読み込み）。
+`env.example` を `.env` にコピーしてから、下記のカテゴリごとに値を調整してください。表にない項目は既定値のままでも安全に起動できますが、利用する機能に応じて明示設定を推奨します。
 
-* `OPENAI_API_KEY`: OpenAI の API キー
-* `OPENAI_BASE_URL`（任意。例: `https://api.openai.com/v1` のようにスキーム付きで指定。スキームを省いた場合は `http://` が自動補完され、実行時ログへ警告が出力されます）
-* `OPENAI_MODEL`: 既定 `gpt-5-mini`
-* `OPENAI_TEMPERATURE`: 0.0～2.0 の範囲で温度を調整。**温度固定モデル（例: gpt-5-mini）では無視され、ログに警告が出力されます。**
-* `OPENAI_VERBOSITY`: gpt-5 系モデル専用の応答詳細度。`low` / `medium` / `high` のいずれかを設定します（未設定なら API 既定値を利用）。
-* `OPENAI_REASONING_EFFORT`: gpt-5 系モデル専用の推論強度。`low` / `medium` / `high` のいずれかを指定し、空欄の場合は OpenAI 側の既定値に従います。
-* `WS_URL`: Python→Node の WebSocket（既定 `ws://node-bot:8765`。Docker Compose ではサービス名解決で疎通）
-* `WS_HOST` / `WS_PORT`: Node 側 WebSocket サーバーのバインド先（既定 `0.0.0.0:8765`）
-* `AGENT_WS_HOST` / `AGENT_WS_PORT`: Python エージェントが Node からのチャットを受け付ける WebSocket サーバーのバインド先（既定 `0.0.0.0:9000`）
-* `AGENT_WS_URL`: Node 側が Python へ接続するための URL。Docker Compose では `ws://python-agent:9000` を既定とし、ローカル実行時は `ws://127.0.0.1:9000` などへ変更します。スキームを省略すると `ws://` が自動補完され、ホストやポートが未設定・不正な値だった場合も Docker 環境に合わせて安全な既定へフォールバックします。
-* `DEFAULT_MOVE_TARGET`: LLM プラン内で座標が省略された移動ステップ用のフォールバック座標（例 `0,64,0`）
-* `MC_HOST` / `MC_PORT`: Paper サーバー（既定 `localhost:25565`、Docker 実行時は自動で `host.docker.internal` へフォールバック）
-* `MC_VERSION`: Mineflayer が利用する Minecraft プロトコルのバージョン。Paper 1.21.1 を想定した既定値 `1.21.1` を含め、minecraft-data が対応するラベルを指定してください。
-* `MC_RECONNECT_DELAY_MS`: 接続失敗時に Mineflayer ボットが再接続を試みるまでの待機時間（ミリ秒、既定 `5000`）
-* `MOVE_GOAL_TOLERANCE`: moveTo コマンドで利用する GoalNear の許容距離（ブロック数）。既定値は `3` で、1～30 の範囲に丸められます。
-* `BOT_USERNAME`: ボットの表示名（例 `HelperBot`）
-* `AUTH_MODE`: `offline`（開発時推奨）/ `microsoft`
-* `MINEDOJO_API_BASE_URL`: MineDojo API のベース URL（既定: `https://api.minedojo.org/v1`）
-* `MINEDOJO_API_KEY`: MineDojo API キー。未設定の場合はローカルデータセットのみ参照します。
-* `MINEDOJO_DATASET_DIR`: ローカルに配置した MineDojo データセットのルートディレクトリ。`missions/` と `demos/` サブディレクトリを想定。
-* `MINEDOJO_CACHE_DIR`: API 応答やデモをキャッシュするディレクトリ（既定: `var/cache/minedojo`）
-* `MINEDOJO_REQUEST_TIMEOUT`: API リクエストのタイムアウト秒数（既定: `10.0`）。0 以下の値は警告の上で既定値に丸められます。
-* `OTEL_EXPORTER_OTLP_ENDPOINT`: OpenTelemetry OTLP エクスポート先の URL。未指定なら `http://localhost:4318` を使用します。
-* `OTEL_TRACES_SAMPLER_RATIO`: トレースのサンプリング率（0.0～1.0）。開発時は 1.0 で全件出力し、本番では必要に応じて絞り込みます。
-* `OTEL_SERVICE_NAME`: Collector 上で識別しやすいサービス名。Mineflayer 側は既定で `mc-node-bot` を名乗ります。
-* `OTEL_RESOURCE_ENVIRONMENT`: `development` / `staging` / `production` などのデプロイ環境。Collector 側のフィルタリングに利用できます。
+### 4.1 OpenAI / プランナー
+- `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `OPENAI_TEMPERATURE`, `OPENAI_VERBOSITY`, `OPENAI_REASONING_EFFORT`  
+  Responses API の接続情報と推論パラメータ。gpt-5-mini のような温度固定モデルでは `OPENAI_TEMPERATURE` を送信しないため、値を入れてもログに警告が出るだけで無視されます。
+- `LLM_TIMEOUT_SECONDS`  
+  Responses API 呼び出しを強制的に打ち切る秒数。デフォルトは 30 秒。
 
-LangGraph のノード実行、Responses API 呼び出し、AgentBridge HTTP 通信では OpenTelemetry の span を自動で開始します。`OTEL_EXPORTER_OTLP_ENDPOINT`
-とサンプリング率を設定すると、`langgraph_node_id` や `checkpoint_id` などの属性付きでトレースを収集できます。
-Mineflayer 側も WebSocket 受信ループや `gatherStatus` / `invokeSkill` などの各コマンド、AgentBridge 通知、再接続予約を span で計測し、
-`command.type` や `mineflayer.response_ms`、`agent_event.type` といったログと同じキーで属性を付与します。Collector が OTLP/HTTP を受け付ける状態で
-起動すれば、Node 側の実行時間ヒストグラムや再接続カウンターをメトリクスとして収集できます。
+### 4.2 LangSmith / 可観測性
+- `LANGSMITH_ENABLED`, `LANGSMITH_API_URL`, `LANGSMITH_PROJECT`, `LANGSMITH_API_KEY`, `LANGSMITH_TAGS`  
+  LangSmith トレース送信のフラグと接続先。
+- `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER_RATIO`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ENVIRONMENT`  
+  OpenTelemetry の送信先とサンプリング率。Collector が無い環境ではデフォルト (`http://localhost:4318`, ratio=1.0) のままでも問題ありません。
+
+### 4.3 Python ↔ Node WebSocket / キュー設定
+- `WS_URL`, `WS_HOST`, `WS_PORT`  
+  Node（Mineflayer）が公開する WebSocket（Python→Node のコマンド送信用）。
+- `AGENT_WS_HOST`, `AGENT_WS_PORT`, `AGENT_WS_URL`  
+  Python エージェントが受信する WebSocket（チャット/イベント送信用）。ホスト/ポート指定に失敗すると Docker 検知ロジックで `python-agent:9000` へフォールバックします。
+- `AGENT_WS_CONNECT_TIMEOUT_MS`, `AGENT_WS_SEND_TIMEOUT_MS`, `AGENT_WS_HEALTHCHECK_INTERVAL_MS`, `AGENT_WS_RECONNECT_DELAY_MS`, `AGENT_WS_MAX_RETRIES`  
+  Mineflayer から Python への接続維持ポリシー。
+- `AGENT_EVENT_BATCH_INTERVAL_MS`, `AGENT_EVENT_BATCH_MAX_SIZE`, `AGENT_EVENT_QUEUE_MAX_SIZE`  
+  Node 側で multi-agent イベントをまとめて送信する際のバッチング設定。
+- `AGENT_QUEUE_MAX_SIZE`, `WORKER_TASK_TIMEOUT_SECONDS`  
+  Python 側のチャット処理キューの上限と、1 タスクあたりの最大処理時間。
+- `DEFAULT_MOVE_TARGET`  
+  LLM プランで座標が省略された移動ステップのフォールバック座標（例: `0,64,0`）。
+- `STRUCTURED_EVENT_HISTORY_LIMIT`, `PERCEPTION_HISTORY_LIMIT`  
+  LangGraph へ保持する構造化イベント/認知スナップショットの件数。
+- `PERCEPTION_ENTITY_RADIUS`, `PERCEPTION_BLOCK_RADIUS`, `PERCEPTION_BLOCK_HEIGHT`, `PERCEPTION_BROADCAST_INTERVAL_MS`  
+  Mineflayer が push する `perception` イベントのスキャン範囲。狭い坑道ほど値を下げるとコストを抑えられます。
+- `LOW_FOOD_THRESHOLD`  
+  Bot の満腹度がこの値を下回ったら LangGraph が警告を付与し、補給タスクを優先します。
+
+### 4.4 Mineflayer / Minecraft 実行環境
+- `MC_HOST`, `MC_PORT`, `MC_VERSION`, `MC_RECONNECT_DELAY_MS`  
+  Paper サーバーへの接続先と再接続ポリシー。Docker で `localhost` を指定すると自動的に `host.docker.internal` へ置き換わります。
+- `BOT_USERNAME`, `AUTH_MODE` (`offline` / `microsoft`)  
+  ボットの表示名と認証方式。
+- `CONTROL_MODE` (`command` / `vpt` / `hybrid`), `VPT_TICK_INTERVAL_MS`, `VPT_MAX_SEQUENCE_LENGTH`  
+  VPT 再生と通常コマンドの切り替え方。`hybrid` では LangGraph の directive 単位で VPT を差し込めます。
+- `SKILL_LIBRARY_PATH`, `SKILL_HISTORY_PATH`  
+  Python 側のスキルライブラリ JSON と、Mineflayer 側の NDJSON ログの保存パス。共有ドライブを使う場合はここで一元管理します。
+
+### 4.5 AgentBridge / Paper 連携
+- `BRIDGE_URL`, `BRIDGE_API_KEY`, `BRIDGE_HTTP_TIMEOUT`, `BRIDGE_HTTP_RETRY`  
+  Paper の HTTP プラグイン（AgentBridge）へ接続するためのエンドポイントと再試行ポリシー。
+- `BRIDGE_EVENT_STREAM_ENABLED`, `BRIDGE_EVENT_STREAM_PATH`, `BRIDGE_EVENT_STREAM_RECONNECT_DELAY`  
+  SSE ベースの危険通知ストリームを購読する際の設定。チャットレス運用時もジョブ進捗や液体警告を push で受け取れます。
+
+### 4.6 MineDojo / シミュレーション
+- `MINEDOJO_API_BASE_URL`, `MINEDOJO_API_KEY`, `MINEDOJO_DATASET_DIR`, `MINEDOJO_CACHE_DIR`, `MINEDOJO_REQUEST_TIMEOUT`  
+  MineDojo API とローカルデータセットの配置。API キーを空にするとローカル JSON のみ参照します。
+- `MINEDOJO_SIM_ENV`, `MINEDOJO_SIM_SEED`, `MINEDOJO_SIM_MAX_STEPS`  
+  自己対話シミュレーション（` MineDojoSelfDialogueExecutor`）の既定パラメータ。
+
+### 4.7 トンネルモード / CLI
+- `TUNNEL_TORCH_INTERVAL`, `TUNNEL_FUNCTIONAL_NEAR_RADIUS`, `TUNNEL_LIQUIDS_STOP`, `TUNNEL_WINDOW_LENGTH`  
+  `python/cli.py tunnel` コマンドの既定値。たいまつ間隔や液体検知で停止するかどうかを環境ごとに変更できます。
+
+### 4.8 OpenTelemetry / LangGraph の補足
+LangGraph のノード実行、Responses API 呼び出し、AgentBridge HTTP 通信では OpenTelemetry の span を自動で開始します。`OTEL_EXPORTER_OTLP_ENDPOINT` と `OTEL_TRACES_SAMPLER_RATIO` を設定すると、`langgraph_node_id` や `checkpoint_id` を含むトレースを収集できます。Mineflayer 側も WebSocket 受信ループや `gatherStatus` / `invokeSkill` コマンドを span・メトリクスに記録するため、Collector が OTLP/HTTP を受け付ける状態で起動すれば、実行時間ヒストグラムや再接続カウンターをまとめて可視化できます。
 
 ## 5. 使い方（ゲーム内）
 
