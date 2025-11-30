@@ -80,9 +80,17 @@ class TunnelMode:
                 window_positions = list(
                     self._generate_window(anchor, direction, section, step, min(TUNNEL_WINDOW_LENGTH, length - step))
                 )
-                evaluations = await self._call_bridge(
-                    self._bridge.bulk_eval, world, window_positions, job_id
-                )
+                try:
+                    evaluations = await self._call_bridge(
+                        self._bridge.bulk_eval, world, window_positions, job_id
+                    )
+                except BridgeError as exc:
+                    if self._is_liquid_stop(exc):
+                        logger.warning(
+                            "tunnel.stop_condition job_id=%s reason=liquid_detected step=%d", job_id, step
+                        )
+                        break
+                    raise
                 cp_results = await self._call_bridge(
                     self._bridge.is_player_placed_bulk, world, window_positions
                 )
@@ -102,13 +110,30 @@ class TunnelMode:
                     await self._actions.place_torch(torch_pos)
                     torch_counter = 0
                 step += 1
-                advance = await self._call_bridge(self._bridge.advance, job_id, 1)
+                try:
+                    advance = await self._call_bridge(self._bridge.advance, job_id, 1)
+                except BridgeError as exc:
+                    if self._is_liquid_stop(exc):
+                        logger.warning(
+                            "tunnel.stop_condition job_id=%s reason=liquid_detected step=%d", job_id, step
+                        )
+                        break
+                    raise
                 if advance.get("finished"):
                     logger.info("tunnel.job_finished job_id=%s", job_id)
                     break
         finally:
             await self._call_bridge(self._bridge.stop, job_id)
             logger.info("tunnel.job_stopped job_id=%s", job_id)
+
+    def _is_liquid_stop(self, exc: BridgeError) -> bool:
+        """BridgeError が液体検知による 409 かどうかを簡潔に判定する。"""
+
+        payload = getattr(exc, "payload", None)
+        if exc.status_code == 409 and isinstance(payload, dict):
+            if payload.get("error") == "liquid_detected" or payload.get("stop"):
+                return True
+        return False
 
     async def _call_bridge(self, func, *args, **kwargs):  # type: ignore[no-untyped-def]
         loop = asyncio.get_running_loop()

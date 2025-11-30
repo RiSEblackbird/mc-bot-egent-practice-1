@@ -32,6 +32,11 @@ def _default_headers() -> Dict[str, str]:
 class BridgeError(RuntimeError):
     """ブリッジ API との通信に失敗した際に送出されるアプリケーション例外。"""
 
+    def __init__(self, message: str, status_code: int | None = None, payload: Any | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.payload = payload
+
 
 @dataclass
 class Frontier:
@@ -116,7 +121,19 @@ class BridgeClient:
             try:
                 response = self._client.request(method, url, json=json)
                 if response.status_code >= 400:
-                    raise BridgeError(f"AgentBridge error {response.status_code}: {response.text}")
+                    payload: Any | None = None
+                    detail = response.text
+                    try:
+                        payload = response.json()
+                        if isinstance(payload, dict) and payload.get("error"):
+                            detail = str(payload.get("error"))
+                    except jsonlib.JSONDecodeError:
+                        payload = None
+                    raise BridgeError(
+                        f"AgentBridge error {response.status_code}: {detail}",
+                        status_code=response.status_code,
+                        payload=payload,
+                    )
                 if not response.content:
                     return None
                 return response.json()

@@ -8,6 +8,7 @@
 - `com.sun.net.httpserver.HttpServer` を用いた軽量 HTTP サーバーを起動し、`X-API-Key` 認証を必須化。
 - `/v1/jobs/*` エンドポイントで継続採掘ジョブの開始・前進・停止を提供。
 - `/v1/blocks/bulk_eval` と `/v1/coreprotect/is_player_placed_bulk` で断面評価と CoreProtect 照会をまとめて返却。
+- 液体を検知した場合は `/v1/blocks/bulk_eval` が HTTP 409 と停止座標を返し、`/v1/jobs/advance` も同様にブロック状態を明示する。
 - WorldGuard 操作はメインスレッドで行うため、`BukkitScheduler#callSyncMethod` を利用して同期実行。
 - CoreProtect API は実行時リフレクションで解決し、jar をリポジトリへ含めなくてもビルドできるように配慮。
 - `config.yml` にフロンティアの窓長や安全設定、HTTP タイムアウトを集約。
@@ -15,6 +16,7 @@
 ## Python: Bridge クライアントと Tunnel モード
 
 - `python/bridge_client.py` で HTTP クライアントを実装。指数バックオフ付きで再試行し、JSON パースを一元管理。
+- Bridge 側からの 409(液体検知) 応答を `BridgeError` の `status_code` と `payload` に格納し、Mineflayer への追加命令を止められるようにした。
 - `python/heuristics/artificial_filters.py` で自然ブロック判定と採掘マスク生成ロジックを定義。
 - `python/modes/tunnel.py` の `TunnelMode` がメインループ。AgentBridge からバルク評価を取得し、Mineflayer へ `mineBlocks` / `placeTorch` コマンドを送信。
 - `python/cli.py` に `tunnel` サブコマンドを追加し、CLI から継続採掘ジョブを起動可能にした。

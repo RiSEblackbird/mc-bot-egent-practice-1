@@ -149,7 +149,7 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 
 * `python/utils/logging.py` に構造化ロギングユーティリティを追加し、LangGraph ノード ID・チェックポイント ID・イベントレベルを JSON 形式で出力します。`log_structured_event` を利用すると、ノード固有の `context` メタデータを辞書で渡せます。
 * `python/agent_orchestrator.py` の建築ノードはチェックポイント更新時に `action.handle_building` というノード名でログを記録し、`event_level="recovery"` かどうかでクラッシュ復旧か通常進行かを区別します。調達計画や配置バッチもログへ含めるため、資材不足の原因調査が簡単になります。
-* `python/bridge_client.py` の HTTP 再試行も構造化ログへ統一し、最終的に失敗した場合は `event_level="fault"` を付けて LangGraph 側の再試行ノード連携に備えます。
+* `python/bridge_client.py` の HTTP 再試行も構造化ログへ統一し、最終的に失敗した場合は `event_level="fault"` を付けて LangGraph 側の再試行ノード連携に備えます。409 (液体検知) は `BridgeError` の `status_code`/`payload` に保存されるため、Mineflayer へ危険箇所を知らせて自律停止できます。
 * `python/agent.py` の ReAct ループは、各ステップの Thought/Action/Observation を `react_step` イベントとして構造化ログに記録し、Mineflayer から得られた実行結果を Observation フィールドへ即座に反映します。
 2025 年 2 月時点では `python/agent_orchestrator.py` に LangGraph ベースのステートマシンを導入し、採掘・建築・防衛の
 モジュールをノード単位で独立させました。これにより再計画時の分岐が視覚化され、`mine` → `equip` のような連鎖的な

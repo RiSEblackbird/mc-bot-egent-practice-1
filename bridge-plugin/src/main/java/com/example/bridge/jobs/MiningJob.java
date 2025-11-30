@@ -27,6 +27,8 @@ public final class MiningJob {
     private final String owner;
 
     private int progress; // 何ブロック前進したか
+    private boolean blockedByLiquid;
+    private BlockVector3 blockedAt;
 
     public MiningJob(
             UUID jobId,
@@ -50,6 +52,7 @@ public final class MiningJob {
         this.windowLength = Math.max(windowLength, 1);
         this.owner = owner;
         this.progress = 0;
+        this.blockedByLiquid = false;
     }
 
     public UUID jobId() {
@@ -90,6 +93,31 @@ public final class MiningJob {
 
     public boolean isFinished() {
         return progress >= length;
+    }
+
+    /**
+     * 液体検知などでジョブを一時停止する。現状は液体検知のみを対象とする。
+     */
+    public void blockForLiquid(BlockVector3 position) {
+        // 液体検知は最初の座標だけ保持し、後続の報告は無視して冪等性を保つ。
+        if (!blockedByLiquid) {
+            blockedByLiquid = true;
+            blockedAt = position;
+        }
+    }
+
+    /**
+     * ブロック状態かどうか。現時点では液体検知のみを理由とする。
+     */
+    public boolean isBlocked() {
+        return blockedByLiquid;
+    }
+
+    /**
+     * 液体で停止した座標を返す。停止していない場合は null を返す。
+     */
+    public BlockVector3 blockedPosition() {
+        return blockedAt;
     }
 
     public int windowLength() {
