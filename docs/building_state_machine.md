@@ -19,7 +19,8 @@
   `survey` を維持し、必要な情報が揃ったタイミングで `advance_building_state` が
   自動的に `procurement` へ切り替えます。
 - `procurement → placement`: `plan_material_procurement` が不足ゼロを返した瞬間に遷移。
-  これにより、資材不足が解消されるまで配置フェーズの実行を抑制します。
+  これにより、資材不足が解消されるまで配置フェーズの実行を抑制します。`_synchronize_reserved_materials`
+  が要求量と `inventory_summary` を突き合わせて予約数を丸めるため、LangGraph からの再開時にも矛盾しません。
 - `placement → inspection`: `plan_block_placement` が空リストを返し、`placed_blocks` が
   レイアウト総数に達した際に遷移します。未配置ブロックがある場合は
   `placement` を維持します。
@@ -57,6 +58,17 @@ survey --(資材要求確定)--> procurement --(不足なし)--> placement --(�
    - 例外が発生した場合は `rollback_building_state` を利用し、チェックポイントを一段階
      巻き戻してから再度 `advance_building_state` を呼び出します。これにより、
      途中まで進んだ配置でも安全にやり直せます。
+6. **チェックポイント ID と構造化ログの一貫性を保つ**
+   - `python/agent_orchestrator.py::handle_building` は `building_checkpoint_base_id` を
+     `building:{plan_step}` 形式で生成し、`phase` と `placed_blocks` を付与した
+     `checkpoint_id` を構造化ログ (`log_structured_event`) に記録します。復旧時は
+     `event_level=recovery` を付けるため、ログ検索や OpenTelemetry でフェーズ毎の
+     進捗が即座に追跡できます。
+7. **backlog へ調達・配置内容を文字列で残す**
+   - LangGraph の `backlog` には `procurement`／`placement` を
+     `"oak_planks:12"` や `"oak_planks@10,65,3"` のような可読テキストで残し、
+     Mineflayer で実装されていないアクションでもプレイヤーへ説明できる状態を
+     維持します。
 
 ## 3. 実装メモ
 

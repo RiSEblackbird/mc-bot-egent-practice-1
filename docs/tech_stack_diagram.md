@@ -28,7 +28,7 @@ graph TD
 
     %% Python LLM エージェント層
     subgraph PythonLayer["Python LLM エージェント"]
-        PyAgent["python/agent.py ほか<br/>Python 3.11 / openai / websockets / httpx / pydantic / LangGraph"]
+        PyAgent["python/agent.py ほか<br/>Python 3.12 / openai / websockets / httpx / pydantic / LangGraph"]
         MineDojo["MineDojo クライアント<br/>データセット / API（任意利用）"]
         VPT["VPT コントローラ<br/>PyTorch / HuggingFace Hub（任意利用）"]
         Reflexion["Reflexion / スキルライブラリ<br/>構造化ログ / skills ライブラリ"]
@@ -89,13 +89,13 @@ graph LR
     subgraph Runtime["ランタイム / 言語"]
         Java["Java 21"]
         NodeJS["Node.js 22<br/>(TypeScript)"]
-        Python["Python 3.11"]
+        Python["Python 3.12"]
         DockerRT["Docker / Docker Compose"]
     end
 
     %% Minecraft サーバー技術
     subgraph McServer["Minecraft サーバー技術"]
-        PaperAPI["Paper API 1.20.4+<br/>(1.21.1 サーバーを想定)"]
+        PaperAPI["Paper API 1.21.1+<br/>(Paper サーバーと同一バージョン)"]
         WorldGuard["WorldGuard"]
         CoreProtect["CoreProtect"]
         Jackson["Jackson（JSON / JSR-310）"]
@@ -199,6 +199,7 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 - HTTP 層では既存の SSE `/v1/events/stream` を強化しつつ、新たに WebSocket `/v1/events/ws` を追加して LangGraph ノードが pull せずともリアルタイムに push を受け取れるようにする。`bridge-plugin/src/main/java/com/example/bridge/http/BridgeHttpServer.java` の `EventStreamHandler` を共通のイベントマルチプレクサに差し替える想定。
 - Python 側では `BridgeClient.consume_event_stream()` と `agent.py::_handle_bridge_event()` を使い回し、チャットレス運用でも `BridgeEvent` が `bridge_event_reports` → `detection_reports` に自動でマージされる。これにより「今どこを掘れるか」を毎回ユーザーが質問する必要がなくなる。
 - 2025/11 アップデートでは `BridgeEvent` に `attributes` フィールドを追加し、ジョブ ID・危険カテゴリ・WorldGuard リージョン・液体/空洞カウントを SSE 上で共有できるようになった。Python 側はこれを `perception_summary` と統合し、周辺状況を 1 行で LLM へ渡す。
+- Python エージェントでは `BridgeClient.consume_event_stream()` → `Agent._handle_bridge_event()` → `Agent._ingest_perception_snapshot()` の経路で `perception_history_limit` 件の `perception_snapshots` / `bridge_event_reports` を更新し、LangGraph プロンプトや `Memory` で即座に再利用できる。
 
 ---
 
@@ -223,7 +224,7 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 
 ### 4.3 CLI / 運用フロー
 
-- blazity の CLI/Client パターンに倣い、`python/cli.py` へ `agentbridge jobs watch` サブコマンドを追加して SSE/WS を購読し、`job_started` や `danger_detected` のタイムラインをターミナルへ streaming 表示する。`--job-id` フィルタや `--format json` などのフラグで運用向けの絞り込みを用意する。
+- （計画中）blazity の CLI/Client パターンに倣い、`python/cli.py` へ `agentbridge jobs watch` サブコマンドを追加して SSE/WS を購読し、`job_started` や `danger_detected` のタイムラインをターミナルへ streaming 表示する。`--job-id` フィルタや `--format json` などのフラグで運用向けの絞り込みを用意する。
 - CLI からも `BRIDGE_EVENT_STREAM_PATH` / `BRIDGE_EVENT_STREAM_ENABLED` を尊重し、サーバーを UI なしで観測できるようにする。Paper 側のイベントを LangGraph だけでなく SRE/運用担当にも共有することで、チャット不在時でも危険通知が可視化される。
 - 上記 2 つの取り組みにより、「Python 側から問い合わせない限り Paper が沈黙する」という現状を解消し、LangGraph と CLI の両方で保護領域や危険ブロックを push で受け取れる構造に進化させる。
 
