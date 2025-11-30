@@ -56,6 +56,14 @@ const MC_RECONNECT_DELAY_MS = runtimeConfig.minecraft.reconnectDelayMs;
 const WS_HOST = runtimeConfig.websocket.host;
 const WS_PORT = runtimeConfig.websocket.port;
 const AGENT_WS_URL = runtimeConfig.agentBridge.url;
+const AGENT_WS_CONNECT_TIMEOUT_MS = runtimeConfig.agentBridge.connectTimeoutMs;
+const AGENT_WS_SEND_TIMEOUT_MS = runtimeConfig.agentBridge.sendTimeoutMs;
+const AGENT_WS_HEALTHCHECK_INTERVAL_MS = runtimeConfig.agentBridge.healthcheckIntervalMs;
+const AGENT_WS_RECONNECT_DELAY_MS = runtimeConfig.agentBridge.reconnectDelayMs;
+const AGENT_WS_MAX_RETRIES = runtimeConfig.agentBridge.maxRetries;
+const AGENT_EVENT_BATCH_INTERVAL_MS = runtimeConfig.agentBridge.batchFlushIntervalMs;
+const AGENT_EVENT_BATCH_MAX_SIZE = runtimeConfig.agentBridge.batchMaxSize;
+const AGENT_EVENT_QUEUE_MAX_SIZE = runtimeConfig.agentBridge.queueMaxSize;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 const MINING_APPROACH_TOLERANCE = 1;
 const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
@@ -105,8 +113,10 @@ interface MultiAgentEventPayload {
 
 interface AgentEventEnvelope {
   type: 'agentEvent';
-  args: { event: MultiAgentEventPayload };
+  args: { event?: MultiAgentEventPayload; events?: MultiAgentEventPayload[] };
 }
+
+type AgentBridgeSessionState = 'disconnected' | 'connecting' | 'connected';
 
 type GatherStatusKind = 'position' | 'inventory' | 'general';
 
@@ -266,6 +276,14 @@ const PRIMARY_AGENT_ID = 'primary';
 const skillRegistry = new Map<string, RegisteredSkill>();
 let skillHistoryInitialized = false;
 let isVptPlaybackActive = false;
+const agentEventQueue: MultiAgentEventPayload[] = [];
+let agentBridgeSocket: WebSocket | null = null;
+let agentBridgeState: AgentBridgeSessionState = 'disconnected';
+let agentBridgeReconnectTimer: NodeJS.Timeout | null = null;
+let agentBridgeBatchTimer: NodeJS.Timeout | null = null;
+let agentBridgeHealthcheckTimer: NodeJS.Timeout | null = null;
+let agentBridgeFlushInFlight: Promise<void> | null = null;
+let lastAgentBridgePongAt = 0;
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
@@ -356,7 +374,7 @@ async function ensureSkillHistorySink(): Promise<void> {
   }
 }
 
-function logSkillEvent(level: 'info' | 'warn', event: string, context: Record<string, unknown>): void {
+function logSkillEvent(level: 'info' | 'warn' | 'error', event: string, context: Record<string, unknown>): void {
   const payload = {
     level,
     event,
@@ -368,9 +386,282 @@ function logSkillEvent(level: 'info' | 'warn', event: string, context: Record<st
     return;
   }
   ensureSkillHistorySink()
-    .then(() => appendFile(SKILL_HISTORY_PATH, `${JSON.stringify(payload)}
-`))
+    .then(() => appendFile(SKILL_HISTORY_PATH, `${JSON.stringify(payload)}\n`))
     .catch((error) => console.error('[SkillLog] failed to append event', error));
+}
+
+type StructuredLogLevel = 'info' | 'warn' | 'error';
+
+/**
+ * エージェントブリッジ関連のイベントを構造化ログへ一元出力する。
+ * 接続状態や送信結果を JSON で記録し、可観測性と新人メンバーの追跡性を高める。
+ */
+function logAgentBridgeEvent(level: StructuredLogLevel, event: string, context: Record<string, unknown>): void {
+  console.log(
+    JSON.stringify({
+      level,
+      event,
+      timestamp: new Date().toISOString(),
+      context,
+    }),
+  );
+}
+
+// 接続切断時に連続再接続を避けつつ再試行するためのシンプルなリトライキュー。
+function scheduleAgentBridgeReconnect(reason: string): void {
+  if (agentBridgeReconnectTimer) {
+    return;
+  }
+
+  agentBridgeReconnectTimer = setTimeout(() => {
+    agentBridgeReconnectTimer = null;
+    ensureAgentBridgeSession(reason);
+  }, AGENT_WS_RECONNECT_DELAY_MS);
+}
+
+function cleanupAgentBridgeSession(session?: WebSocket): void {
+  if (agentBridgeHealthcheckTimer) {
+    clearInterval(agentBridgeHealthcheckTimer);
+    agentBridgeHealthcheckTimer = null;
+  }
+
+  if (!session || session === agentBridgeSocket) {
+    agentBridgeSocket?.removeAllListeners();
+    agentBridgeSocket = null;
+    agentBridgeState = 'disconnected';
+  }
+}
+
+/**
+ * 定期的に ping/pong を送り、セッション生存を確認するヘルスチェックタイマー。
+ * pong 欠落が続いた場合は terminate して再接続ルートへ回す。
+ */
+function startAgentBridgeHealthcheck(session: WebSocket): void {
+  if (agentBridgeHealthcheckTimer) {
+    clearInterval(agentBridgeHealthcheckTimer);
+  }
+
+  agentBridgeHealthcheckTimer = setInterval(() => {
+    if (session !== agentBridgeSocket || session.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastAgentBridgePongAt > AGENT_WS_HEALTHCHECK_INTERVAL_MS * 2) {
+      logAgentBridgeEvent('warn', 'agent-bridge.healthcheck.timeout', {
+        sinceLastPongMs: now - lastAgentBridgePongAt,
+        intervalMs: AGENT_WS_HEALTHCHECK_INTERVAL_MS,
+      });
+      session.terminate();
+      return;
+    }
+
+    try {
+      session.ping();
+    } catch (error) {
+      logAgentBridgeEvent('error', 'agent-bridge.healthcheck.ping_failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      session.terminate();
+    }
+  }, AGENT_WS_HEALTHCHECK_INTERVAL_MS);
+}
+
+/**
+ * Python 側 WebSocket サーバーへの常駐接続を確立する。二重接続を避けつつ、
+ * 起動トリガーごとに接続状態を確認して不足時のみ新規セッションを張る。
+ */
+function ensureAgentBridgeSession(reason: string): void {
+  if (agentBridgeState !== 'disconnected') {
+    return;
+  }
+
+  if (agentBridgeReconnectTimer) {
+    clearTimeout(agentBridgeReconnectTimer);
+    agentBridgeReconnectTimer = null;
+  }
+
+  agentBridgeState = 'connecting';
+  const session = new WebSocket(AGENT_WS_URL);
+  agentBridgeSocket = session;
+
+  const connectTimeout = setTimeout(() => {
+    logAgentBridgeEvent('warn', 'agent-bridge.connect.timeout', {
+      timeoutMs: AGENT_WS_CONNECT_TIMEOUT_MS,
+      url: AGENT_WS_URL,
+    });
+    session.terminate();
+  }, AGENT_WS_CONNECT_TIMEOUT_MS);
+
+  const finalize = () => {
+    clearTimeout(connectTimeout);
+  };
+
+  session.once('open', () => {
+    finalize();
+    agentBridgeState = 'connected';
+    lastAgentBridgePongAt = Date.now();
+    logAgentBridgeEvent('info', 'agent-bridge.connected', { url: AGENT_WS_URL, reason });
+    startAgentBridgeHealthcheck(session);
+    void flushAgentEventQueue();
+  });
+
+  session.on('pong', () => {
+    lastAgentBridgePongAt = Date.now();
+  });
+
+  session.once('close', (code, reasonBuffer) => {
+    finalize();
+    cleanupAgentBridgeSession(session);
+    logAgentBridgeEvent('warn', 'agent-bridge.closed', {
+      code,
+      reason: reasonBuffer.toString() || 'no-reason',
+    });
+    scheduleAgentBridgeReconnect('closed');
+  });
+
+  session.once('error', (error) => {
+    finalize();
+    logAgentBridgeEvent('error', 'agent-bridge.error', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    cleanupAgentBridgeSession(session);
+    scheduleAgentBridgeReconnect('error');
+  });
+}
+
+/**
+ * 受信イベントをバッファへ積み、短い間隔でバッチ配送を行う。
+ * 混雑時は最古のイベントから破棄して最新状態の伝搬を優先する。
+ */
+function enqueueAgentEvent(event: MultiAgentEventPayload): void {
+  if (agentEventQueue.length >= AGENT_EVENT_QUEUE_MAX_SIZE) {
+    agentEventQueue.shift();
+    logAgentBridgeEvent('warn', 'agent-bridge.queue.trimmed', {
+      limit: AGENT_EVENT_QUEUE_MAX_SIZE,
+      channel: event.channel,
+      type: event.event,
+    });
+  }
+
+  agentEventQueue.push(event);
+  scheduleAgentEventFlush();
+  ensureAgentBridgeSession('enqueue');
+}
+
+function scheduleAgentEventFlush(): void {
+  if (agentBridgeBatchTimer) {
+    return;
+  }
+
+  agentBridgeBatchTimer = setTimeout(() => {
+    agentBridgeBatchTimer = null;
+    void flushAgentEventQueue();
+  }, AGENT_EVENT_BATCH_INTERVAL_MS);
+}
+
+/**
+ * バッファに溜まったイベントをまとめて送信する。接続未確立の場合は再接続を促し、
+ * 送信失敗時はキュー上限を守りながら再キューイングする。
+ */
+async function flushAgentEventQueue(): Promise<void> {
+  if (agentBridgeFlushInFlight) {
+    return agentBridgeFlushInFlight;
+  }
+
+  if (agentEventQueue.length === 0) {
+    return;
+  }
+
+  if (!agentBridgeSocket || agentBridgeState !== 'connected' || agentBridgeSocket.readyState !== WebSocket.OPEN) {
+    ensureAgentBridgeSession('flush-wait');
+    scheduleAgentEventFlush();
+    return;
+  }
+
+  const batch = agentEventQueue.splice(0, AGENT_EVENT_BATCH_MAX_SIZE);
+  agentBridgeFlushInFlight = sendAgentEventBatch(batch)
+    .catch((error) => {
+      logAgentBridgeEvent('error', 'agent-bridge.batch.failed', {
+        message: error instanceof Error ? error.message : String(error),
+        batchSize: batch.length,
+      });
+      const availableSlots = Math.max(0, AGENT_EVENT_QUEUE_MAX_SIZE - agentEventQueue.length);
+      if (availableSlots > 0) {
+        agentEventQueue.unshift(...batch.slice(0, availableSlots));
+      }
+      scheduleAgentEventFlush();
+    })
+    .finally(() => {
+      agentBridgeFlushInFlight = null;
+      if (agentEventQueue.length > 0) {
+        scheduleAgentEventFlush();
+      }
+    });
+
+  return agentBridgeFlushInFlight;
+}
+
+/**
+ * 送信タイムアウトとリトライ回数を考慮しながら、まとめてエンベロープを送る。
+ * 成功すれば構造化ログで詳細を残し、失敗時は上位で再キューイングする。
+ */
+async function sendAgentEventBatch(batch: MultiAgentEventPayload[]): Promise<void> {
+  const envelope: AgentEventEnvelope = { type: 'agentEvent', args: { events: batch } };
+  const startedAt = Date.now();
+  const maxAttempts = Math.max(1, AGENT_WS_MAX_RETRIES + 1);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await sendThroughActiveSession(envelope);
+      logAgentBridgeEvent('info', 'agent-bridge.batch.sent', {
+        batchSize: batch.length,
+        attempt,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    } catch (error) {
+      const isLastAttempt = attempt === maxAttempts;
+      logAgentBridgeEvent(isLastAttempt ? 'error' : 'warn', 'agent-bridge.batch.retry', {
+        attempt,
+        maxAttempts,
+        batchSize: batch.length,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      if (isLastAttempt) {
+        throw error;
+      }
+      scheduleAgentBridgeReconnect('send-retry');
+      await wait(AGENT_WS_RECONNECT_DELAY_MS);
+    }
+  }
+}
+
+function sendThroughActiveSession(payload: AgentEventEnvelope): Promise<void> {
+  const session = agentBridgeSocket;
+  if (!session || agentBridgeState !== 'connected' || session.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('agent bridge is not connected'));
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      session.terminate();
+      reject(new Error('agent bridge send timeout'));
+    }, AGENT_WS_SEND_TIMEOUT_MS);
+
+    session.send(JSON.stringify(payload), (error) => {
+      clearTimeout(timeout);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function wait(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
 /**
@@ -405,42 +696,20 @@ async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
     const startedAt = Date.now();
 
     try {
-      await new Promise((resolve) => {
-        const envelope: AgentEventEnvelope = { type: 'agentEvent', args: { event } };
-        const ws = new WebSocket(AGENT_WS_URL);
-        const timeout = setTimeout(() => {
-          console.warn('[AgentEvent] bridge timeout reached, terminating connection');
-          ws.terminate();
-          resolve();
-        }, 5_000);
-
-        const cleanup = () => {
-          clearTimeout(timeout);
-          ws.removeAllListeners();
-          resolve();
-        };
-
-        ws.once('open', () => {
-          ws.send(JSON.stringify(envelope));
-        });
-
-        ws.once('message', () => {
-          ws.close();
-          cleanup();
-        });
-
-        ws.once('close', () => {
-          cleanup();
-        });
-
-        ws.once('error', (error) => {
-          console.error('[AgentEvent] failed to deliver event', error);
-          cleanup();
-        });
+      enqueueAgentEvent(event);
+      logAgentBridgeEvent('info', 'agent-bridge.enqueued', {
+        channel: event.channel,
+        type: event.event,
+        queueSize: agentEventQueue.length,
       });
+      span.setAttribute('agent_event.queue_size', agentEventQueue.length);
     } catch (error) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
-      console.error('[AgentEvent] unexpected error while emitting event', error);
+      logAgentBridgeEvent('error', 'agent-bridge.enqueue.failed', {
+        message: error instanceof Error ? error.message : String(error),
+        channel: event.channel,
+        type: event.event,
+      });
     } finally {
       const durationMs = Date.now() - startedAt;
       span.setAttribute('agent_event.latency_ms', durationMs);
@@ -632,6 +901,9 @@ function scheduleReconnect(reason: string = 'unknown'): void {
 
 // 初回接続を起動
 startBotLifecycle();
+
+// LangGraph 共有イベント用の WebSocket セッションを先に確立し、初回イベント配送の待ち時間を抑える。
+ensureAgentBridgeSession('startup');
 
 if (SKILL_HISTORY_PATH) {
   void ensureSkillHistorySink();

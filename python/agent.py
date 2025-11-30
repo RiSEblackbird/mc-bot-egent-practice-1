@@ -460,53 +460,63 @@ class AgentOrchestrator:
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
 
-        event = args.get("event")
-        if not isinstance(event, dict):
+        events: List[Dict[str, Any]] = []
+        raw_events = args.get("events")
+        if isinstance(raw_events, list):
+            events.extend([item for item in raw_events if isinstance(item, dict)])
+
+        single_event = args.get("event")
+        if isinstance(single_event, dict):
+            events.append(single_event)
+
+        if not events:
             self.logger.error("agent event payload missing event=%s", args)
             return
 
-        channel = str(event.get("channel", ""))
-        if channel != "multi-agent":
-            self.logger.warning("unsupported event channel=%s", channel)
-            return
+        for event in events:
+            channel = str(event.get("channel", ""))
+            if channel != "multi-agent":
+                self.logger.warning("unsupported event channel=%s", channel)
+                continue
 
-        agent_id = str(event.get("agentId", "primary") or "primary")
-        agent_state = dict(self._shared_agents.get(agent_id, {}))
-        agent_state["timestamp"] = event.get("timestamp")
+            agent_id = str(event.get("agentId", "primary") or "primary")
+            agent_state = dict(self._shared_agents.get(agent_id, {}))
+            agent_state["timestamp"] = event.get("timestamp")
 
-        kind = str(event.get("event", ""))
-        payload = event.get("payload")
-        if isinstance(payload, dict):
-            agent_state.setdefault("events", []).append({"kind": kind, "payload": payload})
+            kind = str(event.get("event", ""))
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                agent_state.setdefault("events", []).append({"kind": kind, "payload": payload})
 
-        if kind == "position" and isinstance(payload, dict):
-            agent_state["position"] = payload
-            formatted = self._format_position_payload(payload)
-            if formatted:
-                self.memory.set("player_pos", formatted)
-        elif kind == "status" and isinstance(payload, dict):
-            agent_state["status"] = payload
-            threat = str(payload.get("threatLevel", "")).lower()
-            if threat in {"high", "critical"}:
-                self.request_role_switch("defender", reason="threat-alert")
-            supply = str(payload.get("supplyDemand", "")).lower()
-            if supply == "shortage":
-                self.request_role_switch("supplier", reason="supply-shortage")
-        elif kind == "roleUpdate" and isinstance(payload, dict):
-            role_id = str(payload.get("roleId", "generalist") or "generalist")
-            role_label = str(payload.get("label", role_id))
-            role_info = {
-                "id": role_id,
-                "label": role_label,
-                "reason": payload.get("reason"),
-                "responsibilities": payload.get("responsibilities"),
-            }
-            agent_state["role"] = role_info
-            if agent_id == "primary":
-                self._current_role_id = role_id
-                self.memory.set("agent_active_role", role_info)
+            if kind == "position" and isinstance(payload, dict):
+                agent_state["position"] = payload
+                formatted = self._format_position_payload(payload)
+                if formatted:
+                    self.memory.set("player_pos", formatted)
+            elif kind == "status" and isinstance(payload, dict):
+                agent_state["status"] = payload
+                threat = str(payload.get("threatLevel", "")).lower()
+                if threat in {"high", "critical"}:
+                    self.request_role_switch("defender", reason="threat-alert")
+                supply = str(payload.get("supplyDemand", "")).lower()
+                if supply == "shortage":
+                    self.request_role_switch("supplier", reason="supply-shortage")
+            elif kind == "roleUpdate" and isinstance(payload, dict):
+                role_id = str(payload.get("roleId", "generalist") or "generalist")
+                role_label = str(payload.get("label", role_id))
+                role_info = {
+                    "id": role_id,
+                    "label": role_label,
+                    "reason": payload.get("reason"),
+                    "responsibilities": payload.get("responsibilities"),
+                }
+                agent_state["role"] = role_info
+                if agent_id == "primary":
+                    self._current_role_id = role_id
+                    self.memory.set("agent_active_role", role_info)
 
-        self._shared_agents[agent_id] = agent_state
+            self._shared_agents[agent_id] = agent_state
+
         self.memory.set("multi_agent", self._shared_agents)
 
     def request_role_switch(self, role_id: str, *, reason: Optional[str] = None) -> None:
