@@ -40,6 +40,7 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.minecraft.host).toBe('host.docker.internal');
     expect(config.websocket.host).toBe('0.0.0.0');
     expect(config.moveGoalTolerance.tolerance).toBe(30);
+    expect(config.telemetry.endpoint).toBe('http://localhost:4318');
     expect(warnings).toContain(
       'MC_HOST points to localhost inside Docker. Falling back to host.docker.internal so the Paper server is reachable.',
     );
@@ -53,6 +54,7 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.agentBridge.url).toBe('ws://python-agent:9000');
     expect(config.control.mode).toBe('command');
     expect(config.control.vpt.tickIntervalMs).toBeGreaterThan(0);
+    expect(config.telemetry.serviceName).toBe('mc-node-bot');
     expect(warnings).toBeInstanceOf(Array);
   });
 
@@ -69,5 +71,16 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.control.vpt.tickIntervalMs).toBe(15);
     expect(config.control.vpt.maxSequenceLength).toBe(500);
     expect(warnings).toBeInstanceOf(Array);
+  });
+
+  it('OTEL_TRACES_SAMPLER_RATIO が無効な場合は警告して 1.0 へ丸める', () => {
+    const env = {
+      OTEL_TRACES_SAMPLER_RATIO: 'invalid',
+    } as NodeJS.ProcessEnv;
+
+    const { config, warnings } = loadBotRuntimeConfig(env, fakeDeps);
+
+    expect(config.telemetry.samplerRatio).toBe(1);
+    expect(warnings.some((warning) => warning.includes('OTEL_TRACES_SAMPLER_RATIO'))).toBe(true);
   });
 });

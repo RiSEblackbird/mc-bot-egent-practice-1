@@ -18,6 +18,10 @@ services:
       WS_HOST: ${WS_HOST:-0.0.0.0}
       WS_PORT: ${WS_PORT:-8765}
       AGENT_WS_URL: ${AGENT_WS_URL:-ws://python-agent:${AGENT_WS_PORT:-9000}}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-mc-node-bot}
+      OTEL_RESOURCE_ENVIRONMENT: ${OTEL_RESOURCE_ENVIRONMENT:-development}
+      OTEL_TRACES_SAMPLER_RATIO: ${OTEL_TRACES_SAMPLER_RATIO:-1.0}
     command:
       - bash
       - -lc

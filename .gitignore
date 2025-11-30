@@ -74,6 +74,8 @@ python/.envrc
 # OpenTelemetry コレクターの設定ファイル（エンドポイントや認証情報が含まれる可能性があるため除外）
 otel-collector*.yaml
 otel-collector*.yml
+# ローカルでエクスポートしたトレース/メトリクスのダンプ（API キーやチャット内容が含まれる可能性があるため除外）
+var/telemetry/
 # Local Paper server binaries（バージョン固定の jar を誤コミットしないための安全策）
 paper.jar
 paper-*.jar

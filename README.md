@@ -202,6 +202,7 @@ docker compose up --build
 * Node.js サービス用コンテナは `node:22` を採用し、最新の Mineflayer 系ライブラリが要求するエンジン条件を満たして `minecraft-protocol` の PartialReadError（`entity_equipment` の VarInt 解析失敗）を防止します。
 * Python エージェントが `AGENT_WS_PORT` をリッスンし、Node 側が `AGENT_WS_URL` で指定した経路からチャットを転送します。Docker Compose では既定で `ws://python-agent:9000` に接続します。
 
+* `.env` に `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ENVIRONMENT` を指定すると、Node/Python 双方が Collector へ span/metric を送信します。Collector をホスト OS で動かす場合は既定値 `http://host.docker.internal:4318` をそのまま利用できます。
 #### 3.3.1 1.21.x の PartialReadError 追加対策
 
 - Paper / Vanilla 1.21.4 以降では ItemStack (Slot 型) に optional NBT が 2 セクション追加され、旧定義のままでは `entity_equipment` パケットで 2 バイトの読み残しが発生します。
@@ -258,9 +259,14 @@ python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --sect
 * `MINEDOJO_REQUEST_TIMEOUT`: API リクエストのタイムアウト秒数（既定: `10.0`）。0 以下の値は警告の上で既定値に丸められます。
 * `OTEL_EXPORTER_OTLP_ENDPOINT`: OpenTelemetry OTLP エクスポート先の URL。未指定なら `http://localhost:4318` を使用します。
 * `OTEL_TRACES_SAMPLER_RATIO`: トレースのサンプリング率（0.0～1.0）。開発時は 1.0 で全件出力し、本番では必要に応じて絞り込みます。
+* `OTEL_SERVICE_NAME`: Collector 上で識別しやすいサービス名。Mineflayer 側は既定で `mc-node-bot` を名乗ります。
+* `OTEL_RESOURCE_ENVIRONMENT`: `development` / `staging` / `production` などのデプロイ環境。Collector 側のフィルタリングに利用できます。
 
 LangGraph のノード実行、Responses API 呼び出し、AgentBridge HTTP 通信では OpenTelemetry の span を自動で開始します。`OTEL_EXPORTER_OTLP_ENDPOINT`
 とサンプリング率を設定すると、`langgraph_node_id` や `checkpoint_id` などの属性付きでトレースを収集できます。
+Mineflayer 側も WebSocket 受信ループや `gatherStatus` / `invokeSkill` などの各コマンド、AgentBridge 通知、再接続予約を span で計測し、
+`command.type` や `mineflayer.response_ms`、`agent_event.type` といったログと同じキーで属性を付与します。Collector が OTLP/HTTP を受け付ける状態で
+起動すれば、Node 側の実行時間ヒストグラムや再接続カウンターをメトリクスとして収集できます。
 
 ## 5. 使い方（ゲーム内）
 

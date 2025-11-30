@@ -10,6 +10,7 @@ import {
   VptPlaybackResolution,
   detectDockerRuntime,
   parseEnvInt,
+  resolveTelemetryConfig,
   resolveAgentWebSocketEndpoint,
   resolveControlMode,
   resolveMinecraftHostValue,
@@ -109,6 +110,12 @@ export interface BotRuntimeConfig {
   skills: {
     historyPath: string;
   };
+  telemetry: {
+    endpoint: string;
+    serviceName: string;
+    environment: string;
+    samplerRatio: number;
+  };
   control: {
     mode: 'command' | 'vpt';
     modeResolution: ControlModeResolution;
@@ -141,6 +148,12 @@ export function loadBotRuntimeConfig(
     env.AGENT_WS_PORT,
     dockerDetected,
   );
+  const telemetryResolution = resolveTelemetryConfig(
+    env.OTEL_EXPORTER_OTLP_ENDPOINT,
+    env.OTEL_SERVICE_NAME,
+    env.OTEL_RESOURCE_ENVIRONMENT,
+    env.OTEL_TRACES_SAMPLER_RATIO,
+  );
   const controlModeResolution = resolveControlMode(env.CONTROL_MODE);
   const vptPlaybackResolution = resolveVptPlaybackConfig(
     env.VPT_TICK_INTERVAL_MS,
@@ -172,6 +185,12 @@ export function loadBotRuntimeConfig(
     skills: {
       historyPath: skillHistoryPath,
     },
+    telemetry: {
+      endpoint: telemetryResolution.endpoint,
+      serviceName: telemetryResolution.serviceName,
+      environment: telemetryResolution.environment,
+      samplerRatio: telemetryResolution.samplerRatio,
+    },
     control: {
       mode: controlModeResolution.mode,
       modeResolution: controlModeResolution,
@@ -185,6 +204,7 @@ export function loadBotRuntimeConfig(
     ...moveGoalToleranceResolution.warnings,
     ...controlModeResolution.warnings,
     ...vptPlaybackResolution.warnings,
+    ...telemetryResolution.warnings,
   ];
 
   if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {
