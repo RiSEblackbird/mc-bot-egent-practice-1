@@ -26,6 +26,8 @@ export interface TelemetryContext {
   agentBridgeEventCounter: Counter;
   reconnectCounter: Counter;
   directiveCounter: Counter;
+  perceptionSnapshotDurationMs: Histogram;
+  perceptionErrorCounter: Counter;
   sdk: NodeSDK;
 }
 
@@ -71,6 +73,13 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
   const directiveCounter = meter.createCounter('mineflayer.directive.received', {
     description: 'Python エージェントから directive メタ付きで受信したコマンド件数',
   });
+  const perceptionSnapshotDurationMs = meter.createHistogram('mineflayer.perception.snapshot.duration', {
+    description: 'perception スナップショットの生成に要した時間 (ms)',
+    unit: 'ms',
+  });
+  const perceptionErrorCounter = meter.createCounter('mineflayer.perception.snapshot.errors', {
+    description: 'perception スナップショット生成で発生したエラー件数',
+  });
 
   const shutdown = async () => {
     try {
@@ -84,7 +93,16 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 
-  return { tracer, commandDurationMs, agentBridgeEventCounter, reconnectCounter, directiveCounter, sdk };
+  return {
+    tracer,
+    commandDurationMs,
+    agentBridgeEventCounter,
+    reconnectCounter,
+    directiveCounter,
+    perceptionSnapshotDurationMs,
+    perceptionErrorCounter,
+    sdk,
+  };
 }
 
 /**

@@ -652,6 +652,8 @@ class AgentOrchestrator:
                 if agent_id == "primary":
                     self._current_role_id = role_id
                     self.memory.set("agent_active_role", role_info)
+            elif kind == "perception" and isinstance(payload, dict):
+                self._ingest_perception_snapshot(payload, source="agent-event")
 
             self._shared_agents[agent_id] = agent_state
 
@@ -827,8 +829,7 @@ class AgentOrchestrator:
         if snapshot is None:
             return
 
-        history = self._append_perception_snapshot(snapshot)
-        self.memory.set("perception_snapshots", history)
+        self._ingest_perception_snapshot(snapshot, source="gather_status")
 
     def _build_perception_snapshot(self, extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """位置・空腹度・天候をまとめた perception スナップショットを生成する。"""
@@ -869,10 +870,34 @@ class AgentOrchestrator:
             "is_raining": base.get("isRaining") or general_detail.get("isRaining"),
         }
 
+        if isinstance(base, dict):
+            for source_key, target_key in (
+                ("weather", "weather"),
+                ("time", "time"),
+                ("lighting", "lighting"),
+                ("hazards", "hazards"),
+                ("nearby_entities", "nearby_entities"),
+                ("nearbyEntities", "nearby_entities"),
+                ("warnings", "warnings"),
+                ("summary", "summary"),
+            ):
+                value = base.get(source_key)
+                if value is not None:
+                    snapshot[target_key] = value
+
         if not any(value is not None for value in snapshot.values()):
             return None
 
         return snapshot
+
+    def _ingest_perception_snapshot(self, snapshot: Dict[str, Any], *, source: str) -> None:
+        """perception スナップショットを履歴へ追加し、要約を更新する。"""
+
+        history = self._append_perception_snapshot(snapshot)
+        self.memory.set("perception_snapshots", history)
+        summary = self._summarize_perception_snapshot(snapshot, source=source)
+        if summary:
+            self.memory.set("perception_summary", summary)
 
     def _append_perception_snapshot(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
         """perception スナップショットを履歴へ追加し、上限件数で丸める。"""
@@ -881,6 +906,59 @@ class AgentOrchestrator:
         limit = getattr(self, "perception_history_limit", PERCEPTION_HISTORY_LIMIT)
         history.append(snapshot)
         return history[-limit:]
+
+    def _summarize_perception_snapshot(
+        self, snapshot: Dict[str, Any], *, source: str = "unknown"
+    ) -> Optional[str]:
+        """Node 側から届いた perception スナップショットを短い文章へ要約する。"""
+
+        parts: List[str] = []
+        hazards = snapshot.get("hazards")
+        if isinstance(hazards, dict):
+            liquid_count = hazards.get("liquids")
+            voids = hazards.get("voids")
+            if isinstance(liquid_count, (int, float)) and liquid_count > 0:
+                parts.append(f"液体検知: {int(liquid_count)} 箇所")
+            if isinstance(voids, (int, float)) and voids > 0:
+                parts.append(f"落下リスク: {int(voids)} 箇所")
+
+        entities = snapshot.get("nearby_entities") or snapshot.get("nearbyEntities")
+        if isinstance(entities, dict):
+            hostile_count = entities.get("hostiles")
+            if isinstance(hostile_count, (int, float)) and hostile_count > 0:
+                details = entities.get("details") or []
+                formatted = []
+                if isinstance(details, list):
+                    for entry in details[:3]:
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("kind") not in {"hostile", "Hostile"}:
+                            continue
+                        name = entry.get("name") or "敵対モブ"
+                        distance = entry.get("distance")
+                        bearing = entry.get("bearing") or ""
+                        if isinstance(distance, (int, float)):
+                            formatted.append(f"{name}({distance:.1f}m{bearing})")
+                        else:
+                            formatted.append(str(name))
+                parts.append(
+                    f"敵対モブ {int(hostile_count)} 体: {', '.join(formatted) if formatted else '詳細不明'}"
+                )
+
+        lighting = snapshot.get("lighting")
+        if isinstance(lighting, dict):
+            block_light = lighting.get("block")
+            if isinstance(block_light, (int, float)):
+                parts.append(f"明るさ: {block_light}")
+
+        weather = snapshot.get("weather")
+        if isinstance(weather, dict):
+            label = weather.get("label")
+            if isinstance(label, str) and label:
+                parts.append(f"天候: {label}")
+
+        summary = " / ".join(part for part in parts if part)
+        return summary or None
 
     def _load_history(self, key: str) -> List[Dict[str, Any]]:
         """メモリに格納された履歴リストを辞書のみ抽出して返す。"""
@@ -1041,6 +1119,9 @@ class AgentOrchestrator:
         perception_history = self.memory.get("perception_snapshots")
         if isinstance(perception_history, list) and perception_history:
             snapshot["perception_history"] = perception_history[-3:]
+        perception_summary = self.memory.get("perception_summary")
+        if isinstance(perception_summary, str) and perception_summary.strip():
+            snapshot["perception_summary"] = perception_summary.strip()
         last_plan_summary = self.memory.get("last_plan_summary")
         if isinstance(last_plan_summary, dict) and last_plan_summary:
             snapshot["last_plan_summary"] = last_plan_summary
@@ -2696,12 +2777,19 @@ class AgentOrchestrator:
         message = str(payload.get("message") or payload.get("type") or "event")
         region = str(payload.get("region") or "").strip()
         coords_text = self._format_block_pos(payload.get("block_pos"))
+        attributes = payload.get("attributes")
 
         summary_parts = [f"[{event_level}] {message}"]
         if region:
             summary_parts.append(f"region={region}")
         if coords_text:
             summary_parts.append(f"pos={coords_text}")
+        if isinstance(attributes, dict) and attributes:
+            preview = ", ".join(
+                f"{key}={attributes[key]}" for key in list(attributes)[:3]
+            )
+            if preview:
+                summary_parts.append(f"attrs={preview}")
         summary = " / ".join(summary_parts)
 
         report: Dict[str, Any] = {
@@ -2713,6 +2801,8 @@ class AgentOrchestrator:
             report["region"] = region
         if isinstance(payload.get("block_pos"), dict):
             report["block_pos"] = payload["block_pos"]
+        if isinstance(attributes, dict) and attributes:
+            report["attributes"] = attributes
 
         history = self.memory.get("bridge_event_reports", [])
         if not isinstance(history, list):

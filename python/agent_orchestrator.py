@@ -190,6 +190,7 @@ class ActionGraph:
             "structured_events": [],
             "structured_event_history": list(structured_event_history or []),
             "perception_history": list(perception_history or []),
+            "perception_summary": orchestrator.memory.get("perception_summary"),
             "minedojo_demo_metadata": None,
         }
         metadata = getattr(self._orchestrator, "_active_minedojo_demo_metadata", None)
@@ -294,6 +295,7 @@ class ActionGraph:
                 outputs={
                     "active_role": base["active_role"],
                     "perception_samples": len(state.get("perception_history") or []),
+                    "perception_summary": state.get("perception_summary"),
                     "event_samples": len(state.get("structured_event_history") or []),
                 },
             )

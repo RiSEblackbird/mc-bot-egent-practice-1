@@ -41,6 +41,7 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.websocket.host).toBe('0.0.0.0');
     expect(config.moveGoalTolerance.tolerance).toBe(30);
     expect(config.telemetry.endpoint).toBe('http://localhost:4318');
+    expect(config.perception.entityRadius).toBeGreaterThan(0);
     expect(warnings).toContain(
       'MC_HOST points to localhost inside Docker. Falling back to host.docker.internal so the Paper server is reachable.',
     );
@@ -55,6 +56,9 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.control.mode).toBe('command');
     expect(config.control.vpt.tickIntervalMs).toBeGreaterThan(0);
     expect(config.telemetry.serviceName).toBe('mc-node-bot');
+    expect(config.perception.entityRadius).toBe(12);
+    expect(config.perception.blockRadius).toBe(4);
+    expect(config.perception.broadcastIntervalMs).toBe(1500);
     expect(warnings).toBeInstanceOf(Array);
   });
 
@@ -82,5 +86,25 @@ describe('loadBotRuntimeConfig', () => {
 
     expect(config.telemetry.samplerRatio).toBe(1);
     expect(warnings.some((warning) => warning.includes('OTEL_TRACES_SAMPLER_RATIO'))).toBe(true);
+  });
+
+  it('perception 設定が範囲外の場合は丸めて警告する', () => {
+    const env = {
+      PERCEPTION_ENTITY_RADIUS: '0',
+      PERCEPTION_BLOCK_RADIUS: '99',
+      PERCEPTION_BLOCK_HEIGHT: '-1',
+      PERCEPTION_BROADCAST_INTERVAL_MS: 'foo',
+    } as NodeJS.ProcessEnv;
+
+    const { config, warnings } = loadBotRuntimeConfig(env, fakeDeps);
+
+    expect(config.perception.entityRadius).toBeGreaterThanOrEqual(1);
+    expect(config.perception.blockRadius).toBeLessThanOrEqual(16);
+    expect(config.perception.blockHeight).toBeGreaterThanOrEqual(1);
+    expect(config.perception.broadcastIntervalMs).toBe(1_500);
+    expect(warnings.some((warning) => warning.includes('PERCEPTION_ENTITY_RADIUS'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('PERCEPTION_BLOCK_RADIUS'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('PERCEPTION_BLOCK_HEIGHT'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('PERCEPTION_BROADCAST_INTERVAL_MS'))).toBe(true);
   });
 });

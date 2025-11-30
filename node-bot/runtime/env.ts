@@ -50,6 +50,19 @@ const DEFAULT_VPT_MAX_SEQUENCE_LENGTH = 240;
 const MIN_VPT_MAX_SEQUENCE_LENGTH = 1;
 const MAX_VPT_MAX_SEQUENCE_LENGTH = 2000;
 
+const DEFAULT_PERCEPTION_ENTITY_RADIUS = 12;
+const MIN_PERCEPTION_ENTITY_RADIUS = 1;
+const MAX_PERCEPTION_ENTITY_RADIUS = 64;
+const DEFAULT_PERCEPTION_BLOCK_RADIUS = 4;
+const MIN_PERCEPTION_BLOCK_RADIUS = 1;
+const MAX_PERCEPTION_BLOCK_RADIUS = 16;
+const DEFAULT_PERCEPTION_BLOCK_HEIGHT = 2;
+const MIN_PERCEPTION_BLOCK_HEIGHT = 1;
+const MAX_PERCEPTION_BLOCK_HEIGHT = 12;
+const DEFAULT_PERCEPTION_BROADCAST_INTERVAL_MS = 1_500;
+const MIN_PERCEPTION_BROADCAST_INTERVAL_MS = 250;
+const MAX_PERCEPTION_BROADCAST_INTERVAL_MS = 30_000;
+
 /**
  * Docker 実行環境を判定する際に利用する依存関係のインターフェース。
  * 単体テストでは疑似的なファイルシステムを差し替え、条件分岐を細かく検証する。
@@ -130,6 +143,14 @@ export interface ControlModeResolution {
 export interface VptPlaybackResolution {
   tickIntervalMs: number;
   maxSequenceLength: number;
+  warnings: string[];
+}
+
+export interface PerceptionResolution {
+  entityRadius: number;
+  blockRadius: number;
+  blockHeight: number;
+  broadcastIntervalMs: number;
   warnings: string[];
 }
 
@@ -517,4 +538,81 @@ export function resolveVptPlaybackConfig(
   }
 
   return { tickIntervalMs, maxSequenceLength, warnings };
+}
+
+export function resolvePerceptionConfig(
+  rawEntityRadius: string | undefined,
+  rawBlockRadius: string | undefined,
+  rawBlockHeight: string | undefined,
+  rawBroadcastInterval: string | undefined,
+): PerceptionResolution {
+  const warnings: string[] = [];
+
+  const normalize = (
+    raw: string | undefined,
+    fallback: number,
+    min: number,
+    max: number,
+    label: string,
+  ): number => {
+    const sanitized = (raw ?? '').trim();
+    if (sanitized.length === 0) {
+      return fallback;
+    }
+
+    const parsed = Number.parseInt(sanitized, 10);
+    if (!Number.isFinite(parsed)) {
+      warnings.push(`${label}='${raw}' は数値として解釈できないため ${fallback} を利用します。`);
+      return fallback;
+    }
+
+    if (parsed < min) {
+      warnings.push(`${label}=${parsed} は下限 ${min} 未満のため ${min} へ丸めます。`);
+      return min;
+    }
+
+    if (parsed > max) {
+      warnings.push(`${label}=${parsed} は上限 ${max} を超えているため ${max} へ丸めます。`);
+      return max;
+    }
+
+    return parsed;
+  };
+
+  const entityRadius = normalize(
+    rawEntityRadius,
+    DEFAULT_PERCEPTION_ENTITY_RADIUS,
+    MIN_PERCEPTION_ENTITY_RADIUS,
+    MAX_PERCEPTION_ENTITY_RADIUS,
+    'PERCEPTION_ENTITY_RADIUS',
+  );
+  const blockRadius = normalize(
+    rawBlockRadius,
+    DEFAULT_PERCEPTION_BLOCK_RADIUS,
+    MIN_PERCEPTION_BLOCK_RADIUS,
+    MAX_PERCEPTION_BLOCK_RADIUS,
+    'PERCEPTION_BLOCK_RADIUS',
+  );
+  const blockHeight = normalize(
+    rawBlockHeight,
+    DEFAULT_PERCEPTION_BLOCK_HEIGHT,
+    MIN_PERCEPTION_BLOCK_HEIGHT,
+    MAX_PERCEPTION_BLOCK_HEIGHT,
+    'PERCEPTION_BLOCK_HEIGHT',
+  );
+  const broadcastIntervalMs = normalize(
+    rawBroadcastInterval,
+    DEFAULT_PERCEPTION_BROADCAST_INTERVAL_MS,
+    MIN_PERCEPTION_BROADCAST_INTERVAL_MS,
+    MAX_PERCEPTION_BROADCAST_INTERVAL_MS,
+    'PERCEPTION_BROADCAST_INTERVAL_MS',
+  );
+
+  return {
+    entityRadius,
+    blockRadius,
+    blockHeight,
+    broadcastIntervalMs,
+    warnings,
+  };
 }
