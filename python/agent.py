@@ -41,6 +41,7 @@ from bridge_client import (
 from bridge_ws import BotBridge
 from memory import Memory
 from planner import (
+    ActionDirective,
     PlanArguments,
     PlanOut,
     ReActStep,
@@ -346,6 +347,14 @@ class AgentOrchestrator:
         # Voyager 互換のスキルライブラリを共有し、タスク実行前に再利用候補を即座に取得する。
         self.skill_repository = repo
         self.config = config or AGENT_CONFIG
+        langsmith_cfg = self.config.langsmith
+        self._tracer = ThoughtActionObservationTracer(
+            api_url=langsmith_cfg.api_url,
+            api_key=langsmith_cfg.api_key,
+            project=langsmith_cfg.project,
+            default_tags=langsmith_cfg.tags,
+            enabled=langsmith_cfg.enabled,
+        )
         # 混雑時の背圧を明示的に制御するため、設定値に応じてキュー上限を固定する。
         self.queue: asyncio.Queue[ChatTask] = asyncio.Queue(
             maxsize=self.config.queue_max_size
@@ -374,6 +383,17 @@ class AgentOrchestrator:
         self._bridge_event_stop: Optional[asyncio.Event] = None
         self._bridge_event_thread_stop: Optional[threading.Event] = None
         self._bridge_event_tasks: List[asyncio.Task[Any]] = []
+        self._self_dialogue_executor = MineDojoSelfDialogueExecutor(
+            actions=self.actions,
+            client=self.minedojo_client,
+            skill_repository=self.skill_repository,
+            tracer=self._tracer,
+            env_params={
+                "sim_env": self.config.minedojo.sim_env,
+                "sim_seed": self.config.minedojo.sim_seed,
+                "sim_max_steps": self.config.minedojo.sim_max_steps,
+            },
+        )
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -961,6 +981,7 @@ class AgentOrchestrator:
             plan_out.plan,
             plan_out.resp,
         )
+        self._record_plan_summary(plan_out)
 
         structured_coords = self._extract_argument_coordinates(plan_out.arguments)
         if structured_coords:
@@ -1014,14 +1035,194 @@ class AgentOrchestrator:
         block_eval = self.memory.get("block_evaluation")
         if block_eval:
             snapshot["block_evaluation"] = block_eval
+        structured_history = self.memory.get("structured_event_history")
+        if isinstance(structured_history, list) and structured_history:
+            snapshot["structured_event_history"] = structured_history[-3:]
+        perception_history = self.memory.get("perception_snapshots")
+        if isinstance(perception_history, list) and perception_history:
+            snapshot["perception_history"] = perception_history[-3:]
+        last_plan_summary = self.memory.get("last_plan_summary")
+        if isinstance(last_plan_summary, dict) and last_plan_summary:
+            snapshot["last_plan_summary"] = last_plan_summary
         reflection_context = self.memory.build_reflection_context()
         if reflection_context:
             snapshot["recent_reflections"] = reflection_context
         active_reflection_prompt = self.memory.get_active_reflection_prompt()
         if active_reflection_prompt:
             snapshot["active_reflection_prompt"] = active_reflection_prompt
+        recovery_hints = self.memory.get("recovery_hints")
+        if isinstance(recovery_hints, list) and recovery_hints:
+            snapshot["recovery_hints"] = recovery_hints
         self.logger.info("context snapshot built=%s", snapshot)
         return snapshot
+
+    def _record_plan_summary(self, plan_out: PlanOut) -> None:
+        """ゴール・制約・directive を Memory と構造化ログへ残す。"""
+
+        goal_summary = ""
+        priority = ""
+        goal_category = ""
+        if getattr(plan_out, "goal_profile", None):
+            goal_summary = plan_out.goal_profile.summary or ""
+            priority = plan_out.goal_profile.priority or ""
+            goal_category = plan_out.goal_profile.category or ""
+        constraints = [constraint.label for constraint in getattr(plan_out, "constraints", []) if constraint.label]
+        directive_count = len(getattr(plan_out, "directives", []) or [])
+        payload = {
+            "goal": goal_summary,
+            "goal_category": goal_category,
+            "goal_priority": priority,
+            "constraint_count": len(constraints),
+            "intent": plan_out.intent,
+            "directive_count": directive_count,
+        }
+        if constraints:
+            payload["constraints"] = constraints[:3]
+        self.memory.set("last_plan_summary", payload)
+        if getattr(plan_out, "recovery_hints", None):
+            self.memory.set("recovery_hints", list(plan_out.recovery_hints))
+        log_structured_event(
+            self.logger,
+            "plan_summary",
+            event_level="progress",
+            langgraph_node_id="planner.plan_summary",
+            context=payload,
+        )
+
+    async def _handle_minedojo_directive(self, directive: ActionDirective, plan_out: PlanOut, step_index: int) -> bool:
+        executor = getattr(self, "_self_dialogue_executor", None)
+        if executor is None:
+            return False
+
+        args = directive.args if isinstance(directive.args, dict) else {}
+        mission_id = ""
+        mission_candidate = args.get("mission_id")
+        if isinstance(mission_candidate, str) and mission_candidate.strip():
+            mission_id = mission_candidate.strip()
+        if not mission_id:
+            mission_id = self._MINEDOJO_MISSION_BINDINGS.get(directive.category, "")
+        if not mission_id:
+            return False
+
+        skill_id = args.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            skill_id = f"minedojo::{mission_id}::{int(time.time())}"
+        title = directive.label or directive.step or f"MineDojo {mission_id}"
+        success_flag = args.get("simulate_success")
+        success = bool(success_flag) if isinstance(success_flag, bool) else True
+
+        try:
+            await executor.run_self_dialogue(
+                mission_id,
+                plan_out.react_trace or [],
+                skill_id=skill_id,
+                title=title,
+                success=success,
+            )
+        except Exception:
+            self.logger.exception(
+                "MineDojo directive failed mission=%s step_index=%d", mission_id, step_index
+            )
+            return False
+
+        self.logger.info(
+            "MineDojo directive executed mission=%s skill_id=%s step_index=%d",
+            mission_id,
+            skill_id,
+            step_index,
+        )
+        return True
+
+    def _resolve_directive_for_step(
+        self,
+        directives: Sequence[Any],
+        index: int,
+        fallback_step: str,
+    ) -> Optional[ActionDirective]:
+        if not directives or index - 1 >= len(directives):
+            return None
+        candidate = directives[index - 1]
+        if isinstance(candidate, ActionDirective):
+            return candidate
+        if isinstance(candidate, dict):
+            try:
+                directive = ActionDirective.model_validate(candidate)
+            except Exception:
+                self.logger.warning("directive validation failed index=%d payload=%s", index, candidate)
+                return None
+            if not directive.step:
+                directive.step = fallback_step
+            return directive
+        return None
+
+    def _build_directive_meta(
+        self,
+        directive: Optional[ActionDirective],
+        plan_out: PlanOut,
+        index: int,
+        total_steps: int,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(directive, ActionDirective):
+            return None
+        directive_id = directive.directive_id or f"step-{index}"
+        goal_summary = ""
+        if getattr(plan_out, "goal_profile", None):
+            goal_summary = plan_out.goal_profile.summary or ""
+        return {
+            "directiveId": directive_id,
+            "directiveLabel": directive.label or directive.step or "",
+            "directiveCategory": directive.category or plan_out.intent,
+            "directiveExecutor": directive.executor or "mineflayer",
+            "planIntent": plan_out.intent,
+            "goalSummary": goal_summary,
+            "stepIndex": index,
+            "totalSteps": total_steps,
+        }
+
+    def _extract_directive_coordinates(
+        self,
+        directive: Optional[ActionDirective],
+    ) -> Optional[Tuple[int, int, int]]:
+        if not isinstance(directive, ActionDirective):
+            return None
+        args = directive.args if isinstance(directive.args, dict) else {}
+        candidates: List[Any] = []
+        for key in ("coordinates", "position"):
+            if key in args:
+                candidates.append(args[key])
+        path = args.get("path")
+        if isinstance(path, list) and path:
+            candidates.append(path[0])
+
+        for candidate in candidates:
+            coords = self._coerce_coordinate_tuple(candidate)
+            if coords:
+                return coords
+        return None
+
+    def _coerce_coordinate_tuple(self, payload: Any) -> Optional[Tuple[int, int, int]]:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            x = int(payload.get("x"))
+            y = int(payload.get("y"))
+            z = int(payload.get("z"))
+        except Exception:
+            return None
+        return (x, y, z)
+
+    @contextlib.contextmanager
+    def _directive_scope(self, meta: Optional[Dict[str, Any]]):
+        has_interface = hasattr(self.actions, "begin_directive_scope") and hasattr(
+            self.actions, "end_directive_scope"
+        )
+        if meta and has_interface:
+            self.actions.begin_directive_scope(meta)  # type: ignore[attr-defined]
+        try:
+            yield
+        finally:
+            if meta and has_interface:
+                self.actions.end_directive_scope()  # type: ignore[attr-defined]
 
     async def _execute_plan(
         self,
@@ -1064,7 +1265,7 @@ class AgentOrchestrator:
             return
 
         total_steps = len(plan_out.plan)
-        structured_coords = self._extract_argument_coordinates(plan_out.arguments)
+        argument_coords = self._extract_argument_coordinates(plan_out.arguments)
         # プラン生成が空配列で戻るケースでは行動開始前から停滞するため、
         # 直ちに障壁として報告してプレイヤーへ状況を伝える。
         if total_steps == 0:
@@ -1079,6 +1280,7 @@ class AgentOrchestrator:
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
         detection_reports: List[Dict[str, Any]] = []
         react_trace: List[ReActStep] = list(plan_out.react_trace)
+        directives: List[Any] = list(getattr(plan_out, "directives", []) or [])
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
             self.logger.info(
@@ -1099,6 +1301,10 @@ class AgentOrchestrator:
             status = "skipped"
             event_level = "trace"
             log_level = logging.INFO
+            directive = self._resolve_directive_for_step(directives, index, normalized)
+            directive_meta = self._build_directive_meta(directive, plan_out, index, total_steps)
+            directive_executor = directive.executor if isinstance(directive, ActionDirective) else ""
+            directive_coords = self._extract_directive_coordinates(directive) if directive else None
 
             if not normalized:
                 observation_text = "ステップ文字列が空だったためスキップしました。"
@@ -1116,7 +1322,53 @@ class AgentOrchestrator:
                 )
                 continue
 
-            detection_category = self._classify_detection_task(normalized)
+            if directive and directive_executor == "minedojo":
+                handled = await self._handle_minedojo_directive(directive, plan_out, index)
+                if handled:
+                    observation_text = "MineDojo の自己対話タスクを実行しました。"
+                    status = "completed"
+                    event_level = "progress"
+                    if react_entry:
+                        react_entry.observation = observation_text
+                    self._emit_react_log(
+                        index=index,
+                        total_steps=total_steps,
+                        thought=thought_text,
+                        action=normalized,
+                        observation=observation_text,
+                        status=status,
+                        event_level=event_level,
+                        log_level=log_level,
+                    )
+                    continue
+
+            if directive and directive_executor == "chat":
+                chat_message = str(directive.args.get("message") if isinstance(directive.args, dict) else "") or directive.label or normalized
+                if chat_message:
+                    with self._directive_scope(directive_meta):
+                        await self.actions.say(chat_message)
+                    observation_text = f"チャット通知を送信: {chat_message}"
+                    status = "completed"
+                    event_level = "progress"
+                    if react_entry:
+                        react_entry.observation = observation_text
+                    self._emit_react_log(
+                        index=index,
+                        total_steps=total_steps,
+                        thought=thought_text,
+                        action=normalized,
+                        observation=observation_text,
+                        status=status,
+                        event_level=event_level,
+                        log_level=log_level,
+                    )
+                    continue
+
+            detection_category = None
+            if directive and directive.category in self._DETECTION_TASK_KEYWORDS:
+                detection_category = directive.category
+            if not detection_category:
+                detection_category = self._classify_detection_task(normalized)
             if not detection_category and plan_out.intent.strip().lower().startswith("report"):
                 detection_category = "general_status"
             if detection_category:
@@ -1125,9 +1377,10 @@ class AgentOrchestrator:
                     index,
                     detection_category,
                 )
-                detection_result = await self._perform_detection_task(
-                    detection_category
-                )
+                with self._directive_scope(directive_meta):
+                    detection_result = await self._perform_detection_task(
+                        detection_category
+                    )
                 if detection_result:
                     detection_reports.append(detection_result)
                     observation_text = str(
@@ -1165,20 +1418,21 @@ class AgentOrchestrator:
                 )
                 continue
 
-            coords = structured_coords or self._extract_coordinates(normalized)
+            coords = directive_coords or argument_coords or self._extract_coordinates(normalized)
             if coords:
                 self.logger.info(
                     "plan_step index=%d classified as coordinate_move coords=%s",
                     index,
                     coords,
                 )
-                handled, last_target_coords, failure_detail = await self._handle_action_task(
-                    "move",
-                    normalized,
-                    last_target_coords=coords,
-                    backlog=action_backlog,
-                    explicit_coords=coords,
-                )
+                with self._directive_scope(directive_meta):
+                    handled, last_target_coords, failure_detail = await self._handle_action_task(
+                        "move",
+                        normalized,
+                        last_target_coords=coords,
+                        backlog=action_backlog,
+                        explicit_coords=coords,
+                    )
                 if not handled:
                     observation_text = failure_detail or "座標移動の処理に失敗しました。"
                     status = "failed"
@@ -1272,19 +1526,25 @@ class AgentOrchestrator:
                 )
                 continue
 
-            action_category = self._classify_action_task(normalized)
+            action_category = None
+            if directive and directive.category in self._ACTION_TASK_RULES:
+                action_category = directive.category
+            if not action_category:
+                action_category = self._classify_action_task(normalized)
             if action_category:
                 self.logger.info(
                     "plan_step index=%d classified as action_task category=%s",
                     index,
                     action_category,
                 )
-                handled, last_target_coords, failure_detail = await self._handle_action_task(
-                    action_category,
-                    normalized,
-                    last_target_coords=last_target_coords,
-                    backlog=action_backlog,
-                )
+                with self._directive_scope(directive_meta):
+                    handled, last_target_coords, failure_detail = await self._handle_action_task(
+                        action_category,
+                        normalized,
+                        last_target_coords=last_target_coords,
+                        backlog=action_backlog,
+                        explicit_coords=directive_coords if action_category == "move" else None,
+                    )
                 if handled:
                     if action_category == "move":
                         destination = last_target_coords or self.default_move_target
@@ -1348,7 +1608,8 @@ class AgentOrchestrator:
                     "plan_step index=%d issuing status_report",
                     index,
                 )
-                await self.actions.say("進捗を確認しています。続報をお待ちください。")
+                with self._directive_scope(directive_meta):
+                    await self.actions.say("進捗を確認しています。続報をお待ちください。")
                 observation_text = "進捗報告メッセージを送信しました。"
                 status = "completed"
                 event_level = "progress"
@@ -1514,6 +1775,13 @@ class AgentOrchestrator:
             },
         )
         self.memory.set("last_reflection_prompt", reflection_prompt)
+        self.memory.set(
+            "recovery_hints",
+            [
+                f"step:{failed_step}",
+                failure_reason,
+            ],
+        )
 
         if merged_detection_reports:
             await self._handle_detection_reports(

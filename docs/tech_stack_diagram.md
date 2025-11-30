@@ -199,6 +199,21 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 - HTTP 層では既存の SSE `/v1/events/stream` を強化しつつ、新たに WebSocket `/v1/events/ws` を追加して LangGraph ノードが pull せずともリアルタイムに push を受け取れるようにする。`bridge-plugin/src/main/java/com/example/bridge/http/BridgeHttpServer.java` の `EventStreamHandler` を共通のイベントマルチプレクサに差し替える想定。
 - Python 側では `BridgeClient.consume_event_stream()` と `agent.py::_handle_bridge_event()` を使い回し、チャットレス運用でも `BridgeEvent` が `bridge_event_reports` → `detection_reports` に自動でマージされる。これにより「今どこを掘れるか」を毎回ユーザーが質問する必要がなくなる。
 
+---
+
+## 5. 自然言語→LangGraph→Mineflayer フロー（ActionDirective ビュー）
+
+| 段階 | 役割 | 生成データ |
+| --- | --- | --- |
+| `planner.plan()` | Responses API → LangGraph | `PlanOut.goal_profile` / `constraints` / `execution_hints` / `directives` / `recovery_hints` |
+| `agent.AgentOrchestrator._execute_plan()` | LangGraph → Mineflayer | directive ごとに `executor`（`mineflayer` / `minedojo` / `chat`）を参照し、`Actions` へ meta 付きでディスパッチ |
+| Node Telemetry | `node-bot/runtime/telemetry.ts` | `command.meta.directive_id` / `directive.executor` を span 属性とメトリクス（`mineflayer.directive.received`）に記録 |
+
+- **Goal Profile**: gpt-5-mini から返された `goal_profile` は「誰のための作業か」「成功条件は何か」「優先度は？」を LangGraph 側で可視化するために用います。`docs/minedojo_integration.md` と同じ `mission_id` / `tags` がここにも含まれます。
+- **ActionDirective**: `directives[n]` は plan ステップと 1:1 で紐づき、`category`・`executor`・`args.coordinates` を明示します。Python 側は directive が指定された場合にヒューリスティックを飛ばし、Mineflayer / MineDojo / チャットのいずれかへ直行します。
+- **Recovery Hints**: `recovery_hints` は `langgraph_state.record_recovery_hints()` でステートに残り、再計画プロンプトと `memory.recovery_hints` の双方に同期されます。障壁が多発するステップを directive レベルで切り分けられるため、次のチャットに答える前に再計画ポリシーを切り替えられます。
+
+新しい DSL を参照する際は README の「3.2.5 自然言語→ActionDirective DSL」と `python/planner.py` の JSON 例を合わせて確認してください。
 ### 4.2 LangGraph 逆通知の再設計
 
 - `LangGraphRetryHook`（`bridge-plugin/src/main/java/com/example/bridge/langgraph/LangGraphRetryHook.java`）を `LangGraphEventGateway` に拡張し、`triggerRetry` に加えて `pushEvent(LangGraphEvent event)` を提供する。`LangGraphRetryClient` も push 用エンドポイント（例: `/callbacks/agentbridge/events`）を持つクライアントへ差し替える。

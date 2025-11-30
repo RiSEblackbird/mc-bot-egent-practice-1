@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from opentelemetry.trace import Status, StatusCode
 
 from utils import setup_logger, span_context
-from langgraph_state import UnifiedPlanState, record_structured_step
+from langgraph_state import UnifiedPlanState, record_recovery_hints, record_structured_step
 from dotenv import load_dotenv
 import openai
 from openai.types.responses import EasyInputMessageParam, Response
@@ -232,6 +232,46 @@ class PlanArguments(BaseModel):
     )
 
 
+class ConstraintSpec(BaseModel):
+    """LLM が検出した制約条件を表す。"""
+
+    label: str = ""
+    rationale: str = ""
+    severity: Literal["soft", "hard"] = "soft"
+
+
+class GoalProfile(BaseModel):
+    """タスクのゴール要約と優先度を構造化して保持する。"""
+
+    summary: str = ""
+    category: str = ""
+    priority: Literal["low", "medium", "high"] = "medium"
+    success_criteria: List[str] = Field(default_factory=list)
+    blockers: List[str] = Field(default_factory=list)
+
+
+class ExecutionHint(BaseModel):
+    """Mineflayer/MineDojo 実行前に共有したいヒントの集合。"""
+
+    key: str = ""
+    value: str = ""
+    source: str = ""
+
+
+class ActionDirective(BaseModel):
+    """plan[].step と 1:1 で対応する構造化指示。"""
+
+    directive_id: str = ""
+    step: str = ""
+    label: str = ""
+    category: str = ""
+    executor: Literal["mineflayer", "minedojo", "chat", "hybrid"] = "mineflayer"
+    args: Dict[str, Any] = Field(default_factory=dict)
+    safety_checks: List[str] = Field(default_factory=list)
+    success_criteria: List[str] = Field(default_factory=list)
+    fallback: str = ""
+
+
 class PlanOut(BaseModel):
     plan: List[str] = Field(default_factory=list)  # 実行ステップ（高レベル）
     resp: str = ""  # プレイヤー向け日本語応答
@@ -273,6 +313,26 @@ class PlanOut(BaseModel):
         default="execute",
         description="graph からの推奨遷移 (execute/chat など)。",
     )
+    goal_profile: GoalProfile = Field(
+        default_factory=GoalProfile,
+        description="ゴール要約と優先度。",
+    )
+    constraints: List[ConstraintSpec] = Field(
+        default_factory=list,
+        description="実行上の制約条件一覧。",
+    )
+    execution_hints: List[ExecutionHint] = Field(
+        default_factory=list,
+        description="Mineflayer/MineDojo への補助ヒント。",
+    )
+    directives: List[ActionDirective] = Field(
+        default_factory=list,
+        description="各ステップに対応する構造化指示列。",
+    )
+    recovery_hints: List[str] = Field(
+        default_factory=list,
+        description="前回障壁から引き継いだ再計画ヒント。",
+    )
 
 
 class BarrierNotificationError(RuntimeError):
@@ -294,6 +354,9 @@ def _build_plan_graph() -> CompiledStateGraph:
     graph: StateGraph = StateGraph(_PlanState)
 
     async def prepare_payload(state: _PlanState) -> Dict[str, Any]:
+        recovery_hints = _extract_recovery_hints_from_context(state)
+        if recovery_hints:
+            record_recovery_hints(state, recovery_hints)
         prompt = build_user_prompt(state["user_msg"], state["context"])
         logger.info("LLM prompt: %s", prompt)
         payload = _build_responses_payload(SYSTEM, prompt)
@@ -413,6 +476,9 @@ def _build_plan_graph() -> CompiledStateGraph:
             return result
 
         priority = await manager.mark_success()
+        recovery_hints = _extract_recovery_hints_from_context(state)
+        if recovery_hints:
+            plan_data.recovery_hints = recovery_hints
         result = {"plan_out": plan_data, "priority": priority}
         result.update(
             record_structured_step(
@@ -429,6 +495,7 @@ def _build_plan_graph() -> CompiledStateGraph:
         if not isinstance(plan_out, PlanOut):
             return {}
 
+        _normalize_directives(plan_out)
         normalized_trace: List[ReActStep] = []
         for entry in plan_out.react_trace:
             # LLM 側が空文字で埋めた場合でも、Action テキストが存在するものだけを残す。
@@ -458,6 +525,68 @@ def _build_plan_graph() -> CompiledStateGraph:
             )
         )
         return result
+
+
+def _normalize_directives(plan_out: PlanOut) -> None:
+    """plan ステップ数と directive リストを整合させ、欠損フィールドを補完する。"""
+
+    if not isinstance(plan_out.plan, list) or not plan_out.plan:
+        plan_out.directives = []
+        return
+
+    normalized: List[ActionDirective] = []
+    for index, step in enumerate(plan_out.plan):
+        directive: ActionDirective
+        if index < len(plan_out.directives):
+            candidate = plan_out.directives[index]
+            directive = candidate if isinstance(candidate, ActionDirective) else ActionDirective()
+        else:
+            directive = ActionDirective()
+
+        if not directive.step:
+            directive.step = step
+        if not directive.label:
+            directive.label = directive.step
+        if not directive.directive_id:
+            directive.directive_id = f"step-{index + 1}"
+
+        normalized.append(directive)
+
+    plan_out.directives = normalized
+
+
+def _extract_recovery_hints_from_context(state: _PlanState) -> List[str]:
+    """context や state に含まれる再計画ヒントを安全に取り出す。"""
+
+    hints: List[str] = []
+    sources: List[Any] = []
+    context = state.get("context")
+    if isinstance(context, dict):
+        sources.append(context.get("recovery_hints"))
+    raw_state = state.get("recovery_hints")
+    if raw_state is not None:
+        sources.append(raw_state)
+
+    for source in sources:
+        if isinstance(source, (list, tuple)):
+            for entry in source:
+                text = str(entry or "").strip()
+                if text:
+                    hints.append(text)
+        elif isinstance(source, str):
+            text = source.strip()
+            if text:
+                hints.append(text)
+    if not hints:
+        return []
+    # 重複を除去して順序を維持する
+    unique: List[str] = []
+    seen = set()
+    for hint in hints:
+        if hint not in seen:
+            unique.append(hint)
+            seen.add(hint)
+    return unique
 
     async def intent_negotiation(state: _PlanState) -> Dict[str, Any]:
         """曖昧さが残る場合にフォローアップ質問を準備し、バックログへ差し戻す。"""
@@ -615,17 +744,36 @@ SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然�
 "intent": string, "arguments": object, "blocking": boolean,
 "react_trace": {"thought": string, "action": string, "observation": string}[],
 "confidence": number (0.0-1.0), "clarification_needed": "none" | "confirmation" | "data_gap",
-"detected_modalities": string[], "backlog": object[], "next_action": string とする。
-react_trace の observation は環境からの観測値で後から上書きされるため、
-空文字列のまま残してください。thought にはステップを採択した理由を
-日本語で 1 文以内で要約し、action には実行する具体的な操作を記述します。
-"intent" には move/build/gather など主な行動タイプを、"arguments" には
-座標や数量、対象名を含む構造化パラメータを含め、"blocking" は実行前に
-プレイヤー確認が必要なら true を返してください。曖昧さが残る場合は
-clarification_needed を confirmation（全体方針の確認）または data_gap（追加データの不足）
-で指定し、resp に日本語の確認質問を含め、backlog に chat 用のタスク概要
-を入れて next_action="chat" としてください。確認不要なら next_action="execute" とし、
-confidence は計画の確からしさを 0.0～1.0 で数値化してください。
+"detected_modalities": string[], "backlog": object[], "next_action": string,
+"goal_profile": object, "constraints": object[], "execution_hints": object[],
+"directives": object[], "recovery_hints": string[] とする。react_trace の observation
+は環境からの観測値で後から上書きされるため、空文字列のまま残してください。
+thought にはステップを採択した理由を日本語で 1 文以内に要約し、action には
+実行する具体的な操作を記述します。"intent" には move/build/gather など主な
+行動タイプを、"arguments" には座標や数量、対象名を含む構造化パラメータを
+含め、"blocking" は実行前にプレイヤー確認が必要なら true を返してください。
+
+goal_profile には { "summary": "...", "category": "...", "priority": "low|medium|high",
+"success_criteria": [], "blockers": [] } を含めてください。constraints は
+{ "label": "...", "rationale": "...", "severity": "soft|hard" } の配列とします。
+execution_hints には { "key": "...", "value": "...", "source": "memory|perception|user" }
+の形式で Mineflayer/MineDojo 実行時に参照したいヒントを列挙してください。
+
+directives は plan の各ステップと 1:1 で並ぶ配列です。要素は
+{ "directive_id": "step-1", "step": "プレーンテキストの手順",
+  "label": "人間に伝わる短い説明", "category": "move/build/...",
+  "executor": "mineflayer|minedojo|chat|hybrid",
+  "args": { "coordinates": {"x": -10, "y": 64, "z": 20}, ... },
+  "safety_checks": [], "success_criteria": [], "fallback": "失敗時メッセージ" }
+のように記述してください。MineDojo シミュレーションに委譲したい場合は executor="minedojo"
+を指定し、args.mission_id に候補ミッション ID を含めます。
+
+曖昧さが残る場合は clarification_needed を confirmation（全体方針の確認）
+または data_gap（追加データの不足）で指定し、resp に日本語の確認質問を含め、
+backlog に chat 用のタスク概要を入れて next_action="chat" としてください。
+確認不要なら next_action="execute" とし、confidence は計画の確からしさを
+0.0～1.0 で数値化してください。recovery_hints には直近障壁から引き継いだ
+教訓を 1 行ずつ列挙し、次回の再計画でも同じ問題を避けられるようにしてください。
 """
 BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞している作業の概要を理解し、
 プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
@@ -681,6 +829,48 @@ json のみ。例：
   "detected_modalities": ["text"],
   "backlog": [],
   "next_action": "execute",
+  "goal_profile": {{
+    "summary": "食料不足を解消するための農作業",
+    "category": "farm",
+    "priority": "medium",
+    "success_criteria": ["パンを 6 個以上確保"],
+    "blockers": []
+  }},
+  "constraints": [
+    {{"label": "夜間の敵対モブ", "rationale": "畑周辺が暗い", "severity": "soft"}}
+  ],
+  "execution_hints": [
+    {{"key": "inventory.wheat", "value": "0", "source": "memory"}}
+  ],
+  "directives": [
+    {{
+      "directive_id": "step-1",
+      "step": "畑へ移動",
+      "label": "畑まで移動",
+      "category": "move",
+      "executor": "mineflayer",
+      "args": {{"coordinates": {{"x": -10, "y": 64, "z": 20}}}},
+      "safety_checks": [],
+      "success_criteria": ["畑の入口に到達"]
+    }},
+    {{
+      "directive_id": "step-2",
+      "step": "小麦を収穫",
+      "label": "成熟小麦の収穫",
+      "category": "farm",
+      "executor": "mineflayer",
+      "args": {{"target": "wheat"}}
+    }},
+    {{
+      "directive_id": "step-3",
+      "step": "パンを作る",
+      "label": "パンをクラフト",
+      "category": "craft",
+      "executor": "mineflayer",
+      "args": {{"item": "bread", "amount": 6}}
+    }}
+  ],
+  "recovery_hints": [],
   "react_trace": [
     {{"thought": "農作業を開始する準備が必要", "action": "畑へ移動", "observation": ""}},
     {{"thought": "材料を確保する", "action": "小麦を収穫", "observation": ""}},

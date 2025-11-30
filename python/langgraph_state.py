@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, TypedDict
 
 from utils import log_structured_event, setup_logger
 
@@ -61,6 +61,7 @@ class UnifiedPlanState(TypedDict, total=False):
     structured_events: List[Dict[str, Any]]
     structured_event_history: List[Dict[str, Any]]
     perception_history: List[Dict[str, Any]]
+    recovery_hints: List[str]
 
 
 def _serialize_for_log(data: Mapping[str, Any]) -> Dict[str, Any]:
@@ -106,4 +107,25 @@ def record_structured_step(
     return {"structured_events": events, "step_label": step_label, "inputs": entry["inputs"], "outputs": entry["outputs"], "error": error}
 
 
-__all__ = ["UnifiedPlanState", "record_structured_step"]
+def record_recovery_hints(state: UnifiedPlanState, hints: Sequence[str]) -> Dict[str, Any]:
+    """再計画用ヒントをステートへ保存し、ログにも残す。"""
+
+    recovered: List[str] = []
+    for hint in hints:
+        text = str(hint or "").strip()
+        if text:
+            recovered.append(text)
+    if not recovered:
+        return {}
+
+    log_structured_event(
+        logger,
+        "langgraph_recovery_hints",
+        context={"count": len(recovered), "preview": recovered[:3]},
+        langgraph_node_id="recovery_hints",
+    )
+    state["recovery_hints"] = recovered
+    return {"recovery_hints": recovered}
+
+
+__all__ = ["UnifiedPlanState", "record_structured_step", "record_recovery_hints"]

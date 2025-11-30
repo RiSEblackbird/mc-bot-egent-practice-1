@@ -140,6 +140,17 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 例外として即座に返します。Mineflayer 側への送信時には `event_level=progress/success/fault` とコマンド ID を `context` に含める
 ため、Node 側の構造化ログと突き合わせれば「どのチャット指示がどのペイロードに変換され、どう応答したか」を時系列で確認できます。
 
+#### 3.2.5 自然言語→ActionDirective DSL
+
+`python/planner.py` の LangGraph ノードは Responses API の JSON 応答を `PlanOut` の DSL へ正規化し、以下のフィールドを追加しました。
+
+- `goal_profile` … ゴール要約/カテゴリ/優先度を 1 つの構造体で共有。`success_criteria` にミッション完了条件、`blockers` に既知の障害を列挙します。
+- `constraints` / `execution_hints` … 「夜は敵対モブが湧く」「在庫: torch=0」といった制約と、Memory 由来のヒントを配列化。LangGraph → Mineflayer の判断材料になります。
+- `directives` … 各 plan ステップと 1:1 で結びつく `ActionDirective`。`executor`（`mineflayer` / `minedojo` / `chat`）と `args.coordinates` を指定すると、Python 側はヒューリスティックをスキップし、指示カテゴリ・座標をそのまま LangGraph へ渡します。
+- `recovery_hints` … 直近の障壁や Reflexion プロンプトから引き継いだ教訓。`langgraph_state.record_recovery_hints()` を通じて再計画ノードへも共有され、同じ失敗の再発を防ぎます。
+
+Python エージェントは directive メタデータを `Actions.begin_directive_scope()` → `_dispatch()` を経由して WebSocket ペイロードの `meta` に添付します。`node-bot/runtime/telemetry.ts` は `command.meta.directive_id` / `command.meta.executor` を span 属性へ記録し、`mineflayer.directive.received` カウンターとしてメトリクス化するため、OpenTelemetry 上で「どの目的の指示がどの executor へ渡ったか」を直接観測できます。
+
 #### MineDojo ミッション連携
 
 * Python エージェントは行動タスクの分類結果から MineDojo ミッション ID を推論し、該当カテゴリでは `python/services/minedojo_client.py` を介してミッション情報とデモを取得します。
@@ -154,6 +165,7 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 
 * LangSmith への送信は `LANGSMITH_ENABLED` が `true` のときに有効化され、`LANGSMITH_API_URL` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` / `LANGSMITH_TAGS` でエンドポイントやタグを指定します。
 * `ThoughtActionObservationTracer` を `MineDojoSelfDialogueExecutor` が内部で利用し、ReAct の Thought/Action/Observation それぞれを親子 Run として送信します。CI ではダミークライアントを差し込んで外部依存なく検証するため、LangSmith が無効でもフロー全体は no-op で安全に実行されます。
+* directive メタデータは span 属性（`command.meta.directive_id` / `command.meta.executor` など）にも自動付与され、MineDojo への委譲やチャット専用 directive を LangSmith 側で直接フィルタリングできるようになりました。
 
 #### LangGraph 構造化ログとリカバリー
 

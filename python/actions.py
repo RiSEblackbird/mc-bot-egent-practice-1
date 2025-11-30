@@ -64,6 +64,17 @@ class Actions:
         # Bridge レベルのリトライをチャット通知などに転用するためのフック。
         self._on_bridge_retry = on_bridge_retry
         self._on_bridge_give_up = on_bridge_give_up
+        self._current_directive_meta: Optional[Dict[str, Any]] = None
+
+    def begin_directive_scope(self, meta: Dict[str, Any]) -> None:
+        """直後のコマンドへ directive メタデータを付与する。"""
+
+        self._current_directive_meta = dict(meta)
+
+    def end_directive_scope(self) -> None:
+        """directive メタデータのスコープを終了する。"""
+
+        self._current_directive_meta = None
 
     async def say(self, text: str) -> Dict[str, Any]:
         """チャット送信コマンドを Mineflayer へ中継する。"""
@@ -305,15 +316,18 @@ class Actions:
 
         command_id = next(self._command_seq)
         started_at = time.perf_counter()
+        wire_payload = dict(payload)
+        if self._current_directive_meta:
+            wire_payload["meta"] = dict(self._current_directive_meta)
         log_structured_event(
             self.logger,
             "dispatch prepared",
             event_level="progress",
-            context={"command": command, "command_id": command_id, "payload": payload},
+            context={"command": command, "command_id": command_id, "payload": wire_payload},
         )
         try:
             resp = await self.bridge.send(
-                payload,
+                wire_payload,
                 on_retry=self._on_bridge_retry,
                 on_give_up=self._on_bridge_give_up,
             )
@@ -323,7 +337,7 @@ class Actions:
                 "dispatch failed",
                 level=logging.ERROR,
                 event_level="fault",
-                context={"command": command, "command_id": command_id, "payload": payload},
+                context={"command": command, "command_id": command_id, "payload": wire_payload},
                 exc_info=error,
             )
             raise
@@ -338,7 +352,7 @@ class Actions:
             context={
                 "command": command,
                 "command_id": command_id,
-                "payload": payload,
+                "payload": wire_payload,
                 "response": resp,
                 "duration_sec": round(elapsed, 3),
             },
