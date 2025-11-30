@@ -27,13 +27,23 @@
   ログを出した上で `BridgeClient.stop()` を必ず呼ぶ。液体検知後は `Bridge` 側の SSE にも `reason=liquid_detected` が流れるため、
   README の障害通知仕様と整合する。
 
+## 方向推定（Auto モード）
+
+- `python/cli.py tunnel --dir auto` を指定すると、開始地点から東西南北へ `TUNNEL_DIR_PREVIEW_STEPS` だけ
+  フロンティアを生成し、AgentBridge の `bulk_eval` / `is_player_placed_bulk` を突合して安全度をスコア化します。
+- 液体・WorldGuard の機能ブロック・プレイヤー設置ブロックはそれぞれペナルティを付与し、残りの空間に
+  ついては空気と自然ブロックで重み付けを変えながら報酬を与えます。
+- もっともスコアが高い方向を CLI が選択し、`[Tunnel] 推定方向: east (+X)` のように標準出力へ通知します。
+- スコアが全方向で 0 以下の場合は CLI が `SystemExit` を投げてジョブを開始せず、危険要因の一例を
+  メッセージに含めます。影響範囲の再評価やアンカー座標の微修正が必要な場合に備えたフェイルセーフです。
+
 ## テスト
 
 - `tests/stubs/bridge_stub.py` で AgentBridge のテストダブルを用意。
 - `tests/test_tunnel_mode.py` で採掘マスクのユニットテストと TunnelMode の簡易統合テストを実施。
+- `tests/test_tunnel_direction.py` で新しい自動方向推定のスコアリングとエラー経路を検証。
 
 ## 今後の拡張候補
 
-- `--dir auto` オプションの実装（CoreProtect ログ解析による方向推定）。
 - 液体検知時の自動封止やたいまつ設置位置の柔軟化。
 - WebSocket による進捗通知や停止理由のリアルタイム配信。

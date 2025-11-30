@@ -262,10 +262,21 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
 Python 側に `python/cli.py` を追加し、継続採掘ジョブを CLI から起動できるようにしました。
 
 ```bash
+# 明示的に方向を指定する
 python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --section 2x2 --len 64 --owner Taishi
+# 近傍評価から自動で方向を推定する
+python -m python.cli tunnel --world world --anchor 100 12 200 --dir auto --section 2x2 --len 64
 ```
 
-`--dir` はカードinal方向ベクトル（例: `1 0 0`）を指定します。今後 `auto` 推定を実装予定のため、現時点では必須引数です。ジョブ開始後は AgentBridge 経由でバルク環境評価と CoreProtect チェックを行い、Mineflayer には `mineBlocks` / `placeTorch` コマンドを送信します。`.env` に追加した `BRIDGE_URL` などの変数で接続先やたいまつ間隔を調整できます。
+`--dir` にはカードinal方向ベクトル（例: `1 0 0`）を直接渡すか、`auto` を指定すると Paper 側の AgentBridge から取得した `bulk_eval` / `is_player_placed_bulk` の結果をもとに安全な東西南北を自動推定します。自動モードでは液体や WorldGuard の機能ブロックに近い方向をペナルティ化し、スコアが最も高い方向を CLI が表示します。ジョブ開始後は AgentBridge 経由でバルク環境評価と CoreProtect チェックを行い、Mineflayer には `mineBlocks` / `placeTorch` コマンドを送信します。`.env` に追加した `BRIDGE_URL` などの変数で接続先やたいまつ間隔を調整できます。
+
+AgentBridge からの危険通知やジョブ状態をチャットレスで追跡したい場合は、SSE ベースのウォッチャーを用意しました。
+
+```bash
+python -m python.cli agentbridge jobs watch --danger-only --format text
+```
+
+`--job-id` でジョブ単位にフィルタし、`--danger-only` で `warning`/`fault` レベルのみを表示可能です。`--format json` を指定すると `jq` などにパイプできるため、blazity 流の CLI から Paper の危険検知タイムラインを即座に確認できます。
 
 ## 4. .env
 
@@ -276,6 +287,8 @@ python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --sect
   Responses API の接続情報と推論パラメータ。gpt-5-mini のような温度固定モデルでは `OPENAI_TEMPERATURE` を送信しないため、値を入れてもログに警告が出るだけで無視されます。
 - `LLM_TIMEOUT_SECONDS`  
   Responses API 呼び出しを強制的に打ち切る秒数。デフォルトは 30 秒。
+- `PLAN_CONFIDENCE_REVIEW_THRESHOLD`, `PLAN_CONFIDENCE_CRITICAL_THRESHOLD`  
+  LangGraph の `pre_action_review` ノードが自動確認に切り替わる確信度しきい値。前者はチャット確認へ誘導する境界値、後者は必ず確認を挟む危険域を定義します。
 
 ### 4.2 LangSmith / 可観測性
 - `LANGSMITH_ENABLED`, `LANGSMITH_API_URL`, `LANGSMITH_PROJECT`, `LANGSMITH_API_KEY`, `LANGSMITH_TAGS`  

@@ -1069,6 +1069,10 @@ class AgentOrchestrator:
         )
         self._record_plan_summary(plan_out)
 
+        if await self._maybe_trigger_minedojo_autorecovery(plan_out):
+            self.memory.set("last_chat", {"username": task.username, "message": task.message})
+            return
+
         structured_coords = self._extract_argument_coordinates(plan_out.arguments)
         if structured_coords:
             self.logger.info(
@@ -1221,6 +1225,70 @@ class AgentOrchestrator:
             step_index,
         )
         return True
+
+    async def _maybe_trigger_minedojo_autorecovery(self, plan_out: PlanOut) -> bool:
+        executor = getattr(self, "_self_dialogue_executor", None)
+        if executor is None or not isinstance(plan_out, PlanOut):
+            return False
+
+        intent = (plan_out.intent or "").strip()
+        react_trace: List[ReActStep] = list(getattr(plan_out, "react_trace", []) or [])
+        has_steps = bool(plan_out.plan)
+        trigger_for_empty_plan = not has_steps
+        trigger_for_minedojo_intent = bool(intent and intent in self._MINEDOJO_MISSION_BINDINGS and react_trace)
+        if not (trigger_for_empty_plan or trigger_for_minedojo_intent):
+            return False
+
+        mission_id = self._resolve_mission_id_from_plan(plan_out)
+        if not mission_id:
+            return False
+
+        if not react_trace:
+            react_trace = [
+                ReActStep(
+                    thought="LLM が手順を返さなかったため、自己対話ログで補完する",
+                    action="self_dialogue",
+                    observation="",
+                )
+            ]
+
+        skill_id = f"autorecover::{mission_id}::{int(time.time())}"
+        try:
+            await executor.run_self_dialogue(
+                mission_id,
+                react_trace,
+                skill_id=skill_id,
+                title=f"Auto recovery for {mission_id}",
+                success=False,
+            )
+        except Exception:
+            self.logger.exception("MineDojo autorecovery failed mission=%s", mission_id)
+            return False
+
+        await self.actions.say(
+            "十分な手順を生成できなかったため、記録済みの自己対話ログを参照して計画を立て直します。"
+        )
+        log_structured_event(
+            self.logger,
+            "minedojo_autorecovery_triggered",
+            event_level="recovery",
+            context={
+                "mission_id": mission_id,
+                "intent": intent or "(unknown)",
+                "reason": "empty_plan" if trigger_for_empty_plan else "intent_directive",
+            },
+        )
+        return True
+
+    def _resolve_mission_id_from_plan(self, plan_out: PlanOut) -> Optional[str]:
+        intent = (plan_out.intent or "").strip()
+        if intent and intent in self._MINEDOJO_MISSION_BINDINGS:
+            return self._MINEDOJO_MISSION_BINDINGS[intent]
+        if plan_out.goal_profile and plan_out.goal_profile.category:
+            category = plan_out.goal_profile.category
+            if category in self._MINEDOJO_MISSION_BINDINGS:
+                return self._MINEDOJO_MISSION_BINDINGS[category]
+        return None
 
     def _resolve_directive_for_step(
         self,

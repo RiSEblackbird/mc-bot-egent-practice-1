@@ -7,11 +7,12 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from actions import Actions
 from bridge_client import BridgeClient, BridgeError
 from heuristics.artificial_filters import build_mining_mask
+from .tunnel_geometry import generate_window, right_vector
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,13 @@ class TunnelMode:
         try:
             while step < length:
                 window_positions = list(
-                    self._generate_window(anchor, direction, section, step, min(TUNNEL_WINDOW_LENGTH, length - step))
+                    generate_window(
+                        anchor,
+                        direction,
+                        section,
+                        step,
+                        min(TUNNEL_WINDOW_LENGTH, length - step),
+                    )
                 )
                 try:
                     evaluations = await self._call_bridge(
@@ -139,43 +146,6 @@ class TunnelMode:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
-    def _generate_window(
-        self,
-        anchor: Dict[str, int],
-        direction: Sequence[int],
-        section: TunnelSection,
-        step: int,
-        window: int,
-    ) -> Iterable[Dict[str, int]]:
-        dx, dy, dz = direction
-        if dy != 0:
-            raise ValueError("TunnelMode は水平のみ対応しています")
-        lateral = self._lateral_vector(direction)
-        ax, ay, az = anchor["x"], anchor["y"], anchor["z"]
-        for offset in range(window):
-            base_x = ax + dx * (step + offset)
-            base_y = ay
-            base_z = az + dz * (step + offset)
-            for w in range(section.width):
-                for h in range(section.height):
-                    yield {
-                        "x": base_x + lateral[0] * w,
-                        "y": base_y + h + lateral[1] * w,
-                        "z": base_z + lateral[2] * w,
-                    }
-
-    def _lateral_vector(self, direction: Sequence[int]) -> Tuple[int, int, int]:
-        dx, _, dz = direction
-        if dx == 1 and dz == 0:
-            return (0, 0, 1)
-        if dx == -1 and dz == 0:
-            return (0, 0, 1)
-        if dz == 1 and dx == 0:
-            return (1, 0, 0)
-        if dz == -1 and dx == 0:
-            return (1, 0, 0)
-        raise ValueError("方向ベクトルが不正です")
-
     def _torch_position(
         self,
         anchor: Dict[str, int],
@@ -184,7 +154,7 @@ class TunnelMode:
     ) -> Dict[str, int]:
         dx, _, dz = direction
         ax, ay, az = anchor["x"], anchor["y"], anchor["z"]
-        right = self._right_vector(direction)
+        right = right_vector(direction)
         base_x = ax + dx * step
         base_z = az + dz * step
         return {
@@ -192,18 +162,6 @@ class TunnelMode:
             "y": ay + 1,
             "z": base_z + right[2],
         }
-
-    def _right_vector(self, direction: Sequence[int]) -> Tuple[int, int, int]:
-        dx, _, dz = direction
-        if dx == 1 and dz == 0:
-            return (0, 0, -1)
-        if dx == -1 and dz == 0:
-            return (0, 0, 1)
-        if dz == 1 and dx == 0:
-            return (-1, 0, 0)
-        if dz == -1 and dx == 0:
-            return (1, 0, 0)
-        raise ValueError("方向ベクトルが不正です")
 
     def _detect_hard_stop(
         self,
