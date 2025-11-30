@@ -10,15 +10,22 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from skills import SkillMatch
+from skills import SkillMatch, SkillNode
 from services.building_service import (
     BuildingPhase,
     advance_building_state,
     checkpoint_to_dict,
     restore_checkpoint,
 )
+from services.minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
+from services.skill_repository import SkillRepository
 
-from utils import log_structured_event, span_context
+from utils import (
+    ThoughtActionObservationTracer,
+    log_structured_event,
+    setup_logger,
+    span_context,
+)
 from langgraph_state import UnifiedPlanState, record_structured_step
 from planner import PlanOut, plan
 
@@ -1054,4 +1061,164 @@ class UnifiedAgentGraph:
         return graph.compile()
 
 
-__all__ = ["ActionGraph", "ActionTaskRule", "ChatTask", "UnifiedAgentGraph"]
+class MineDojoSelfDialogueExecutor:
+    """MineDojo 環境での自己対話ループをまとめる軽量エグゼキューター。"""
+
+    def __init__(
+        self,
+        *,
+        actions: Any,
+        client: MineDojoClient,
+        skill_repository: SkillRepository,
+        tracer: ThoughtActionObservationTracer,
+        env_params: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        # MineDojo 連携とスキル永続化を 1 箇所で制御し、自己対話の成果を Mineflayer へ共有する。
+        self._actions = actions
+        self._client = client
+        self._skill_repository = skill_repository
+        self._tracer = tracer
+        self._env_params = env_params or {}
+        self._logger = setup_logger("agent.self_dialogue")
+
+    async def run_self_dialogue(
+        self,
+        mission_id: str,
+        react_trace: Sequence[ReActStep],
+        *,
+        skill_id: str,
+        title: str,
+        success: bool,
+    ) -> None:
+        """ReAct ステップを LangSmith へ送信しつつスキル登録と使用実績を更新する。"""
+
+        mission = await self._client.fetch_mission(mission_id)
+        demonstrations = await self._client.fetch_demonstrations(mission_id, limit=1)
+        run_id = self._tracer.start_run(
+            "minedojo-self-dialogue",
+            metadata={
+                "mission_id": mission_id,
+                "sim_env": self._env_params.get("sim_env"),
+                "sim_seed": self._env_params.get("sim_seed"),
+                "sim_max_steps": self._env_params.get("sim_max_steps"),
+            },
+        )
+
+        for index, step in enumerate(react_trace):
+            self._tracer.record_step(
+                run_id,
+                step=step,
+                step_index=index,
+                metadata={"mission": mission_id},
+            )
+
+        node = self._build_skill_node(
+            mission_id,
+            react_trace,
+            skill_id=skill_id,
+            title=title,
+            mission=mission,
+            demonstrations=demonstrations,
+        )
+        await self._skill_repository.register_skill(node)
+        await self._skill_repository.record_usage(skill_id, success=success)
+        await self._notify_actions(node, react_trace, mission_id=mission_id, success=success)
+        self._tracer.complete_run(
+            run_id,
+            outputs={"skill_id": skill_id, "success": success},
+            error=None if success else "mission run marked as failed",
+        )
+
+    def _build_skill_node(
+        self,
+        mission_id: str,
+        react_trace: Sequence[ReActStep],
+        *,
+        skill_id: str,
+        title: str,
+        mission: Optional[MineDojoMission],
+        demonstrations: Sequence[MineDojoDemonstration],
+    ) -> SkillNode:
+        """MineDojo 由来のメタデータを踏まえてスキルノードを生成する。"""
+
+        description_parts: List[str] = []
+        if mission:
+            description_parts.append(mission.objective)
+        if self._env_params.get("sim_env"):
+            description_parts.append(f"env={self._env_params['sim_env']}")
+        if self._env_params.get("sim_max_steps"):
+            description_parts.append(f"max_steps={self._env_params['sim_max_steps']}")
+        if demonstrations:
+            description_parts.append(f"demo={demonstrations[0].summary}")
+
+        steps_text = self._extract_steps(react_trace)
+        tags: List[str] = ["minedojo", mission_id]
+        if mission:
+            tags.extend(list(mission.tags))
+        if self._env_params.get("sim_env"):
+            tags.append(str(self._env_params.get("sim_env")))
+
+        return SkillNode(
+            identifier=skill_id,
+            title=title or (mission.title if mission else mission_id),
+            description=" / ".join(part for part in description_parts if part) or "MineDojo derived skill",
+            categories=tuple(mission.tags) if mission else (),
+            tags=tuple(tags),
+            keywords=tuple(step for step in steps_text if step),
+            examples=tuple(steps_text),
+        )
+
+    async def _notify_actions(
+        self,
+        node: SkillNode,
+        react_trace: Sequence[ReActStep],
+        *,
+        mission_id: str,
+        success: bool,
+    ) -> None:
+        """Mineflayer 側へ registerSkill/invokeSkill を送信し、学習結果を共有する。"""
+
+        steps_text = self._extract_steps(react_trace)
+        if hasattr(self._actions, "register_skill"):
+            try:
+                await self._actions.register_skill(  # type: ignore[attr-defined]
+                    skill_id=node.identifier,
+                    title=node.title,
+                    description=node.description,
+                    steps=steps_text or ["self-dialogue"],
+                    tags=list(node.tags),
+                )
+            except Exception:
+                self._logger.warning("register_skill dispatch failed for %s", node.identifier)
+
+        if hasattr(self._actions, "invoke_skill"):
+            context = f"mission={mission_id} success={success}"
+            try:
+                await self._actions.invoke_skill(  # type: ignore[attr-defined]
+                    node.identifier,
+                    context=context,
+                )
+            except Exception:
+                self._logger.warning("invoke_skill dispatch failed for %s", node.identifier)
+
+    def _extract_steps(self, react_trace: Sequence[ReActStep]) -> List[str]:
+        """ReAct ステップから LangSmith とスキル登録向けの簡潔な手順を抽出する。"""
+
+        steps: List[str] = []
+        for step in react_trace:
+            candidate = step.action or step.thought or step.observation
+            text = str(candidate or "").strip()
+            if text:
+                steps.append(text)
+        if not steps:
+            steps.append("demonstration placeholder")
+        return steps
+
+
+__all__ = [
+    "ActionGraph",
+    "ActionTaskRule",
+    "ChatTask",
+    "UnifiedAgentGraph",
+    "MineDojoSelfDialogueExecutor",
+]

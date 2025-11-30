@@ -21,6 +21,14 @@ def test_load_agent_config_returns_defaults() -> None:
     assert config.minedojo.api_base_url == "https://api.minedojo.org/v1"
     assert config.minedojo.cache_dir == "var/cache/minedojo"
     assert config.minedojo.api_key is None
+    assert config.minedojo.sim_env == "creative"
+    assert config.minedojo.sim_seed == 42
+    assert config.minedojo.sim_max_steps == 120
+    assert config.langsmith.api_url == "https://api.smith.langchain.com"
+    assert config.langsmith.project == "mc-bot"
+    assert config.langsmith.api_key is None
+    assert config.langsmith.enabled is False
+    assert config.langsmith.tags == ()
     assert config.llm_timeout_seconds == 30.0
     assert config.queue_max_size == 20
     assert config.worker_task_timeout_seconds == 300.0

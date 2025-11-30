@@ -15,7 +15,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from dotenv import load_dotenv
 from websockets import WebSocketServerProtocol
@@ -39,11 +39,12 @@ from planner import (
     plan,
 )
 from skills import SkillMatch
-from utils import log_structured_event, setup_logger
+from utils import ThoughtActionObservationTracer, log_structured_event, setup_logger
 from agent_orchestrator import (
     ActionGraph,
     ActionTaskRule,
     ChatTask,
+    MineDojoSelfDialogueExecutor,
     build_reflection_prompt,
 )
 
@@ -2197,6 +2198,52 @@ class AgentWebSocketServer:
 
         self.logger.error("unsupported payload type=%s", payload_type)
         return {"ok": False, "error": "unsupported type"}
+
+
+async def run_minedojo_self_dialogue(
+    mission_id: str,
+    react_trace: Sequence[ReActStep],
+    *,
+    skill_id: str,
+    title: str,
+    success: bool = True,
+) -> None:
+    """MineDojo 環境向け自己対話を単体実行する簡易エントリポイント。"""
+
+    bridge = BotBridge(WS_URL)
+    actions = Actions(bridge)
+    seed_path = Path(__file__).resolve().parent / "skills" / "seed_library.json"
+    skill_repo = SkillRepository(
+        SKILL_LIBRARY_PATH,
+        seed_path=str(seed_path),
+    )
+    minedojo_client = MineDojoClient(AGENT_CONFIG.minedojo)
+    tracer = ThoughtActionObservationTracer(
+        api_url=AGENT_CONFIG.langsmith.api_url,
+        api_key=AGENT_CONFIG.langsmith.api_key,
+        project=AGENT_CONFIG.langsmith.project,
+        default_tags=AGENT_CONFIG.langsmith.tags,
+        enabled=AGENT_CONFIG.langsmith.enabled,
+    )
+    executor = MineDojoSelfDialogueExecutor(
+        actions=actions,
+        client=minedojo_client,
+        skill_repository=skill_repo,
+        tracer=tracer,
+        env_params={
+            "sim_env": AGENT_CONFIG.minedojo.sim_env,
+            "sim_seed": AGENT_CONFIG.minedojo.sim_seed,
+            "sim_max_steps": AGENT_CONFIG.minedojo.sim_max_steps,
+        },
+    )
+    await executor.run_self_dialogue(
+        mission_id,
+        react_trace,
+        skill_id=skill_id,
+        title=title,
+        success=success,
+    )
+    await minedojo_client.aclose()
 
 
 async def main() -> None:

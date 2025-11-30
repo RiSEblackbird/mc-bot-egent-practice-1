@@ -82,6 +82,7 @@ python agent.py
 - Python: 3.12.12
 - Node.js: 22.x（`.nvmrc` の指定に従う）
 - Python 依存（固定版）: `openai==1.109.1` / `python-dotenv==1.0.1` / `websockets==12.0` / `httpx==0.27.2` / `pydantic==2.8.2` / `watchfiles==0.21.0` / `langgraph==0.1.16` / `opentelemetry-api==1.27.0` / `opentelemetry-sdk==1.27.0` / `opentelemetry-exporter-otlp-proto-http==1.27.0`
+ / `langsmith==0.1.147`
 
 `pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/agent.py` の起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。
 
@@ -144,6 +145,12 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 * API 経由で MineDojo を利用する場合は `.env`（または環境変数）へ `MINEDOJO_API_KEY` を設定してください。ローカルデータセットを参照する場合は `MINEDOJO_DATASET_DIR` に JSON の配置ディレクトリ（`missions/mission_id.json`・`demos/mission_id.json`）を指定します。
 * キャッシュは `MINEDOJO_CACHE_DIR`（既定: `var/cache/minedojo`）へ保存されます。API 応答やデモ軌跡にはライセンス制限・個人データが含まれる可能性があるため、リポジトリへコミットしないでください。`.gitignore` にも除外設定を追加済みです。
 * 具体的なディレクトリ構成やデータ利用ポリシーは `docs/minedojo_integration.md` を参照してください。MineDojo 利用規約に従い、商用利用可否や二次配布の扱いをチーム内で確認してください。
+* `MINEDOJO_SIM_ENV` / `MINEDOJO_SIM_SEED` / `MINEDOJO_SIM_MAX_STEPS` で模擬環境パラメータを指定できます。`run_minedojo_self_dialogue` から自己対話フローを起動すると、これらの値とミッション/デモ情報を `MineDojoSelfDialogueExecutor` がまとめて参照し、スキル登録や学習実績の更新まで一気通貫で行います。
+
+#### LangSmith トレース
+
+* LangSmith への送信は `LANGSMITH_ENABLED` が `true` のときに有効化され、`LANGSMITH_API_URL` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` / `LANGSMITH_TAGS` でエンドポイントやタグを指定します。
+* `ThoughtActionObservationTracer` を `MineDojoSelfDialogueExecutor` が内部で利用し、ReAct の Thought/Action/Observation それぞれを親子 Run として送信します。CI ではダミークライアントを差し込んで外部依存なく検証するため、LangSmith が無効でもフロー全体は no-op で安全に実行されます。
 
 #### LangGraph 構造化ログとリカバリー
 

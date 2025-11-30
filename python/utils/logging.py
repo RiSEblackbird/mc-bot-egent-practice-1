@@ -14,7 +14,8 @@ from typing import Any, Dict, Iterator, Mapping, Optional
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, OTLPSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import Span, Status, StatusCode
 
@@ -82,10 +83,7 @@ def _configure_tracer_provider(service_name: str) -> TracerProvider:
         resource=Resource.create({"service.name": service_name}),
         sampler=ParentBased(TraceIdRatioBased(sampler_ratio)),
     )
-    exporter = OTLPSpanExporter(
-        endpoint=endpoint,
-        insecure=endpoint.startswith("http://"),
-    )
+    exporter = OTLPSpanExporter(endpoint=endpoint)
     processor = BatchSpanProcessor(exporter)
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
