@@ -38,6 +38,9 @@ class UnifiedPlanState(TypedDict, total=False):
     last_target_coords: Optional[Tuple[int, int, int]]
     explicit_coords: Optional[Tuple[int, int, int]]
     backlog: List[Dict[str, str]]
+    next_action: str
+    confirmation_required: bool
+    follow_up_message: str
     rule_label: str
     rule_implemented: bool
     handled: bool
