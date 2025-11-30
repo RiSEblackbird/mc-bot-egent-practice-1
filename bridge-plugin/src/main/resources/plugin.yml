@@ -1,3 +1,4 @@
+# AgentBridge requires a non-empty api_key in config.yml; the plugin aborts startup without it.
 name: AgentBridge
 main: com.example.bridge.AgentBridgePlugin
 version: 0.1.0

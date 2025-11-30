@@ -5,7 +5,7 @@
 ## Java: AgentBridge プラグイン
 
 - `bridge-plugin/` に Gradle プロジェクトを追加し、Paper 1.20 API を `compileOnly` で参照。
-- `com.sun.net.httpserver.HttpServer` を用いた軽量 HTTP サーバーを起動し、`X-API-Key` 認証を必須化。
+- `com.sun.net.httpserver.HttpServer` を用いた軽量 HTTP サーバーを起動し、`X-API-Key` 認証を必須化。`config.yml` の `api_key` が空・`CHANGE_ME` の場合は起動時に警告を出してプラグインを停止し、誤公開を防ぐ。
 - `/v1/jobs/*` エンドポイントで継続採掘ジョブの開始・前進・停止を提供。
 - `/v1/blocks/bulk_eval` と `/v1/coreprotect/is_player_placed_bulk` で断面評価と CoreProtect 照会をまとめて返却。
 - 液体を検知した場合は `/v1/blocks/bulk_eval` が HTTP 409 と停止座標を返し、`/v1/jobs/advance` も同様にブロック状態を明示する。

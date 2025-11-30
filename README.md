@@ -215,9 +215,9 @@ docker compose up --build
 
 1. `bridge-plugin/libs/` に CoreProtect の jar を配置します（`.gitkeep` のみコミット済み）。
 2. Java 21 + Gradle を用意し、プラグイン直下で `./gradlew shadowJar` を実行すると `build/libs/AgentBridge-0.1.0.jar` が生成されます。
-3. Paper サーバーの `plugins/` へ配置し、初回起動後に生成される `plugins/AgentBridge/config.yml` の `api_key` を `.env` の `BRIDGE_API_KEY` と一致させます。
+3. Paper サーバーの `plugins/` へ配置し、初回起動後に生成される `plugins/AgentBridge/config.yml` の `api_key` を `.env` の `BRIDGE_API_KEY` と一致させます。`api_key` が空や `CHANGE_ME` のままの場合は HTTP サーバーを起動せず、プラグインを自動的に無効化します。
 
-HTTP サーバーは `config.yml` の `bind` / `port` で調整でき、`GET /v1/health` にアクセスすると WorldGuard/CoreProtect の有効状態を確認できます。`POST /v1/jobs/*` 系エンドポイントは必ず `X-API-Key` ヘッダーで保護してください。
+HTTP サーバーは `config.yml` の `bind` / `port` で調整でき、`GET /v1/health` にアクセスすると WorldGuard/CoreProtect の有効状態を確認できます。`POST /v1/jobs/*` 系エンドポイントは必ず `X-API-Key` ヘッダーで保護してください。認証ヘッダーがない要求はすべて拒否され、api_key が設定されていない状態ではサーバー自体が立ち上がりません。
 `langgraph.retry_endpoint` を設定すると、`POST /v1/events/disconnected` で接続断が通知された際に LangGraph リトライノードを HTTP 経由で呼び出し、Paper 側のログへノード ID とチェックポイント ID を構造化出力します。
 
 ### 3.5 継続採掘モード CLI

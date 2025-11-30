@@ -74,10 +74,24 @@ public final class AgentBridgePlugin extends JavaPlugin {
         }
         httpServer = new BridgeHttpServer(this, bridgeConfig, jobRegistry, worldGuardFacade, coreProtectFacade, inspector,
                 retryHook, getLogger());
+        ensureApiKeyConfigured();
         try {
             httpServer.start();
         } catch (IOException e) {
             getLogger().log(Level.SEVERE, "Failed to start HTTP server", e);
         }
+    }
+
+    /**
+     * HTTP ブリッジが認証なしで外部公開されることを防ぐため、起動直前に API キーを検査する。
+     * 未設定の場合はログへ警告を残し、プラグインを無効化して明示的に初期化を中断する。
+     */
+    private void ensureApiKeyConfigured() {
+        if (bridgeConfig.hasValidApiKey()) {
+            return;
+        }
+        getLogger().warning("config.yml の api_key が未設定または CHANGE_ME のままです。AgentBridge を無効化します。");
+        getServer().getPluginManager().disablePlugin(this);
+        throw new IllegalStateException("AgentBridge HTTP server requires a non-empty api_key");
     }
 }
