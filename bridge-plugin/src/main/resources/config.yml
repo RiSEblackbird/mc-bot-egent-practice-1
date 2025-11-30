@@ -20,3 +20,6 @@ langgraph:
   retry_endpoint: ""
   api_key: ""
   timeout_ms: 2000
+events:
+  stream_enabled: true
+  keepalive_seconds: 25

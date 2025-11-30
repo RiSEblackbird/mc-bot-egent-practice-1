@@ -20,6 +20,7 @@ public final class AgentBridgeConfig {
     private final SafetyConfig safety;
     private final LoggingConfig logging;
     private final LangGraphConfig langGraph;
+    private final EventsConfig events;
 
     /**
      * API キーの未設定状態を明示するための既定値。
@@ -36,7 +37,8 @@ public final class AgentBridgeConfig {
             FrontierConfig frontier,
             SafetyConfig safety,
             LoggingConfig logging,
-            LangGraphConfig langGraph) {
+            LangGraphConfig langGraph,
+            EventsConfig events) {
         this.bindAddress = bindAddress;
         this.port = port;
         this.apiKey = apiKey;
@@ -46,6 +48,7 @@ public final class AgentBridgeConfig {
         this.safety = safety;
         this.logging = logging;
         this.langGraph = langGraph;
+        this.events = events;
     }
 
     public String bindAddress() {
@@ -84,6 +87,10 @@ public final class AgentBridgeConfig {
         return langGraph;
     }
 
+    public EventsConfig events() {
+        return events;
+    }
+
     /**
      * Bukkit の設定ファイルから AgentBridgeConfig を構築する。
      * 必須項目が欠落している場合は例外を送出し、運用者に設定見直しを促す。
@@ -109,6 +116,9 @@ public final class AgentBridgeConfig {
                 raw.getString("langgraph.retry_endpoint", ""),
                 raw.getString("langgraph.api_key", ""),
                 Math.max(raw.getInt("langgraph.timeout_ms", 2000), 250));
+        EventsConfig eventsConfig = new EventsConfig(
+                raw.getBoolean("events.stream_enabled", true),
+                Math.max(raw.getInt("events.keepalive_seconds", 25), 5));
         return new AgentBridgeConfig(
                 bind,
                 port,
@@ -118,7 +128,8 @@ public final class AgentBridgeConfig {
                 frontierConfig,
                 safetyConfig,
                 loggingConfig,
-                langGraphConfig);
+                langGraphConfig,
+                eventsConfig);
     }
 
     private static int clampPort(int candidate) {
@@ -261,6 +272,25 @@ public final class AgentBridgeConfig {
 
         public boolean enabled() {
             return !retryEndpoint.isEmpty();
+        }
+    }
+
+    /** イベントストリーム公開に関する設定値。 */
+    public static final class EventsConfig {
+        private final boolean streamEnabled;
+        private final int keepaliveSeconds;
+
+        EventsConfig(boolean streamEnabled, int keepaliveSeconds) {
+            this.streamEnabled = streamEnabled;
+            this.keepaliveSeconds = keepaliveSeconds;
+        }
+
+        public boolean streamEnabled() {
+            return streamEnabled;
+        }
+
+        public int keepaliveSeconds() {
+            return keepaliveSeconds;
         }
     }
 }

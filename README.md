@@ -231,6 +231,9 @@ docker compose up --build
 HTTP サーバーは `config.yml` の `bind` / `port` で調整でき、`GET /v1/health` にアクセスすると WorldGuard/CoreProtect の有効状態を確認できます。`POST /v1/jobs/*` 系エンドポイントは必ず `X-API-Key` ヘッダーで保護してください。認証ヘッダーがない要求はすべて拒否され、api_key が設定されていない状態ではサーバー自体が立ち上がりません。
 `langgraph.retry_endpoint` を設定すると、`POST /v1/events/disconnected` で接続断が通知された際に LangGraph リトライノードを HTTP 経由で呼び出し、Paper 側のログへノード ID とチェックポイント ID を構造化出力します。
 
+`events.stream_enabled` を `true` にすると、`/v1/events/stream` で SSE によるイベント配信を有効化します。ジョブ開始・フロンティア更新・WorldGuard リージョン削除の進捗に加え、採掘領域内の液体検知や機能ブロック接近を `event_level` / `region` / `block_pos` 付きで push します。SSE も通常の HTTP API と同様に `X-API-Key` が必須で、`keepalive_seconds` 間隔で `event: keepalive` が送信されます。
+Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購読し、受信イベントを `detection_reports` として記憶・再計画プロンプトへ統合します。`.env` の `BRIDGE_EVENT_STREAM_PATH` や `BRIDGE_EVENT_STREAM_RECONNECT_DELAY` で経路とリトライ間隔を調整できます。
+
 ### 3.5 継続採掘モード CLI
 
 Python 側に `python/cli.py` を追加し、継続採掘ジョブを CLI から起動できるようにしました。
