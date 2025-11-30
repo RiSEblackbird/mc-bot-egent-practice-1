@@ -31,6 +31,8 @@ python/action_backlog*.json
 # LangGraph 実行時のデバッグアーティファクト（秘匿情報が混入しうるため除外）
 .langgraph/
 python/.langgraph/
+# Mermaid 図式の一時出力（内部フローや座標が含まれる可能性があるため除外）
+python/mermaid_diagrams/
 # 建築ジョブなどで生成されるチェックポイントファイル（進捗や位置情報を含むため秘匿対象）
 checkpoints/
 python/checkpoints/

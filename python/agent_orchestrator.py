@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict, TYPE_CHECKING
+import inspect
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -18,6 +19,8 @@ from services.building_service import (
 )
 
 from utils import log_structured_event
+from langgraph_state import UnifiedPlanState, record_structured_step
+from planner import PlanOut, plan
 
 if TYPE_CHECKING:
     from agent import AgentOrchestrator
@@ -92,25 +95,7 @@ class ActionTaskRule:
     priority: int = 0
 
 
-class _ActionState(TypedDict, total=False):
-    """LangGraph のステート: 行動カテゴリの処理に必要な情報を集約する。"""
-
-    category: str
-    step: str
-    last_target_coords: Optional[Tuple[int, int, int]]
-    explicit_coords: Optional[Tuple[int, int, int]]
-    backlog: List[Dict[str, str]]
-    rule_label: str
-    rule_implemented: bool
-    handled: bool
-    updated_target: Optional[Tuple[int, int, int]]
-    failure_detail: Optional[str]
-    module: str
-    active_role: str
-    role_transitioned: bool
-    role_transition_reason: Optional[str]
-    skill_candidate: SkillMatch
-    skill_status: str
+_ActionState = UnifiedPlanState
 
 
 async def _refresh_inventory_snapshot(
@@ -188,6 +173,7 @@ class ActionGraph:
             "rule_implemented": rule.implemented,
             "active_role": self._orchestrator.current_role,
             "role_transitioned": False,
+            "structured_events": [],
         }
         result = await self._graph.ainvoke(state)
         handled = bool(result.get("handled"))
@@ -201,8 +187,65 @@ class ActionGraph:
         orchestrator = self._orchestrator
         graph: StateGraph = StateGraph(_ActionState)
 
+        def _with_metadata(
+            state: _ActionState,
+            *,
+            step_label: str,
+            base: Optional[Dict[str, Any]] = None,
+            inputs: Optional[Dict[str, Any]] = None,
+            outputs: Optional[Dict[str, Any]] = None,
+            error: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            """record_structured_step を統一的に適用する薄いラッパー。"""
+
+            merged = dict(base or {})
+            merged.update(
+                record_structured_step(
+                    state,
+                    step_label=step_label,
+                    inputs=inputs,
+                    outputs=outputs,
+                    error=error,
+                )
+            )
+            return merged
+
+        def _wrap_for_logging(label: str, func):
+            async def _runner(state: _ActionState):
+                result_or_coroutine = func(state)
+                result = (
+                    await result_or_coroutine
+                    if inspect.isawaitable(result_or_coroutine)
+                    else result_or_coroutine
+                )
+                events = state.get("structured_events") or []
+                if any(event.get("step_label") == label for event in events):
+                    return result
+
+                outputs: Dict[str, Any] = {}
+                if isinstance(result, dict):
+                    outputs = {k: result.get(k) for k in ("handled", "module", "skill_status", "failure_detail") if k in result}
+                    result.update(
+                        record_structured_step(
+                            state,
+                            step_label=label,
+                            inputs={"category": state.get("category"), "step": state.get("step")},
+                            outputs=outputs,
+                        )
+                    )
+                else:
+                    record_structured_step(
+                        state,
+                        step_label=label,
+                        inputs={"category": state.get("category"), "step": state.get("step")},
+                        outputs=outputs,
+                    )
+                return result
+
+            return _runner
+
         async def initialize(state: _ActionState) -> Dict[str, Any]:
-            return {
+            base = {
                 "handled": False,
                 "updated_target": state.get("last_target_coords"),
                 "failure_detail": None,
@@ -212,44 +255,89 @@ class ActionGraph:
                 "role_transition_reason": None,
                 "skill_status": "none",
             }
+            return _with_metadata(
+                state,
+                step_label="initialize_action",
+                base=base,
+                inputs={"category": state.get("category"), "step": state.get("step")},
+                outputs={"active_role": base["active_role"]},
+            )
 
         async def seek_skill(state: _ActionState) -> Dict[str, Any]:
             category = state.get("category", "")
             step = state["step"]
             if not category:
-                return {"skill_status": "none"}
+                return _with_metadata(
+                    state,
+                    step_label="seek_skill",
+                    base={"skill_status": "none"},
+                    inputs={"step": step},
+                    outputs={"skill_status": "none"},
+                )
             match = await orchestrator._find_skill_for_step(category, step)  # type: ignore[attr-defined]
             if match is None:
-                return {"skill_status": "none"}
+                return _with_metadata(
+                    state,
+                    step_label="seek_skill",
+                    base={"skill_status": "none"},
+                    inputs={"category": category, "step": step},
+                    outputs={"skill_status": "none"},
+                )
             if match.unlocked:
                 if not hasattr(orchestrator.actions, "invoke_skill"):
                     orchestrator.logger.info(  # type: ignore[attr-defined]
                         "skill invocation skipped because Actions.invoke_skill is unavailable",
                     )
-                    return {"skill_status": "none"}
+                    return _with_metadata(
+                        state,
+                        step_label="seek_skill",
+                        base={"skill_status": "none"},
+                        inputs={"category": category, "step": step},
+                        outputs={"skill_status": "none"},
+                    )
                 handled, failure_detail = await orchestrator._execute_skill_match(match, step)  # type: ignore[attr-defined]
                 status = "handled" if handled else "failed"
                 if not handled and failure_detail is None:
                     # Mineflayer 側で未登録スキルだった場合は skill_status を none に戻し、
                     # LangGraph が通常の装備・採掘ヒューリスティックへ遷移できるようにする。
                     status = "none"
-                return {
+                base = {
                     "handled": handled,
                     "failure_detail": failure_detail,
                     "updated_target": state.get("last_target_coords"),
                     "skill_candidate": match,
                     "skill_status": status,
                 }
+                return _with_metadata(
+                    state,
+                    step_label="seek_skill",
+                    base=base,
+                    inputs={"category": category, "step": step},
+                    outputs={"skill_status": status},
+                    error=failure_detail,
+                )
             if not hasattr(orchestrator.actions, "begin_skill_exploration"):
                 orchestrator.logger.info(  # type: ignore[attr-defined]
                     "skill exploration skipped because Actions.begin_skill_exploration is unavailable",
                 )
-                return {"skill_status": "none"}
-            return {
-                "skill_candidate": match,
-                "skill_status": "locked",
-                "updated_target": state.get("last_target_coords"),
-            }
+                return _with_metadata(
+                    state,
+                    step_label="seek_skill",
+                    base={"skill_status": "none"},
+                    inputs={"category": category, "step": step},
+                    outputs={"skill_status": "none"},
+                )
+            return _with_metadata(
+                state,
+                step_label="seek_skill",
+                base={
+                    "skill_candidate": match,
+                    "skill_status": "locked",
+                    "updated_target": state.get("last_target_coords"),
+                },
+                inputs={"category": category, "step": step},
+                outputs={"skill_status": "locked"},
+            )
 
         async def apply_role_policy(state: _ActionState) -> Dict[str, Any]:
             active_role = state.get("active_role", orchestrator.current_role)
@@ -263,11 +351,18 @@ class ActionGraph:
                     transitioned = await orchestrator._apply_role_switch(desired_role, pending_reason)  # type: ignore[attr-defined]
                     if transitioned:
                         active_role = orchestrator.current_role  # type: ignore[attr-defined]
-            return {
+            base = {
                 "active_role": active_role,
                 "role_transitioned": transitioned,
                 "role_transition_reason": reason,
             }
+            return _with_metadata(
+                state,
+                step_label="apply_role_policy",
+                base=base,
+                inputs={"pending": bool(pending)},
+                outputs={"active_role": active_role, "role_transitioned": transitioned},
+            )
 
         def route_module(state: _ActionState) -> Dict[str, Any]:
             category = state.get("category", "")
@@ -282,25 +377,46 @@ class ActionGraph:
                 module = "move"
             elif category == "equip":
                 module = "equip"
-            return {"module": module}
+            return _with_metadata(
+                state,
+                step_label="route_module",
+                base={"module": module},
+                inputs={"category": category},
+                outputs={"module": module},
+            )
 
         async def trigger_exploration(state: _ActionState) -> Dict[str, Any]:
             match = state.get("skill_candidate")
             if not isinstance(match, SkillMatch):
-                return {
-                    "handled": False,
-                    "failure_detail": "探索対象のスキル候補が見つかりませんでした。",
-                    "updated_target": state.get("last_target_coords"),
-                    "skill_status": "failed",
-                }
+                return _with_metadata(
+                    state,
+                    step_label="trigger_exploration",
+                    base={
+                        "handled": False,
+                        "failure_detail": "探索対象のスキル候補が見つかりませんでした。",
+                        "updated_target": state.get("last_target_coords"),
+                        "skill_status": "failed",
+                    },
+                    inputs={"step": state.get("step")},
+                    outputs={"skill_status": "failed"},
+                    error="missing_skill_candidate",
+                )
             handled, failure_detail = await orchestrator._begin_skill_exploration(match, state["step"])  # type: ignore[attr-defined]
             status = "exploration" if handled else "failed"
-            return {
+            base = {
                 "handled": handled,
                 "failure_detail": failure_detail,
                 "updated_target": state.get("last_target_coords"),
                 "skill_status": status,
             }
+            return _with_metadata(
+                state,
+                step_label="trigger_exploration",
+                base=base,
+                inputs={"step": state.get("step")},
+                outputs={"skill_status": status},
+                error=failure_detail,
+            )
 
         async def handle_move(state: _ActionState) -> Dict[str, Any]:
             step = state["step"]
@@ -701,18 +817,33 @@ class ActionGraph:
                 return {"updated_target": state.get("last_target_coords")}
             return {}
 
-        graph.add_node("initialize", initialize)
-        graph.add_node("seek_skill", seek_skill)
-        graph.add_node("apply_role_policy", apply_role_policy)
-        graph.add_node("route_module", route_module)
-        graph.add_node("trigger_exploration", trigger_exploration)
-        graph.add_node("handle_move", handle_move)
-        graph.add_node("handle_equip", handle_equip)
-        graph.add_node("handle_mining", handle_mining)
-        graph.add_node("handle_building", handle_building)
-        graph.add_node("handle_defense", handle_defense)
-        graph.add_node("handle_generic", handle_generic)
-        graph.add_node("finalize", finalize)
+        graph.add_node("initialize", _wrap_for_logging("initialize_action", initialize))
+        graph.add_node("seek_skill", _wrap_for_logging("seek_skill", seek_skill))
+        graph.add_node(
+            "apply_role_policy",
+            _wrap_for_logging("apply_role_policy", apply_role_policy),
+        )
+        graph.add_node("route_module", _wrap_for_logging("route_module", route_module))
+        graph.add_node(
+            "trigger_exploration",
+            _wrap_for_logging("trigger_exploration", trigger_exploration),
+        )
+        graph.add_node("handle_move", _wrap_for_logging("handle_move", handle_move))
+        graph.add_node("handle_equip", _wrap_for_logging("handle_equip", handle_equip))
+        graph.add_node("handle_mining", _wrap_for_logging("handle_mining", handle_mining))
+        graph.add_node(
+            "handle_building",
+            _wrap_for_logging("handle_building", handle_building),
+        )
+        graph.add_node(
+            "handle_defense",
+            _wrap_for_logging("handle_defense", handle_defense),
+        )
+        graph.add_node(
+            "handle_generic",
+            _wrap_for_logging("handle_generic", handle_generic),
+        )
+        graph.add_node("finalize", _wrap_for_logging("finalize_action", finalize))
 
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "seek_skill")
@@ -752,4 +883,164 @@ class ActionGraph:
         return graph.compile()
 
 
-__all__ = ["ActionGraph", "ActionTaskRule", "ChatTask"]
+class UnifiedAgentGraph:
+    """意図解析から Mineflayer API までを LangGraph で直列に実行する統合グラフ。"""
+
+    def __init__(self, orchestrator: "AgentOrchestrator") -> None:
+        self._orchestrator = orchestrator
+        self._graph: CompiledStateGraph = self._build_graph()
+
+    async def run(self, user_msg: str, context: Dict[str, Any]) -> UnifiedPlanState:
+        """ユーザー発話を起点に統合 LangGraph を実行する。"""
+
+        initial_state: UnifiedPlanState = {
+            "user_msg": user_msg,
+            "context": context,
+            "structured_events": [],
+        }
+        return await self._graph.ainvoke(initial_state)
+
+    def render_mermaid(self) -> str:
+        """Mermaid 文字列を生成して可視化するためのヘルパー。"""
+
+        return self._graph.get_graph().draw_mermaid()
+
+    def _detect_intent(self, message: str) -> str:
+        """簡易なキーワードマッチで意図カテゴリを推定する。"""
+
+        lowered = message.lower()
+        for category, rule in self._orchestrator._ACTION_TASK_RULES.items():  # type: ignore[attr-defined]
+            for keyword in rule.keywords:
+                if keyword and keyword.lower() in lowered:
+                    return category
+        return "generic"
+
+    def _build_graph(self) -> CompiledStateGraph:
+        orchestrator = self._orchestrator
+        graph: StateGraph = StateGraph(UnifiedPlanState)
+
+        async def analyze_intent(state: UnifiedPlanState) -> Dict[str, Any]:
+            intent = self._detect_intent(state.get("user_msg", ""))
+            outputs = {"intent": intent}
+            result: Dict[str, Any] = {"category": intent, "step": state.get("user_msg", "")}
+            result.update(
+                record_structured_step(
+                    state,
+                    step_label="analyze_intent",
+                    inputs={"user_msg": state.get("user_msg")},
+                    outputs=outputs,
+                )
+            )
+            return result
+
+        async def generate_plan(state: UnifiedPlanState) -> Dict[str, Any]:
+            try:
+                plan_out = await plan(state.get("user_msg", ""), state.get("context", {}))
+                category = plan_out.intent or state.get("category") or "generic"
+                step_text = plan_out.plan[0] if plan_out.plan else state.get("step", "")
+                result: Dict[str, Any] = {
+                    "plan_out": plan_out,
+                    "category": category,
+                    "step": step_text,
+                }
+                result.update(
+                    record_structured_step(
+                        state,
+                        step_label="generate_plan",
+                        inputs={"user_msg": state.get("user_msg"), "context_keys": list(state.get("context", {}).keys())},
+                        outputs={"intent": category, "plan_steps": len(plan_out.plan)},
+                    )
+                )
+                return result
+            except Exception as exc:  # pragma: no cover - 例外時は次ノードで回復
+                fallback = PlanOut(plan=[], resp="了解しました。")
+                result = {
+                    "plan_out": fallback,
+                    "category": state.get("category", "generic"),
+                    "step": state.get("step", ""),
+                    "parse_error": str(exc),
+                }
+                result.update(
+                    record_structured_step(
+                        state,
+                        step_label="generate_plan",
+                        inputs={"user_msg": state.get("user_msg")},
+                        outputs={"intent": result["category"], "plan_steps": len(fallback.plan)},
+                        error=str(exc),
+                    )
+                )
+                return result
+
+        async def dispatch_action(state: UnifiedPlanState) -> Dict[str, Any]:
+            category = state.get("category") or "generic"
+            plan_out = state.get("plan_out")
+            step_text = state.get("step") or state.get("user_msg", "")
+            if isinstance(plan_out, PlanOut) and plan_out.plan:
+                step_text = plan_out.plan[0]
+            backlog = state.get("backlog") or []
+            handled, updated_target, failure_detail = await orchestrator._handle_action_task(  # type: ignore[attr-defined]
+                category,
+                step_text or "",
+                last_target_coords=state.get("last_target_coords"),
+                backlog=backlog,
+                explicit_coords=state.get("explicit_coords"),
+            )
+            result: Dict[str, Any] = {
+                "handled": handled,
+                "updated_target": updated_target,
+                "failure_detail": failure_detail,
+                "backlog": backlog,
+            }
+            result.update(
+                record_structured_step(
+                    state,
+                    step_label="dispatch_action",
+                    inputs={"category": category, "step": step_text},
+                    outputs={"handled": handled, "failure_detail": failure_detail},
+                    error=failure_detail,
+                )
+            )
+            return result
+
+        async def mineflayer_node(state: UnifiedPlanState) -> Dict[str, Any]:
+            plan_out = state.get("plan_out")
+            response_text = ""
+            error: Optional[str] = None
+            say_result: Optional[Any] = None
+            if isinstance(plan_out, PlanOut):
+                response_text = plan_out.resp
+            if hasattr(orchestrator.actions, "say") and response_text:
+                try:
+                    say_result = await orchestrator.actions.say(response_text)  # type: ignore[attr-defined]
+                except Exception as exc:  # pragma: no cover - Mineflayer 例外は上位で観測
+                    error = str(exc)
+            result: Dict[str, Any] = {
+                "final_response": response_text,
+                "say_result": say_result,
+            }
+            result.update(
+                record_structured_step(
+                    state,
+                    step_label="mineflayer_node",
+                    inputs={"response_text": response_text[:80]},
+                    outputs={"say_result": bool(say_result)},
+                    error=error,
+                )
+            )
+            return result
+
+        graph.add_node("analyze_intent", analyze_intent)
+        graph.add_node("generate_plan", generate_plan)
+        graph.add_node("dispatch_action", dispatch_action)
+        graph.add_node("mineflayer_node", mineflayer_node)
+
+        graph.add_edge(START, "analyze_intent")
+        graph.add_edge("analyze_intent", "generate_plan")
+        graph.add_edge("generate_plan", "dispatch_action")
+        graph.add_edge("dispatch_action", "mineflayer_node")
+        graph.add_edge("mineflayer_node", END)
+
+        return graph.compile()
+
+
+__all__ = ["ActionGraph", "ActionTaskRule", "ChatTask", "UnifiedAgentGraph"]
