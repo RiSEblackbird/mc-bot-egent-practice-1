@@ -12,6 +12,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT / "python"))
 
+from bridge_client import BridgeError
 from heuristics.artificial_filters import build_mining_mask
 from modes import tunnel
 from modes.tunnel import TunnelMode, TunnelSection
@@ -86,6 +87,41 @@ class TunnelModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bridge.stopped)
         self.assertGreaterEqual(len(actions.mined), 1)
         self.assertGreaterEqual(len(actions.torches), 1)
+
+    async def test_tunnel_stops_on_liquid_conflict(self) -> None:
+        class LiquidBridgeStub(BridgeStub):
+            def __init__(self) -> None:
+                super().__init__(length=2)
+                self.liquid_reported = False
+
+            def bulk_eval(self, world, positions, job_id=None):  # type: ignore[override]
+                if not self.liquid_reported:
+                    self.liquid_reported = True
+                    raise BridgeError(
+                        "liquid detected",
+                        status_code=409,
+                        payload={
+                            "error": "liquid_detected",
+                            "stop": True,
+                            "stop_pos": {"x": 0, "y": 64, "z": 0},
+                        },
+                    )
+                return super().bulk_eval(world, positions, job_id)
+
+        bridge = LiquidBridgeStub()
+        actions = FakeActions()
+        mode = TunnelMode(bridge, actions)
+        await mode.run(
+            world="world",
+            anchor={"x": 0, "y": 64, "z": 0},
+            direction=(1, 0, 0),
+            section=TunnelSection(width=1, height=2),
+            length=2,
+            owner="Tester",
+        )
+        self.assertTrue(bridge.started)
+        self.assertTrue(bridge.stopped)
+        self.assertLessEqual(bridge.advanced_steps, 1)
 
 
 if __name__ == "__main__":  # pragma: no cover

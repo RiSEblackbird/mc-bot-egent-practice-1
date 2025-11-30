@@ -210,6 +210,10 @@ public final class BridgeHttpServer {
             UUID jobId = UUID.fromString(requiredText(root, "job_id"));
             int steps = Math.max(root.path("steps").asInt(1), 1);
             MiningJob job = jobRegistry.find(jobId).orElseThrow(() -> new IllegalArgumentException("job not found"));
+            if (job.isBlocked()) {
+                sendLiquidStop(exchange, job);
+                return;
+            }
             MiningJob.Frontier frontier = callSync(() -> {
                 MiningJob.Frontier updated = job.advance(steps);
                 worldGuardFacade.updateRegion(job, regionName(jobId));
@@ -262,18 +266,17 @@ public final class BridgeHttpServer {
             }
             List<BlockVector3> positions = parsePositions(positionsNode);
             MiningJob.Frontier region = job.map(MiningJob::window).orElse(null);
-            List<BlockEvaluation> evaluations = callSync(() -> evaluateBlocks(world, positions, region));
-            ArrayNode response = mapper.createArrayNode();
-            for (BlockEvaluation evaluation : evaluations) {
-                ObjectNode node = mapper.createObjectNode();
-                node.set("pos", toPosNode(evaluation.position()));
-                node.put("block_id", evaluation.blockId());
-                node.put("is_air", evaluation.isAir());
-                node.put("is_liquid", evaluation.isLiquid());
-                node.put("near_functional", evaluation.nearFunctional());
-                node.put("in_job_region", evaluation.inJobRegion());
-                response.add(node);
+            if (job.map(MiningJob::isBlocked).orElse(false)) {
+                sendLiquidStop(exchange, job.get());
+                return;
             }
+            BlockEvaluationResult result = callSync(() -> evaluateBlocks(world, positions, region));
+            if (result.encounteredLiquid() && job.isPresent()) {
+                job.get().blockForLiquid(result.firstLiquidPosition());
+                sendLiquidStop(exchange, job.get(), result.firstLiquidPosition());
+                return;
+            }
+            ArrayNode response = toEvaluationArray(result.evaluations());
             sendJson(exchange, 200, response);
         }
     }
@@ -391,8 +394,9 @@ public final class BridgeHttpServer {
         return node;
     }
 
-    private List<BlockEvaluation> evaluateBlocks(World world, List<BlockVector3> positions, MiningJob.Frontier region) {
+    private BlockEvaluationResult evaluateBlocks(World world, List<BlockVector3> positions, MiningJob.Frontier region) {
         List<BlockEvaluation> list = new ArrayList<>();
+        BlockVector3 firstLiquid = null;
         for (BlockVector3 pos : positions) {
             Block block = world.getBlockAt(pos.getBlockX(), pos.getBlockY(), pos.getBlockZ());
             Material type = block.getType();
@@ -401,10 +405,29 @@ public final class BridgeHttpServer {
             boolean nearFunctional = functionalInspector.isNearFunctional(
                     world, pos.getBlockX(), pos.getBlockY(), pos.getBlockZ(), config.safety().functionalNearRadius());
             boolean inRegion = region != null && contains(region, pos);
+            if (isLiquid && inRegion && firstLiquid == null) {
+                // 液体検知時は最初の座標を保持し、Mineflayer に安全停止を促す。
+                firstLiquid = pos;
+            }
             String blockId = type.getKey().toString();
             list.add(new BlockEvaluation(pos, blockId, isAir, isLiquid, nearFunctional, inRegion));
         }
-        return list;
+        return new BlockEvaluationResult(list, firstLiquid != null, firstLiquid);
+    }
+
+    private ArrayNode toEvaluationArray(List<BlockEvaluation> evaluations) {
+        ArrayNode response = mapper.createArrayNode();
+        for (BlockEvaluation evaluation : evaluations) {
+            ObjectNode node = mapper.createObjectNode();
+            node.set("pos", toPosNode(evaluation.position()));
+            node.put("block_id", evaluation.blockId());
+            node.put("is_air", evaluation.isAir());
+            node.put("is_liquid", evaluation.isLiquid());
+            node.put("near_functional", evaluation.nearFunctional());
+            node.put("in_job_region", evaluation.inJobRegion());
+            response.add(node);
+        }
+        return response;
     }
 
     private boolean contains(MiningJob.Frontier frontier, BlockVector3 pos) {
@@ -416,6 +439,24 @@ public final class BridgeHttpServer {
                 && pos.getX() <= max.getX()
                 && pos.getY() <= max.getY()
                 && pos.getZ() <= max.getZ();
+    }
+
+    /**
+     * 液体検知時に Mineflayer へ 409 を返却し、安全停止を徹底するための共通レスポンス。
+     */
+    private void sendLiquidStop(HttpExchange exchange, MiningJob job) throws IOException {
+        sendLiquidStop(exchange, job, job.blockedPosition());
+    }
+
+    private void sendLiquidStop(HttpExchange exchange, MiningJob job, BlockVector3 position) throws IOException {
+        ObjectNode response = mapper.createObjectNode();
+        response.put("error", "liquid_detected");
+        response.put("stop", true);
+        response.put("job_id", job.jobId().toString());
+        if (position != null) {
+            response.set("stop_pos", toPosNode(position));
+        }
+        sendJson(exchange, 409, response);
     }
 
     private void sendJson(HttpExchange exchange, int status, JsonNode node) throws IOException {
@@ -438,5 +479,17 @@ public final class BridgeHttpServer {
     }
 
     private record BlockEvaluation(
-            BlockVector3 position, String blockId, boolean isAir, boolean isLiquid, boolean nearFunctional, boolean inJobRegion) {}
+            BlockVector3 position,
+            String blockId,
+            boolean isAir,
+            boolean isLiquid,
+            boolean nearFunctional,
+            boolean inJobRegion) {
+    }
+
+    private record BlockEvaluationResult(
+            List<BlockEvaluation> evaluations,
+            boolean encounteredLiquid,
+            BlockVector3 firstLiquidPosition) {
+    }
 }
