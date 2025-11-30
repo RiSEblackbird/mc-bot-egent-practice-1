@@ -29,6 +29,8 @@ from planner import (  # type: ignore  # noqa: E402
     plan,
     reset_plan_priority,
 )
+from agent_orchestrator import UnifiedAgentGraph  # type: ignore  # noqa: E402
+from langgraph_state import UnifiedPlanState  # type: ignore  # noqa: E402
 
 
 class MoveFailureActions:
@@ -216,3 +218,42 @@ def test_react_loop_logs_observations(
     assert "移動成功" in react_logs[0]["observation"]
     assert "X=" in react_logs[1]["observation"] or "報告" in react_logs[1]["observation"]
     assert plan_out.react_trace[0].observation.startswith("移動成功")
+
+
+def test_unified_graph_success(monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator) -> None:
+    async def stub_plan(_: str, __: Dict[str, Any]) -> PlanOut:
+        return PlanOut(plan=["南へ移動"], resp="了解しました。", intent="move")
+
+    monkeypatch.setattr(sys.modules["planner"], "plan", stub_plan)
+    monkeypatch.setattr(sys.modules["agent_orchestrator"], "plan", stub_plan)
+
+    graph = UnifiedAgentGraph(orchestrator_noop)
+
+    async def runner() -> UnifiedPlanState:
+        return await graph.run("南へ進んで", {})
+
+    result = asyncio.run(runner())
+    assert result.get("handled") is True
+    events = result.get("structured_events") or []
+    labels = {event.get("step_label") for event in events}
+    assert {"analyze_intent", "generate_plan", "dispatch_action", "mineflayer_node"}.issubset(labels)
+
+
+def test_unified_graph_plan_failure(monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator) -> None:
+    async def failing_plan(_: str, __: Dict[str, Any]) -> PlanOut:
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(sys.modules["planner"], "plan", failing_plan)
+    monkeypatch.setattr(sys.modules["agent_orchestrator"], "plan", failing_plan)
+
+    graph = UnifiedAgentGraph(orchestrator_noop)
+
+    async def runner() -> UnifiedPlanState:
+        return await graph.run("うまくいかない指示", {})
+
+    result = asyncio.run(runner())
+    assert isinstance(result.get("plan_out"), PlanOut)
+    assert result.get("plan_out").plan == []
+    events = result.get("structured_events") or []
+    failure_events = [event for event in events if event.get("step_label") == "generate_plan"]
+    assert failure_events and failure_events[0].get("error")

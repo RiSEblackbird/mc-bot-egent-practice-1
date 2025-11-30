@@ -2,12 +2,13 @@
 # gpt-5-mini を用いたプランニング：自然文→PLAN/RESP の二分出力
 import asyncio
 import os
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from utils import setup_logger
+from langgraph_state import UnifiedPlanState, record_structured_step
 from dotenv import load_dotenv
 import openai
 from openai.types.responses import EasyInputMessageParam, Response
@@ -83,23 +84,9 @@ class PlanPriorityManager:
             return self._priority
 
 
-class _PlanState(TypedDict, total=False):
-    """LangGraph の Responses API 呼び出しに利用する内部ステート。"""
-
-    user_msg: str
-    context: Dict[str, Any]
-    prompt: str
-    payload: Dict[str, Any]
-    response: Response
-    content: str
-    plan_out: "PlanOut"
-    parse_error: str
-    llm_error: str
-    priority: str
-
-
 _PRIORITY_MANAGER = PlanPriorityManager()
 _PLAN_GRAPH: Optional[CompiledStateGraph] = None
+_PlanState = UnifiedPlanState
 
 
 def is_gpt5_family(model: str) -> bool:
@@ -272,7 +259,15 @@ def _build_plan_graph() -> CompiledStateGraph:
         prompt = build_user_prompt(state["user_msg"], state["context"])
         logger.info("LLM prompt: %s", prompt)
         payload = _build_responses_payload(SYSTEM, prompt)
-        return {"prompt": prompt, "payload": payload}
+        metadata = record_structured_step(
+            state,
+            step_label="prepare_payload",
+            inputs={"user_msg": state.get("user_msg", ""), "context_keys": list(state.get("context", {}).keys())},
+            outputs={"prompt_preview": prompt[:120]},
+        )
+        result: Dict[str, Any] = {"prompt": prompt, "payload": payload}
+        result.update(metadata)
+        return result
 
     async def call_llm(state: _PlanState) -> Dict[str, Any]:
         """Responses API を呼び出し、タイムアウト時は安全なフォールバックを返す。"""
@@ -286,12 +281,22 @@ def _build_plan_graph() -> CompiledStateGraph:
                 logger.warning("plan graph detected LLM timeout: %s", reason)
             else:
                 logger.exception("plan graph failed to call Responses API: %s", reason)
-            return {
+            payload = {
                 "llm_error": reason,
                 "content": "",
                 "priority": priority,
                 "fallback_plan_out": fallback,
             }
+            payload.update(
+                record_structured_step(
+                    state,
+                    step_label="call_llm",
+                    inputs={"model": MODEL},
+                    outputs={"priority": priority, "fallback": True},
+                    error=reason,
+                )
+            )
+            return payload
 
         try:
             client = openai.AsyncOpenAI()
@@ -307,7 +312,16 @@ def _build_plan_graph() -> CompiledStateGraph:
 
         content = _extract_output_text(resp)
         logger.info("LLM raw: %s", content)
-        return {"response": resp, "content": content}
+        payload = {"response": resp, "content": content}
+        payload.update(
+            record_structured_step(
+                state,
+                step_label="call_llm",
+                inputs={"model": MODEL},
+                outputs={"content_length": len(content)},
+            )
+        )
+        return payload
 
     async def parse_plan(state: _PlanState) -> Dict[str, Any]:
         if state.get("llm_error"):
@@ -316,6 +330,15 @@ def _build_plan_graph() -> CompiledStateGraph:
             fallback_plan = state.get("fallback_plan_out")
             if fallback_plan is not None:
                 result["fallback_plan_out"] = fallback_plan
+            result.update(
+                record_structured_step(
+                    state,
+                    step_label="parse_plan",
+                    inputs={"has_llm_error": True},
+                    outputs={"priority": priority},
+                    error=state.get("llm_error", ""),
+                )
+            )
             return result
 
         try:
@@ -323,10 +346,29 @@ def _build_plan_graph() -> CompiledStateGraph:
         except Exception as exc:
             logger.exception("plan graph failed to parse JSON plan")
             priority = await manager.mark_failure()
-            return {"parse_error": str(exc), "priority": priority}
+            result = {"parse_error": str(exc), "priority": priority}
+            result.update(
+                record_structured_step(
+                    state,
+                    step_label="parse_plan",
+                    inputs={"content_preview": (state.get("content") or "")[:120]},
+                    outputs={"priority": priority},
+                    error=str(exc),
+                )
+            )
+            return result
 
         priority = await manager.mark_success()
-        return {"plan_out": plan_data, "priority": priority}
+        result = {"plan_out": plan_data, "priority": priority}
+        result.update(
+            record_structured_step(
+                state,
+                step_label="parse_plan",
+                inputs={"content_preview": (state.get("content") or "")[:120]},
+                outputs={"priority": priority, "intent": plan_data.intent},
+            )
+        )
+        return result
 
     async def normalize_react_trace(state: _PlanState) -> Dict[str, Any]:
         plan_out = state.get("plan_out")
@@ -352,7 +394,16 @@ def _build_plan_graph() -> CompiledStateGraph:
             )
 
         plan_out.react_trace = normalized_trace
-        return {"plan_out": plan_out}
+        result = {"plan_out": plan_out}
+        result.update(
+            record_structured_step(
+                state,
+                step_label="normalize_react_trace",
+                inputs={"trace_count": len(plan_out.react_trace)},
+                outputs={"normalized_count": len(normalized_trace)},
+            )
+        )
+        return result
 
     async def fallback_plan(state: _PlanState) -> Dict[str, Any]:
         logger.warning(
@@ -361,9 +412,18 @@ def _build_plan_graph() -> CompiledStateGraph:
             state.get("llm_error"),
         )
         fallback = state.get("fallback_plan_out")
-        if isinstance(fallback, PlanOut):
-            return {"plan_out": fallback}
-        return {"plan_out": PlanOut(plan=[], resp="了解しました。")}
+        if not isinstance(fallback, PlanOut):
+            fallback = PlanOut(plan=[], resp="了解しました。")
+        result = {"plan_out": fallback}
+        result.update(
+            record_structured_step(
+                state,
+                step_label="fallback_plan",
+                inputs={"parse_error": state.get("parse_error"), "llm_error": state.get("llm_error")},
+                outputs={"plan_steps": len(fallback.plan)},
+            )
+        )
+        return result
 
     async def finalize(state: _PlanState) -> Dict[str, Any]:
         priority = state.get("priority")
@@ -566,6 +626,7 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
     initial_state: _PlanState = {
         "user_msg": safe_user_msg,
         "context": safe_context,
+        "structured_events": [],
     }
     result = await graph.ainvoke(initial_state)
     plan_out = result.get("plan_out")

@@ -111,6 +111,14 @@ Responses API のタイムアウトは `LLM_TIMEOUT_SECONDS` で制御でき、�
 フェーズ定義・遷移条件・ロールバック指針を整理しており、長期ジョブを中断しても
 安全に再開できるようチェックポイント設計の前提を共有しています。
 
+#### 3.2.4 LangGraph 可視化ヘルパー
+
+Python 側で LangGraph の流れを確認したい場合は `UnifiedAgentGraph.render_mermaid()` を呼び出すと、
+「意図解析 → プラン生成 → アクションディスパッチ → Mineflayer 連携」の順に並んだ Mermaid 文字列を出力できます。
+`python/agent_orchestrator.py` に定義されている統合グラフを `graph = UnifiedAgentGraph(orchestrator)` で初期化し、
+`print(graph.render_mermaid())` を実行するだけでステップ一覧を図式化できるため、曖昧な指示を受けた際の
+ルーティング確認や新人メンバー向けの説明資料作成に活用してください。
+
 #### 3.2.3 アクションコマンドとチャット対応表
 
 Python 側の `python/actions.py` では、以下の WebSocket コマンドを構造化ログ付きで組み立てます。ペイロードは Node 側の
