@@ -25,6 +25,7 @@ export interface TelemetryContext {
   commandDurationMs: Histogram;
   agentBridgeEventCounter: Counter;
   reconnectCounter: Counter;
+  directiveCounter: Counter;
   sdk: NodeSDK;
 }
 
@@ -67,6 +68,9 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
   const reconnectCounter = meter.createCounter('mineflayer.reconnect.scheduled', {
     description: 'Paper との再接続を予約した回数',
   });
+  const directiveCounter = meter.createCounter('mineflayer.directive.received', {
+    description: 'Python エージェントから directive メタ付きで受信したコマンド件数',
+  });
 
   const shutdown = async () => {
     try {
@@ -80,7 +84,7 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 
-  return { tracer, commandDurationMs, agentBridgeEventCounter, reconnectCounter, sdk };
+  return { tracer, commandDurationMs, agentBridgeEventCounter, reconnectCounter, directiveCounter, sdk };
 }
 
 /**

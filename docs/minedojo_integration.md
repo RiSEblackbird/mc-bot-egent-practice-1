@@ -53,6 +53,13 @@ Python エージェントから MineDojo のミッション/デモを参照す�
 * スキル照合はミッション ID やタグを重み付けに利用するため、「同じミッションをもう一度」などの曖昧なリクエストでも既存スキルを優先的に `invoke_skill` 経由で呼び出します。再学習を挟まずにデモ由来スキルを再利用できる点をユーザーへ明示してください。
 * デモメタデータは `mission_id`・`demo_id`・`tags`・`summary` を含む構造体として LangGraph 状態・Memory に残り、Mineflayer 側のタグ付けフォーマットと揃えています。MineDojo のタグやミッション ID が意図せず漏えいしないよう、`.gitignore` に登録済みのキャッシュディレクトリから外へ持ち出さない運用を徹底してください。
 
+## 7. ActionDirective と executor の連携
+
+- `python/planner.py` が出力する `PlanOut.directives[].executor` に `"minedojo"` を指定すると、`agent.AgentOrchestrator` は `_handle_minedojo_directive()` を介して `MineDojoSelfDialogueExecutor` を直接呼び出し、ReAct トレースとスキル登録を自動的に更新します。
+- directive の `args.mission_id` を省略した場合でも `_MINEDOJO_MISSION_BINDINGS` に登録されたカテゴリ（例: `mine` → `obtain_diamond`）からミッション ID を解決します。個別のデモを指定したい場合は `args.skill_id` / `args.demo_id` を埋め、MineDojo API 側の ID 体系と合わせてください。
+- `executor="mineflayer"` の directive は従来どおり `Actions` へ meta 付きで送信されます。`node-bot/runtime/telemetry.ts` が `command.meta.directive_id` を OpenTelemetry に記録するため、MineDojo と Mineflayer のどちらが処理したステップかをダッシュボードで即座に判別できます。
+- `executor="chat"` を指定すると Python エージェントが `actions.say()` でフォローアップを送信し、`args.message` が指定されていない場合は `directive.label` をそのままプレイヤーへ relay します。MineDojo の状況説明や確認待ちフローを構造化ステップとして扱えるのが利点です。
+
 ## 5. トラブルシューティング
 
 * **API キー未設定時に警告が出る**: 仕様です。ローカルデータセットが利用可能であれば自動でフォールバックします。

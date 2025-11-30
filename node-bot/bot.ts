@@ -74,6 +74,7 @@ const tracer = telemetry.tracer;
 const commandDurationHistogram = telemetry.commandDurationMs;
 const agentBridgeEventCounter = telemetry.agentBridgeEventCounter;
 const reconnectCounter = telemetry.reconnectCounter;
+const directiveCounter = telemetry.directiveCounter;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -94,6 +95,7 @@ type CommandType =
 interface CommandPayload {
   type: CommandType;
   args: Record<string, unknown>;
+  meta?: Record<string, unknown>;
 }
 
 // 成功・失敗を Python 側へ返すためのレスポンス型。
@@ -993,9 +995,14 @@ async function handleIncomingMessage(raw: RawData): Promise<CommandResponse> {
 // ---- コマンド実行関数 ----
 // 将来的にコマンド種別が増えても見通しよく拡張できるよう、switch 文で分岐させる。
 async function executeCommand(payload: CommandPayload): Promise<CommandResponse> {
-  const { type, args } = payload;
+  const { type, args, meta } = payload;
+  const directiveMeta = typeof meta === 'object' && meta !== null ? meta : undefined;
 
-  console.log(`[WS] executing command type=${type}`);
+  if (directiveMeta) {
+    console.log(`[WS] executing command type=${type} directive=${summarizeArgs(directiveMeta)}`);
+  } else {
+    console.log(`[WS] executing command type=${type}`);
+  }
 
   return runWithSpan(
     tracer,
@@ -1003,6 +1010,7 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
     {
       'command.type': type,
       'command.args.overview': summarizeArgs(args),
+      ...(directiveMeta ? { 'command.meta.summary': summarizeArgs(directiveMeta) } : {}),
     },
     async (span) => {
       const startedAt = Date.now();
@@ -1010,6 +1018,26 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       let outcome: 'success' | 'failure' | 'exception' = 'success';
 
       try {
+        if (directiveMeta) {
+          const directiveId =
+            typeof directiveMeta.directiveId === 'string' && directiveMeta.directiveId.trim().length > 0
+              ? directiveMeta.directiveId
+              : undefined;
+          if (directiveId) {
+            span.setAttribute('command.meta.directive_id', directiveId);
+          }
+          const directiveExecutor =
+            typeof directiveMeta.directiveExecutor === 'string' ? directiveMeta.directiveExecutor : undefined;
+          if (directiveExecutor) {
+            span.setAttribute('command.meta.executor', directiveExecutor);
+          }
+          const directiveLabel =
+            typeof directiveMeta.directiveLabel === 'string' ? directiveMeta.directiveLabel : undefined;
+          if (directiveLabel) {
+            span.setAttribute('command.meta.label', directiveLabel);
+          }
+        }
+
         switch (type) {
           case 'chat':
             response = await handleChatCommand(args);
@@ -1055,6 +1083,22 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
         if (!response.ok) {
           outcome = 'failure';
           span.setStatus({ code: SpanStatusCode.ERROR, message: response.error ?? 'command returned ok=false' });
+        }
+        if (directiveMeta) {
+          const directiveId =
+            typeof directiveMeta.directiveId === 'string' && directiveMeta.directiveId.trim().length > 0
+              ? directiveMeta.directiveId
+              : 'unknown';
+          const directiveExecutor =
+            typeof directiveMeta.directiveExecutor === 'string' && directiveMeta.directiveExecutor
+              ? directiveMeta.directiveExecutor
+              : 'unspecified';
+          directiveCounter.add(1, {
+            'directive.id': directiveId,
+            'directive.executor': directiveExecutor,
+            'command.type': type,
+            outcome,
+          });
         }
         return response;
       } catch (error) {

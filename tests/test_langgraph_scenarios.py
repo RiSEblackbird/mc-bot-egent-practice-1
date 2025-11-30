@@ -23,6 +23,7 @@ if str(PYTHON_DIR) not in sys.path:
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from planner import (  # type: ignore  # noqa: E402
+    ActionDirective,
     PlanOut,
     ReActStep,
     get_plan_priority,
@@ -136,6 +137,44 @@ def test_action_graph_parallel_modules_do_not_share_backlog(orchestrator_noop: A
     modules = {entry.get("module") for entry in backlog}
     assert modules == {"building", "defense"}
     assert len(backlog) == 2
+
+
+def test_action_directive_overrides_category(
+    monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator
+) -> None:
+    recorded: Dict[str, Any] = {}
+
+    async def fake_handle(
+        self,
+        category: str,
+        step: str,
+        *,
+        last_target_coords: Optional[Tuple[int, int, int]],
+        backlog: List[Dict[str, str]],
+        explicit_coords: Optional[Tuple[int, int, int]] = None,
+    ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
+        recorded["category"] = category
+        recorded["explicit_coords"] = explicit_coords
+        return True, explicit_coords, None
+
+    monkeypatch.setattr(AgentOrchestrator, "_handle_action_task", fake_handle)
+
+    directive = ActionDirective(
+        directive_id="step-1",
+        step="カスタム採掘",
+        category="mine",
+        args={"coordinates": {"x": 5, "y": 60, "z": -3}},
+    )
+    plan_out = PlanOut(
+        plan=["カスタム採掘"],
+        resp="",
+        directives=[directive],
+    )
+
+    asyncio.run(orchestrator_noop._execute_plan(plan_out))
+
+    assert recorded["category"] == "mine"
+    assert recorded["explicit_coords"] == (5, 60, -3)
 
 
 def test_plan_graph_priority_updates(monkeypatch: pytest.MonkeyPatch) -> None:
