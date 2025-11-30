@@ -147,6 +147,16 @@ export function loadBotRuntimeConfig(
     env.AGENT_WS_HOST,
     env.AGENT_WS_PORT,
     dockerDetected,
+    {
+      rawConnectTimeoutMs: env.AGENT_WS_CONNECT_TIMEOUT_MS,
+      rawSendTimeoutMs: env.AGENT_WS_SEND_TIMEOUT_MS,
+      rawHealthcheckIntervalMs: env.AGENT_WS_HEALTHCHECK_INTERVAL_MS,
+      rawReconnectDelayMs: env.AGENT_WS_RECONNECT_DELAY_MS,
+      rawMaxRetries: env.AGENT_WS_MAX_RETRIES,
+      rawBatchIntervalMs: env.AGENT_EVENT_BATCH_INTERVAL_MS,
+      rawBatchMaxSize: env.AGENT_EVENT_BATCH_MAX_SIZE,
+      rawQueueMaxSize: env.AGENT_EVENT_QUEUE_MAX_SIZE,
+    },
   );
   const telemetryResolution = resolveTelemetryConfig(
     env.OTEL_EXPORTER_OTLP_ENDPOINT,

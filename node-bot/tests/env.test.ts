@@ -183,6 +183,51 @@ describe('resolveAgentWebSocketEndpoint', () => {
       "AGENT_WS_HOST='0.0.0.0' は接続先として利用できないため 127.0.0.1 へフォールバックします。",
     );
   });
+
+  it('接続ヘルスチェックやバッチ設定を環境変数で上書きできる', () => {
+    const result = resolveAgentWebSocketEndpoint(undefined, undefined, undefined, false, {
+      rawConnectTimeoutMs: '7000',
+      rawSendTimeoutMs: '8000',
+      rawHealthcheckIntervalMs: '60000',
+      rawReconnectDelayMs: '1500',
+      rawMaxRetries: '5',
+      rawBatchIntervalMs: '500',
+      rawBatchMaxSize: '20',
+      rawQueueMaxSize: '400',
+    });
+
+    expect(result.connectTimeoutMs).toBe(7000);
+    expect(result.sendTimeoutMs).toBe(8000);
+    expect(result.healthcheckIntervalMs).toBe(60000);
+    expect(result.reconnectDelayMs).toBe(1500);
+    expect(result.maxRetries).toBe(5);
+    expect(result.batchFlushIntervalMs).toBe(500);
+    expect(result.batchMaxSize).toBe(20);
+    expect(result.queueMaxSize).toBe(400);
+  });
+
+  it('範囲外の値は安全な最小・最大へ丸められる', () => {
+    const result = resolveAgentWebSocketEndpoint(undefined, undefined, undefined, false, {
+      rawConnectTimeoutMs: '100',
+      rawSendTimeoutMs: '999999',
+      rawHealthcheckIntervalMs: '10',
+      rawReconnectDelayMs: '-1',
+      rawMaxRetries: '99',
+      rawBatchIntervalMs: '1',
+      rawBatchMaxSize: '0',
+      rawQueueMaxSize: '2',
+    });
+
+    expect(result.connectTimeoutMs).toBe(500);
+    expect(result.sendTimeoutMs).toBe(120000);
+    expect(result.healthcheckIntervalMs).toBe(1000);
+    expect(result.reconnectDelayMs).toBe(250);
+    expect(result.maxRetries).toBe(10);
+    expect(result.batchFlushIntervalMs).toBe(50);
+    expect(result.batchMaxSize).toBe(1);
+    expect(result.queueMaxSize).toBe(10);
+    expect(result.warnings.length).toBeGreaterThan(0);
+  });
 });
 
 describe('resolveControlMode', () => {

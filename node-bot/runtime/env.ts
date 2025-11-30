@@ -12,6 +12,30 @@ const MIN_AGENT_WS_PORT = 1;
 const MAX_AGENT_WS_PORT = 65_535;
 const DEFAULT_AGENT_WS_HOST_DOCKER = 'python-agent';
 const DEFAULT_AGENT_WS_HOST_LOCAL = '127.0.0.1';
+const DEFAULT_AGENT_WS_CONNECT_TIMEOUT_MS = 5_000;
+const MIN_AGENT_WS_CONNECT_TIMEOUT_MS = 500;
+const MAX_AGENT_WS_CONNECT_TIMEOUT_MS = 120_000;
+const DEFAULT_AGENT_WS_SEND_TIMEOUT_MS = 5_000;
+const MIN_AGENT_WS_SEND_TIMEOUT_MS = 500;
+const MAX_AGENT_WS_SEND_TIMEOUT_MS = 120_000;
+const DEFAULT_AGENT_WS_HEALTHCHECK_INTERVAL_MS = 15_000;
+const MIN_AGENT_WS_HEALTHCHECK_INTERVAL_MS = 1_000;
+const MAX_AGENT_WS_HEALTHCHECK_INTERVAL_MS = 300_000;
+const DEFAULT_AGENT_WS_RECONNECT_DELAY_MS = 2_000;
+const MIN_AGENT_WS_RECONNECT_DELAY_MS = 250;
+const MAX_AGENT_WS_RECONNECT_DELAY_MS = 120_000;
+const DEFAULT_AGENT_WS_MAX_RETRIES = 3;
+const MIN_AGENT_WS_MAX_RETRIES = 0;
+const MAX_AGENT_WS_MAX_RETRIES = 10;
+const DEFAULT_AGENT_EVENT_BATCH_INTERVAL_MS = 250;
+const MIN_AGENT_EVENT_BATCH_INTERVAL_MS = 50;
+const MAX_AGENT_EVENT_BATCH_INTERVAL_MS = 10_000;
+const DEFAULT_AGENT_EVENT_BATCH_MAX_SIZE = 10;
+const MIN_AGENT_EVENT_BATCH_MAX_SIZE = 1;
+const MAX_AGENT_EVENT_BATCH_MAX_SIZE = 200;
+const DEFAULT_AGENT_EVENT_QUEUE_MAX_SIZE = 200;
+const MIN_AGENT_EVENT_QUEUE_MAX_SIZE = 10;
+const MAX_AGENT_EVENT_QUEUE_MAX_SIZE = 5_000;
 
 const DEFAULT_OTEL_ENDPOINT = 'http://localhost:4318';
 const DEFAULT_OTEL_SERVICE_NAME = 'mc-node-bot';
@@ -84,6 +108,14 @@ export interface AgentWebSocketResolution {
   url: string;
   host: string;
   port: number;
+  connectTimeoutMs: number;
+  sendTimeoutMs: number;
+  healthcheckIntervalMs: number;
+  reconnectDelayMs: number;
+  maxRetries: number;
+  batchFlushIntervalMs: number;
+  batchMaxSize: number;
+  queueMaxSize: number;
   warnings: string[];
   usedExplicitUrl: boolean;
   usedDefaultHost: boolean;
@@ -194,11 +226,52 @@ export function resolveAgentWebSocketEndpoint(
   rawHost: string | undefined,
   rawPort: string | undefined,
   dockerDetected: boolean,
+  options: {
+    rawConnectTimeoutMs?: string;
+    rawSendTimeoutMs?: string;
+    rawHealthcheckIntervalMs?: string;
+    rawReconnectDelayMs?: string;
+    rawMaxRetries?: string;
+    rawBatchIntervalMs?: string;
+    rawBatchMaxSize?: string;
+    rawQueueMaxSize?: string;
+  } = {},
 ): AgentWebSocketResolution {
   const warnings: string[] = [];
   const trimmedUrl = (rawUrl ?? '').trim();
   const trimmedHost = (rawHost ?? '').trim();
   const trimmedPort = (rawPort ?? '').trim();
+
+  const normalizeNumber = (
+    raw: string | undefined,
+    fallback: number,
+    min: number,
+    max: number,
+    label: string,
+  ): number => {
+    const sanitized = (raw ?? '').trim();
+    if (sanitized.length === 0) {
+      return fallback;
+    }
+
+    const parsed = Number.parseInt(sanitized, 10);
+    if (!Number.isFinite(parsed)) {
+      warnings.push(`${label}='${raw}' は数値として解釈できないため ${fallback} を利用します。`);
+      return fallback;
+    }
+
+    if (parsed < min) {
+      warnings.push(`${label}=${parsed} は下限 ${min} 未満のため ${min} へ丸めます。`);
+      return min;
+    }
+
+    if (parsed > max) {
+      warnings.push(`${label}=${parsed} は上限 ${max} を超えているため ${max} へ丸めます。`);
+      return max;
+    }
+
+    return parsed;
+  };
 
   const defaultHost = dockerDetected ? DEFAULT_AGENT_WS_HOST_DOCKER : DEFAULT_AGENT_WS_HOST_LOCAL;
 
@@ -251,10 +324,75 @@ export function resolveAgentWebSocketEndpoint(
     }
   }
 
+  const connectTimeoutMs = normalizeNumber(
+    options.rawConnectTimeoutMs,
+    DEFAULT_AGENT_WS_CONNECT_TIMEOUT_MS,
+    MIN_AGENT_WS_CONNECT_TIMEOUT_MS,
+    MAX_AGENT_WS_CONNECT_TIMEOUT_MS,
+    'AGENT_WS_CONNECT_TIMEOUT_MS',
+  );
+  const sendTimeoutMs = normalizeNumber(
+    options.rawSendTimeoutMs,
+    DEFAULT_AGENT_WS_SEND_TIMEOUT_MS,
+    MIN_AGENT_WS_SEND_TIMEOUT_MS,
+    MAX_AGENT_WS_SEND_TIMEOUT_MS,
+    'AGENT_WS_SEND_TIMEOUT_MS',
+  );
+  const healthcheckIntervalMs = normalizeNumber(
+    options.rawHealthcheckIntervalMs,
+    DEFAULT_AGENT_WS_HEALTHCHECK_INTERVAL_MS,
+    MIN_AGENT_WS_HEALTHCHECK_INTERVAL_MS,
+    MAX_AGENT_WS_HEALTHCHECK_INTERVAL_MS,
+    'AGENT_WS_HEALTHCHECK_INTERVAL_MS',
+  );
+  const reconnectDelayMs = normalizeNumber(
+    options.rawReconnectDelayMs,
+    DEFAULT_AGENT_WS_RECONNECT_DELAY_MS,
+    MIN_AGENT_WS_RECONNECT_DELAY_MS,
+    MAX_AGENT_WS_RECONNECT_DELAY_MS,
+    'AGENT_WS_RECONNECT_DELAY_MS',
+  );
+  const maxRetries = normalizeNumber(
+    options.rawMaxRetries,
+    DEFAULT_AGENT_WS_MAX_RETRIES,
+    MIN_AGENT_WS_MAX_RETRIES,
+    MAX_AGENT_WS_MAX_RETRIES,
+    'AGENT_WS_MAX_RETRIES',
+  );
+  const batchFlushIntervalMs = normalizeNumber(
+    options.rawBatchIntervalMs,
+    DEFAULT_AGENT_EVENT_BATCH_INTERVAL_MS,
+    MIN_AGENT_EVENT_BATCH_INTERVAL_MS,
+    MAX_AGENT_EVENT_BATCH_INTERVAL_MS,
+    'AGENT_EVENT_BATCH_INTERVAL_MS',
+  );
+  const batchMaxSize = normalizeNumber(
+    options.rawBatchMaxSize,
+    DEFAULT_AGENT_EVENT_BATCH_MAX_SIZE,
+    MIN_AGENT_EVENT_BATCH_MAX_SIZE,
+    MAX_AGENT_EVENT_BATCH_MAX_SIZE,
+    'AGENT_EVENT_BATCH_MAX_SIZE',
+  );
+  const queueMaxSize = normalizeNumber(
+    options.rawQueueMaxSize,
+    DEFAULT_AGENT_EVENT_QUEUE_MAX_SIZE,
+    MIN_AGENT_EVENT_QUEUE_MAX_SIZE,
+    MAX_AGENT_EVENT_QUEUE_MAX_SIZE,
+    'AGENT_EVENT_QUEUE_MAX_SIZE',
+  );
+
   return {
     url,
     host,
     port,
+    connectTimeoutMs,
+    sendTimeoutMs,
+    healthcheckIntervalMs,
+    reconnectDelayMs,
+    maxRetries,
+    batchFlushIntervalMs,
+    batchMaxSize,
+    queueMaxSize,
     warnings,
     usedExplicitUrl,
     usedDefaultHost,
