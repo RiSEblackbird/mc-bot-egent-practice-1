@@ -13,6 +13,10 @@ const MAX_AGENT_WS_PORT = 65_535;
 const DEFAULT_AGENT_WS_HOST_DOCKER = 'python-agent';
 const DEFAULT_AGENT_WS_HOST_LOCAL = '127.0.0.1';
 
+const DEFAULT_OTEL_ENDPOINT = 'http://localhost:4318';
+const DEFAULT_OTEL_SERVICE_NAME = 'mc-node-bot';
+const DEFAULT_OTEL_ENVIRONMENT = 'development';
+
 const DEFAULT_CONTROL_MODE = 'command';
 const SUPPORTED_CONTROL_MODES = new Set(['command', 'vpt']);
 const DEFAULT_VPT_TICK_INTERVAL_MS = 50;
@@ -94,6 +98,14 @@ export interface ControlModeResolution {
 export interface VptPlaybackResolution {
   tickIntervalMs: number;
   maxSequenceLength: number;
+  warnings: string[];
+}
+
+export interface TelemetryResolution {
+  endpoint: string;
+  serviceName: string;
+  environment: string;
+  samplerRatio: number;
   warnings: string[];
 }
 
@@ -247,6 +259,48 @@ export function resolveAgentWebSocketEndpoint(
     usedExplicitUrl,
     usedDefaultHost,
     usedDefaultPort,
+  };
+}
+
+/**
+ * OpenTelemetry のエクスポート先やサービス名を正規化する。
+ * ランタイムごとの差異でエンドポイント指定が欠けていても最低限の可観測性が有効になるよう、既定値を丸める。
+ */
+export function resolveTelemetryConfig(
+  rawEndpoint: string | undefined,
+  rawServiceName: string | undefined,
+  rawEnvironment: string | undefined,
+  rawSamplerRatio: string | undefined,
+): TelemetryResolution {
+  const warnings: string[] = [];
+  const endpoint = (rawEndpoint ?? '').trim().length > 0 ? rawEndpoint!.trim() : DEFAULT_OTEL_ENDPOINT;
+  const serviceName = (rawServiceName ?? '').trim().length > 0
+    ? rawServiceName!.trim()
+    : DEFAULT_OTEL_SERVICE_NAME;
+  const environment = (rawEnvironment ?? '').trim().length > 0
+    ? rawEnvironment!.trim()
+    : DEFAULT_OTEL_ENVIRONMENT;
+
+  const trimmedEndpoint = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
+
+  const samplerRatioRaw = (rawSamplerRatio ?? '').trim();
+  const samplerRatio = Number.parseFloat(samplerRatioRaw);
+  const ratioIsValid = Number.isFinite(samplerRatio) && samplerRatio >= 0 && samplerRatio <= 1;
+
+  if (!ratioIsValid) {
+    if (samplerRatioRaw.length > 0) {
+      warnings.push(
+        `OTEL_TRACES_SAMPLER_RATIO='${rawSamplerRatio}' は 0.0～1.0 の範囲で解釈できないため 1.0 へフォールバックします。`,
+      );
+    }
+  }
+
+  return {
+    endpoint: trimmedEndpoint,
+    serviceName,
+    environment,
+    samplerRatio: ratioIsValid ? samplerRatio : 1.0,
+    warnings,
   };
 }
 

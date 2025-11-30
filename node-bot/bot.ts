@@ -3,6 +3,7 @@
 import { createBot, Bot } from 'mineflayer';
 import type { Item } from 'prismarine-item';
 import type { Vec3 } from 'vec3';
+import { SpanStatusCode } from '@opentelemetry/api';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
 // そうしないと Node.js 実行時に named export の解決に失敗するため、本構成では明示的な分割代入を採用する。
 import mineflayerPathfinder from 'mineflayer-pathfinder';
@@ -21,6 +22,7 @@ import {
   createInitialAgentRoleState,
   resolveAgentRole,
 } from './runtime/roles.js';
+import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetry.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
 const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
@@ -57,6 +59,13 @@ const AGENT_WS_URL = runtimeConfig.agentBridge.url;
 const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
 const MINING_APPROACH_TOLERANCE = 1;
 const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
+
+// ---- OpenTelemetry 初期化 ----
+const telemetry = initializeTelemetry(runtimeConfig.telemetry);
+const tracer = telemetry.tracer;
+const commandDurationHistogram = telemetry.commandDurationMs;
+const agentBridgeEventCounter = telemetry.agentBridgeEventCounter;
+const reconnectCounter = telemetry.reconnectCounter;
 
 // ---- 型定義 ----
 // 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
@@ -281,21 +290,44 @@ const HUNGER_WARNING_COOLDOWN_MS = 30_000;
  * 失敗した場合でも再試行を継続して開発者の手戻りを防ぐ。
  */
 function startBotLifecycle(): void {
-  const protocolLabel = MC_VERSION ?? 'auto-detect (mineflayer default)';
-  console.log(`[Bot] connecting to ${MC_HOST}:${MC_PORT} with protocol ${protocolLabel} ...`);
-  const nextBot = createBot({
-    host: MC_HOST,
-    port: MC_PORT,
-    username: BOT_USERNAME,
-    auth: AUTH_MODE,
-    // 1.21.4+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
-    customPackets: CUSTOM_SLOT_PATCH,
-    ...(MC_VERSION ? { version: MC_VERSION } : {}),
-  });
+  tracer.startActiveSpan(
+    'mineflayer.lifecycle.start',
+    {
+      attributes: {
+        'minecraft.host': MC_HOST,
+        'minecraft.port': MC_PORT,
+        'minecraft.protocol': MC_VERSION ?? 'auto',
+        'minecraft.username': BOT_USERNAME,
+      },
+    },
+    (span) => {
+      try {
+        const protocolLabel = MC_VERSION ?? 'auto-detect (mineflayer default)';
+        console.log(`[Bot] connecting to ${MC_HOST}:${MC_PORT} with protocol ${protocolLabel} ...`);
+        const nextBot = createBot({
+          host: MC_HOST,
+          port: MC_PORT,
+          username: BOT_USERNAME,
+          auth: AUTH_MODE,
+          // 1.21.4+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
+          customPackets: CUSTOM_SLOT_PATCH,
+          ...(MC_VERSION ? { version: MC_VERSION } : {}),
+        });
 
-  bot = nextBot;
-  nextBot.loadPlugin(pathfinder);
-  registerBotEventHandlers(nextBot);
+        bot = nextBot;
+        nextBot.loadPlugin(pathfinder);
+        registerBotEventHandlers(nextBot);
+      } catch (error) {
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        console.error('[Bot] failed to start lifecycle', error);
+      } finally {
+        span.end();
+      }
+    },
+  );
 }
 
 /**
@@ -362,40 +394,57 @@ function applyAgentRoleUpdate(roleId: string, source: string, reason?: string): 
  * Python 側の LangGraph 共有メモリへイベントを伝搬する補助ユーティリティ。
  */
 async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
-  return new Promise((resolve) => {
-    const envelope: AgentEventEnvelope = { type: 'agentEvent', args: { event } };
-    const ws = new WebSocket(AGENT_WS_URL);
-    const timeout = setTimeout(() => {
-      console.warn('[AgentEvent] bridge timeout reached, terminating connection');
-      ws.terminate();
-      resolve();
-    }, 5_000);
+  const summaryAttributes = {
+    'agent_event.channel': event.channel,
+    'agent_event.type': event.event,
+    'agent_event.agent_id': event.agentId,
+  };
 
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ws.removeAllListeners();
-      resolve();
-    };
+  return runWithSpan(tracer, 'agent.bridge.emit', summaryAttributes, async (span) => {
+    agentBridgeEventCounter.add(1, { channel: event.channel, event: event.event });
+    const startedAt = Date.now();
 
-    ws.once('open', () => {
-      ws.send(JSON.stringify(envelope));
-    });
+    try {
+      await new Promise((resolve) => {
+        const envelope: AgentEventEnvelope = { type: 'agentEvent', args: { event } };
+        const ws = new WebSocket(AGENT_WS_URL);
+        const timeout = setTimeout(() => {
+          console.warn('[AgentEvent] bridge timeout reached, terminating connection');
+          ws.terminate();
+          resolve();
+        }, 5_000);
 
-    ws.once('message', () => {
-      ws.close();
-      cleanup();
-    });
+        const cleanup = () => {
+          clearTimeout(timeout);
+          ws.removeAllListeners();
+          resolve();
+        };
 
-    ws.once('close', () => {
-      cleanup();
-    });
+        ws.once('open', () => {
+          ws.send(JSON.stringify(envelope));
+        });
 
-    ws.once('error', (error) => {
-      console.error('[AgentEvent] failed to deliver event', error);
-      cleanup();
-    });
-  }).catch((error) => {
-    console.error('[AgentEvent] unexpected error while emitting event', error);
+        ws.once('message', () => {
+          ws.close();
+          cleanup();
+        });
+
+        ws.once('close', () => {
+          cleanup();
+        });
+
+        ws.once('error', (error) => {
+          console.error('[AgentEvent] failed to deliver event', error);
+          cleanup();
+        });
+      });
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+      console.error('[AgentEvent] unexpected error while emitting event', error);
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      span.setAttribute('agent_event.latency_ms', durationMs);
+    }
   });
 }
 
@@ -541,35 +590,44 @@ function registerBotEventHandlers(targetBot: Bot): void {
     if (isConnectionFailure) {
       bot = null;
       // Mineflayer は接続失敗時に error->end の順でイベントが発生するため、早期にリトライを予約する。
-      scheduleReconnect();
+      scheduleReconnect('connection_error');
     }
   });
 
   targetBot.once('kicked', (reason) => {
     console.warn(`[Bot] kicked from server: ${reason}. Retrying in ${MC_RECONNECT_DELAY_MS}ms.`);
     bot = null;
-    scheduleReconnect();
+    scheduleReconnect('kicked');
   });
 
   targetBot.once('end', (reason) => {
     console.warn(`[Bot] disconnected (${String(reason ?? 'unknown reason')}). Retrying in ${MC_RECONNECT_DELAY_MS}ms.`);
     bot = null;
-    scheduleReconnect();
+    scheduleReconnect('ended');
   });
 }
 
 /**
  * Bot が切断された場合に再接続を予約する。重複予約を防ぐため、既存タイマーを考慮する。
  */
-function scheduleReconnect(): void {
+function scheduleReconnect(reason: string = 'unknown'): void {
   if (reconnectTimer) {
     return;
   }
 
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    startBotLifecycle();
-  }, MC_RECONNECT_DELAY_MS);
+  reconnectCounter.add(1, { reason });
+
+  tracer.startActiveSpan(
+    'mineflayer.reconnect.schedule',
+    { attributes: { 'reconnect.delay_ms': MC_RECONNECT_DELAY_MS, 'reconnect.reason': reason } },
+    (span) => {
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        startBotLifecycle();
+      }, MC_RECONNECT_DELAY_MS);
+      span.end();
+    },
+  );
 }
 
 // 初回接続を起動
@@ -612,10 +670,30 @@ wss.on('connection', (ws: WebSocket, request) => {
 
   ws.on('message', async (raw) => {
     const rawText = raw.toString();
-    console.log(`[WS] (${clientId}) received payload: ${rawText}`);
-    const response = await handleIncomingMessage(raw);
-    console.log(`[WS] (${clientId}) sending response: ${JSON.stringify(response)}`);
-    ws.send(JSON.stringify(response));
+    // OpenTelemetry: 受信した単発コマンドの処理時間と結果を 1 span に集約して計測する。
+    try {
+      await runWithSpan(
+        tracer,
+        'websocket.message',
+        {
+          'ws.client_id': clientId,
+          'ws.remote_address': remoteAddress,
+          'ws.payload_length': rawText.length,
+        },
+        async (span) => {
+          console.log(`[WS] (${clientId}) received payload: ${rawText}`);
+          const response = await handleIncomingMessage(raw);
+          span.setAttribute('ws.response_ok', response.ok);
+          if (!response.ok) {
+            span.setStatus({ code: SpanStatusCode.ERROR, message: response.error ?? 'WS command failed' });
+          }
+          console.log(`[WS] (${clientId}) sending response: ${JSON.stringify(response)}`);
+          ws.send(JSON.stringify(response));
+        },
+      );
+    } catch (error) {
+      console.error('[WS] failed to process message span', error);
+    }
   });
 
   ws.on('close', (code, reason) => {
@@ -647,35 +725,80 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
 
   console.log(`[WS] executing command type=${type}`);
 
-  switch (type) {
-    case 'chat':
-      return handleChatCommand(args);
-    case 'moveTo':
-      return handleMoveToCommand(args);
-    case 'equipItem':
-      return handleEquipItemCommand(args);
-    case 'gatherStatus':
-      return handleGatherStatusCommand(args);
-    case 'gatherVptObservation':
-      return handleGatherVptObservationCommand(args);
-    case 'mineOre':
-      return handleMineOreCommand(args);
-    case 'setAgentRole':
-      return handleSetAgentRoleCommand(args);
-    case 'registerSkill':
-      return handleRegisterSkillCommand(args);
-    case 'invokeSkill':
-      return handleInvokeSkillCommand(args);
-    case 'skillExplore':
-      return handleSkillExploreCommand(args);
-    case 'playVptActions':
-      return handlePlayVptActionsCommand(args);
-    default: {
-      const exhaustiveCheck: never = type;
-      void exhaustiveCheck;
-      return { ok: false, error: 'Unknown command type' };
-    }
-  }
+  return runWithSpan(
+    tracer,
+    `command.${type}`,
+    {
+      'command.type': type,
+      'command.args.overview': summarizeArgs(args),
+    },
+    async (span) => {
+      const startedAt = Date.now();
+      let response: CommandResponse | null = null;
+      let outcome: 'success' | 'failure' | 'exception' = 'success';
+
+      try {
+        switch (type) {
+          case 'chat':
+            response = await handleChatCommand(args);
+            break;
+          case 'moveTo':
+            response = await handleMoveToCommand(args);
+            break;
+          case 'equipItem':
+            response = await handleEquipItemCommand(args);
+            break;
+          case 'gatherStatus':
+            response = await handleGatherStatusCommand(args);
+            break;
+          case 'gatherVptObservation':
+            response = await handleGatherVptObservationCommand(args);
+            break;
+          case 'mineOre':
+            response = await handleMineOreCommand(args);
+            break;
+          case 'setAgentRole':
+            response = await handleSetAgentRoleCommand(args);
+            break;
+          case 'registerSkill':
+            response = handleRegisterSkillCommand(args);
+            break;
+          case 'invokeSkill':
+            response = handleInvokeSkillCommand(args);
+            break;
+          case 'skillExplore':
+            response = handleSkillExploreCommand(args);
+            break;
+          case 'playVptActions':
+            response = await handlePlayVptActionsCommand(args);
+            break;
+          default: {
+            const exhaustiveCheck: never = type;
+            void exhaustiveCheck;
+            response = { ok: false, error: 'Unknown command type' };
+            break;
+          }
+        }
+
+        if (!response.ok) {
+          outcome = 'failure';
+          span.setStatus({ code: SpanStatusCode.ERROR, message: response.error ?? 'command returned ok=false' });
+        }
+        return response;
+      } catch (error) {
+        outcome = 'exception';
+        span.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+        throw error;
+      } finally {
+        const durationMs = Date.now() - startedAt;
+        span.setAttribute('mineflayer.response_ms', durationMs);
+        commandDurationHistogram.record(durationMs, {
+          'command.type': type,
+          outcome,
+        });
+      }
+    },
+  );
 }
 
 // ---- skill コマンド処理 ----
