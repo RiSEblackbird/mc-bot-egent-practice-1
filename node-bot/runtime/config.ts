@@ -119,7 +119,7 @@ export interface BotRuntimeConfig {
     samplerRatio: number;
   };
   control: {
-    mode: 'command' | 'vpt';
+    mode: 'command' | 'vpt' | 'hybrid';
     modeResolution: ControlModeResolution;
     vpt: VptPlaybackResolution;
   };

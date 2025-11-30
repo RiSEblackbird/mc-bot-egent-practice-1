@@ -295,6 +295,83 @@ class Actions:
             payload["args"]["metadata"] = metadata
         return await self._dispatch("playVptActions", payload)
 
+    async def execute_hybrid_action(
+        self,
+        *,
+        vpt_actions: Optional[List[Dict[str, Any]]],
+        fallback_command: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """VPT 再生と通常コマンドを安全に切り替えるハイブリッド実行を提供する。"""
+
+        normalized_vpt = self._normalize_vpt_actions(vpt_actions)
+        normalized_fallback = (
+            self._normalize_command_payload(fallback_command, label="fallback_command")
+            if fallback_command is not None
+            else None
+        )
+
+        if not normalized_vpt and normalized_fallback is None:
+            raise ActionValidationError(
+                "hybrid 指示には vpt_actions もしくは fallback_command のいずれかが必要です。"
+            )
+
+        last_error: Optional[str] = None
+        if normalized_vpt:
+            try:
+                response = await self.play_vpt_actions(normalized_vpt, metadata=metadata)
+                if response.get("ok"):
+                    log_structured_event(
+                        self.logger,
+                        "hybrid action executed via vpt",
+                        event_level="progress",
+                        context={
+                            "executor": "vpt",
+                            "fallback_defined": normalized_fallback is not None,
+                            "response": response,
+                        },
+                    )
+                    return {"ok": True, "executor": "vpt", "response": response}
+                last_error = str(response.get("error") or "Mineflayer reported ok=false")
+            except Exception as exc:  # noqa: BLE001 - 呼び出し側で扱う
+                last_error = str(exc)
+                log_structured_event(
+                    self.logger,
+                    "hybrid action vpt path failed",
+                    level=logging.WARNING,
+                    event_level="warning",
+                    context={"error": last_error},
+                    exc_info=exc,
+                )
+
+        if normalized_fallback is None:
+            raise ActionValidationError(
+                "VPT 指示が失敗しましたが fallback_command が指定されていません。"
+                f" reason={last_error or 'unknown'}"
+            )
+
+        fallback_response = await self._dispatch(
+            normalized_fallback["type"],
+            normalized_fallback,
+        )
+        log_structured_event(
+            self.logger,
+            "hybrid action executed via fallback command",
+            event_level="progress" if fallback_response.get("ok") else "fault",
+            level=logging.INFO if fallback_response.get("ok") else logging.WARNING,
+            context={
+                "executor": "command",
+                "fallback_reason": last_error,
+                "response": fallback_response,
+            },
+        )
+        return {
+            "ok": fallback_response.get("ok", False),
+            "executor": "command",
+            "response": fallback_response,
+            "fallback_reason": last_error,
+        }
+
     async def begin_skill_exploration(
         self,
         *,
@@ -358,3 +435,33 @@ class Actions:
             },
         )
         return resp
+
+    def _normalize_command_payload(self, payload: Dict[str, Any], *, label: str) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ActionValidationError(f"{label} はオブジェクトで指定してください")
+        command_type = payload.get("type")
+        if not isinstance(command_type, str) or not command_type.strip():
+            raise ActionValidationError(f"{label}.type は 1 文字以上の文字列で指定してください")
+        args = payload.get("args") or {}
+        if not isinstance(args, dict):
+            raise ActionValidationError(f"{label}.args はオブジェクトで指定してください")
+        normalized: Dict[str, Any] = {
+            "type": command_type.strip(),
+            "args": dict(args),
+        }
+        return normalized
+
+    def _normalize_vpt_actions(
+        self,
+        actions: Optional[List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        if actions is None:
+            return []
+        if not isinstance(actions, list):
+            raise ActionValidationError("vpt_actions は配列で指定してください")
+        normalized: List[Dict[str, Any]] = []
+        for index, item in enumerate(actions):
+            if not isinstance(item, dict):
+                raise ActionValidationError(f"vpt_actions[{index}] はオブジェクトで指定してください")
+            normalized.append(item)
+        return normalized

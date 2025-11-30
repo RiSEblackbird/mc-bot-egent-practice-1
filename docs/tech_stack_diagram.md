@@ -228,3 +228,66 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 - 上記 2 つの取り組みにより、「Python 側から問い合わせない限り Paper が沈黙する」という現状を解消し、LangGraph と CLI の両方で保護領域や危険ブロックを push で受け取れる構造に進化させる。
 
 
+
+## 6. ギャップ分析（2025-11-30 時点）
+
+LangGraph / Mineflayer / MineDojo / AgentBridge（Paper）/ OpenAI / blazity CLI パターンを組み合わせる際のボトルネックを、認知・計画・実行・可観測性の 4 軸で整理します。
+
+### 6.1 認知レイヤー（LangGraph × Mineflayer × Paper × Minecraft）
+
+- `python/agent.py` の `_summarize_perception_snapshot` は液体・敵対モブ・照度などを 1 行の文字列へ圧縮しており、座標系や過去イベントとの時間的な相関が LangGraph に届かないため、曖昧な自然言語指示に対して「いま危険なのか？」を推論しづらい状態です。`bridge_event_reports` も同一メモリスロットへ 10 件だけ保持しており（`_handle_bridge_event` 参照）、AgentBridge が送る Paper 側の危険アラートと Node 側の `perception` が分断されています。```893:961:python/agent.py // ...``` 
+
+### 6.2 計画レイヤー（LangGraph × OpenAI）
+
+- `PlanPriorityManager` は LLM 呼び出しが失敗したかどうかで `normal`/`high` を切り替えるだけで、Responses API が返す `confidence`・`clarification_needed` を LangGraph の分岐条件へ反映できていません。結果として、曖昧な指示でも `_execute_plan` がそのまま行動に進むか、単にチャットで確認するだけに留まります。```67:87:python/planner.py // class PlanPriorityManager ...```
+- `PlanOut.confidence` や `goal_profile.blockers` の定量値はログのみに使われており、LangGraph ノードが「自律判断で安全確認を挟むべきか」を決める材料になっていません。```1308:1346:python/agent.py // ... plan_out.blocking or plan_out.clarification_needed != "none" ...```
+
+### 6.3 実行レイヤー（Mineflayer × VPT × LangGraph）
+
+- `ActionDirective.executor == "hybrid"` は `python/agent.py` の `_parse_hybrid_directive_args` 経由で `args.vpt_actions` / `args.fallback_command` を検証し、`Actions.execute_hybrid_action` によって VPT → コマンドの順で安全にフェイルオーバーする実装へ更新済みです。```1286:1388:python/agent.py```
+- Mineflayer 側では `CONTROL_MODE` に `hybrid` を追加し、通常は `command` モードで行動しつつ `playVptActions` を受け取ったときだけ VPT 再生を許可します。これにより LangGraph が指示単位で VPT を挿入できるようになりました。```44:52:node-bot/bot.ts``` ```1868:1874:node-bot/bot.ts```
+
+### 6.4 スキル / 可観測性レイヤー（MineDojo × Paper × blazity CLI）
+
+- `MineDojoSelfDialogueExecutor` は常駐していますが `ActionDirective.executor == "minedojo"` のときだけ動作し、LangGraph が失敗した際の経験学習やスキル登録の自動化までは進んでいません。```386:396:python/agent.py // self._self_dialogue_executor ...```
+- AgentBridge からの SSE を Python までは取り込めているものの、blazity の CLI 手法で想定しているような `agentbridge jobs watch`（4.3 節）の実装は未着手で、Paper サーバーでの危険検知を運用担当がリアルタイムに追えません。
+
+
+## 7. 改善提案ロードマップ（LangGraph / Mineflayer / MineDojo / Paper / OpenAI / blazity）
+
+ギャップに対する具体的な改善ステップを、アーキテクチャ別に列挙します。
+
+### 7.1 Context Fabric（認知強化）
+
+- **目的**: Mineflayer の `perception`、AgentBridge (Paper) の SSE、Minecraft ワールド座標を LangGraph の状態として統合し、人間のように「場の空気」を掴めるようにする。
+- **実装案**:
+  - `Memory` に `perception_timeline` ストアを追加し、過去 N 件の観測を座標付き JSON で保持。
+  - LangGraph の `prepare_payload` ノードで `perception_timeline` と `bridge_event_reports` を取り込み、OpenAI Responses API へのコンテキストとして `context["perception_fabric"]` を注入。
+  - AgentBridge プラグインには軽量な `/v1/events/ws` を追加し、Mineflayer 未起動時も Paper から危険通知を push（既存 SSE の課題を補完）。
+
+### 7.2 Socratic Confidence Gate（計画強化）
+
+- **目的**: LangGraph が `PlanOut.confidence` や `clarification_needed` を解釈し、曖昧な自然言語でも自律的に追加観測→確認を挟めるようにする。
+- **実装案**:
+  - `PlanPriorityManager` に `confidence_thresholds` を導入し、Responses API からのスコアを基に `pre_action_review` ノードへ遷移させる。
+  - `pre_action_review` では Mineflayer の `gatherStatus(kind="environment")` を自動呼び、OpenAI へ Socratic style の追問を生成（LangGraph `Command` ノード + Responses API reasoning.effort）。
+  - 確認が必要な場合は `actions.say` ではなく、ActionDirective backlog に `ask_confirmation` を積むだけにして再計画を優先させる。
+
+### 7.3 Hybrid Directive Executor（実行強化）
+
+- **目的**: LangGraph から指示単位で Mineflayer コマンド制御と VPT 再生を切り替え、複雑な操作は VPT へ委譲する。
+- **実装内容**:
+  - `AgentOrchestrator._execute_plan()` が `directive.executor == "hybrid"` を検知すると `Actions.execute_hybrid_action()` を呼び出し、VPT 成功時はそのまま完了、失敗時は `args.fallback_command` を自動送信します。
+  - `CONTROL_MODE=hybrid` を指定すると Mineflayer が `command` モードを維持したまま `playVptActions` を受け付けるため、既存のコマンド系タスクと VPT 再生をシームレスに混在させられます。
+  - directive メタデータは OpenTelemetry / メトリクスに転記されるため、`directive.executor` ごとの成功率・所要時間を容易に観測できます。
+
+### 7.4 Skill Feedback Loop & CLI Telemetry（スキル/可観測性強化）
+
+- **目的**: MineDojo のデモ取得・スキル登録・Paper からの危険通知を 1 つのフィードバックループにまとめ、blazity 風 CLI で観測できるようにする。
+- **実装案**:
+  - `MineDojoSelfDialogueExecutor` に「PlanOut 失敗時の自動呼び出し」フラグを追加し、再計画フェーズでサンプルプレイバックを自動生成。
+  - `SkillRepository` へ MineDojo ミッション ID と AgentBridge からの環境タグを紐づけ、似た状況が再度発生したときに LangGraph から `invokeSkill` を優先。
+  - `python/cli.py` に `agentbridge jobs watch` と `agentbridge hazards tail` を追加し、Paper 側の SSE/WS をターミナルで追跡（blazity/CLI ドキュメントの UI/UX に倣う）。
+
+これらの提案は README のロードマップとリンクさせ、新規メンバーが自然言語インタラクション改善の方向性をすぐに理解できるようにします。
+

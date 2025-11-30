@@ -42,10 +42,13 @@ for (const warning of runtimeWarnings) {
 
 // Mineflayer 制御ループの設定値はログ出力より前に初期化し、未定義参照によるクラッシュを防ぐ。
 const CONTROL_MODE = runtimeConfig.control.mode;
+const VPT_COMMANDS_ENABLED = CONTROL_MODE === 'vpt' || CONTROL_MODE === 'hybrid';
 const VPT_TICK_INTERVAL_MS = runtimeConfig.control.vpt.tickIntervalMs;
 const VPT_MAX_SEQUENCE_LENGTH = runtimeConfig.control.vpt.maxSequenceLength;
 
-console.log(`[Control] mode=${CONTROL_MODE} tick=${VPT_TICK_INTERVAL_MS}ms maxSeq=${VPT_MAX_SEQUENCE_LENGTH}`);
+console.log(
+  `[Control] mode=${CONTROL_MODE} vptEnabled=${VPT_COMMANDS_ENABLED} tick=${VPT_TICK_INTERVAL_MS}ms maxSeq=${VPT_MAX_SEQUENCE_LENGTH}`,
+);
 
 const MC_VERSION = runtimeConfig.minecraft.version;
 const MC_HOST = runtimeConfig.minecraft.host;
@@ -1866,8 +1869,8 @@ function handleGatherVptObservationCommand(args: Record<string, unknown>): Comma
 }
 
 async function handlePlayVptActionsCommand(args: Record<string, unknown>): Promise<CommandResponse> {
-  if (CONTROL_MODE !== 'vpt') {
-    return { ok: false, error: 'CONTROL_MODE=vpt ではないため VPT 再生は無効化されています。' };
+  if (!VPT_COMMANDS_ENABLED) {
+    return { ok: false, error: 'CONTROL_MODE=command のため VPT 再生は無効化されています。' };
   }
 
   const rawActions = args.actions;

@@ -77,6 +77,15 @@ describe('loadBotRuntimeConfig', () => {
     expect(warnings).toBeInstanceOf(Array);
   });
 
+  it('hybrid モードを有効化できる', () => {
+    const env = {
+      CONTROL_MODE: 'hybrid',
+    } as NodeJS.ProcessEnv;
+
+    const { config } = loadBotRuntimeConfig(env, fakeDeps);
+    expect(config.control.mode).toBe('hybrid');
+  });
+
   it('OTEL_TRACES_SAMPLER_RATIO が無効な場合は警告して 1.0 へ丸める', () => {
     const env = {
       OTEL_TRACES_SAMPLER_RATIO: 'invalid',
