@@ -26,6 +26,9 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.1")
     compileOnly(files("libs/CoreProtect.jar"))
+    testImplementation("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("org.mockito:mockito-core:5.11.0")
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -45,4 +48,8 @@ tasks.named("build") {
 
 tasks.jar {
     archiveClassifier.set("slim")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
