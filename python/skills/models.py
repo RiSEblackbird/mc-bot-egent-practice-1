@@ -26,11 +26,32 @@ class SkillNode:
     success_count: int = 0
     last_used_at: Optional[str] = None
 
-    def score_for_text(self, text: str, *, category: Optional[str] = None) -> float:
-        """与えられたテキストがスキルとどれほど一致するかのスコアを算出する。"""
+    def score_for_text(
+        self,
+        text: str,
+        *,
+        category: Optional[str] = None,
+        context_tags: Tuple[str, ...] = (),
+        mission_id: Optional[str] = None,
+    ) -> float:
+        """与えられたテキストやタグ情報との類似度を総合スコアとして算出する。"""
 
         normalized = text.lower()
         score = 0.0
+
+        lowered_tags = {tag.lower().strip() for tag in self.tags if str(tag).strip()}
+
+        if mission_id:
+            lowered_mission = mission_id.lower()
+            if lowered_mission == self.identifier.lower():
+                score += 6.0
+            elif lowered_mission in lowered_tags:
+                score += 4.0
+
+        if context_tags:
+            tag_matches = sum(1 for tag in context_tags if tag.lower().strip() in lowered_tags)
+            if tag_matches:
+                score += min(tag_matches, 3) * 1.5
 
         if category:
             lowered_category = category.lower()
@@ -46,8 +67,8 @@ class SkillNode:
             if lowered and lowered in normalized:
                 score += 2.5
 
-        for tag in set(self.tags):
-            lowered = tag.lower().strip()
+        for tag in lowered_tags:
+            lowered = tag.strip()
             if lowered and lowered in normalized:
                 score += 1.0
 
@@ -171,6 +192,8 @@ class SkillTree:
         *,
         category: Optional[str] = None,
         include_locked: bool = True,
+        tags: Tuple[str, ...] = (),
+        mission_id: Optional[str] = None,
     ) -> Optional[SkillMatch]:
         """指定テキストに最も一致するスキルを返す。"""
 
@@ -178,7 +201,12 @@ class SkillTree:
         for node in self.nodes.values():
             if not include_locked and not node.unlocked:
                 continue
-            score = node.score_for_text(text, category=category)
+            score = node.score_for_text(
+                text,
+                category=category,
+                context_tags=tags,
+                mission_id=mission_id,
+            )
             if score <= 0:
                 continue
             if best_match is None or score > best_match.score:

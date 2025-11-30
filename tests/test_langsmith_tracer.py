@@ -67,18 +67,20 @@ class StubMineDojoClient(MineDojoClient):
             source="stub",
         )
 
-    async def fetch_demonstrations(
-        self, mission_id: str, *, limit: int = 1
-    ) -> list[MineDojoDemonstration]:  # type: ignore[override]
-        return [
-            MineDojoDemonstration(
-                demo_id=f"demo-{mission_id}",
-                summary="Break tree blocks and craft planks",
-                actions=(),
-                source="stub",
-            )
-            for _ in range(limit)
-        ]
+        async def fetch_demonstrations(
+            self, mission_id: str, *, limit: int = 1
+        ) -> list[MineDojoDemonstration]:  # type: ignore[override]
+            return [
+                MineDojoDemonstration(
+                    mission_id=mission_id,
+                    demo_id=f"demo-{mission_id}",
+                    summary="Break tree blocks and craft planks",
+                    actions=(),
+                    tags=("gather",),
+                    source="stub",
+                )
+                for _ in range(limit)
+            ]
 
 
 def test_thought_action_observation_tracer_records_runs() -> None:

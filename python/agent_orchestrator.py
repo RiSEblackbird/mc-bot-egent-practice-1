@@ -17,7 +17,12 @@ from services.building_service import (
     checkpoint_to_dict,
     restore_checkpoint,
 )
-from services.minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
+from services.minedojo_client import (
+    MineDojoClient,
+    MineDojoDemoMetadata,
+    MineDojoDemonstration,
+    MineDojoMission,
+)
 from services.skill_repository import SkillRepository
 
 from utils import (
@@ -185,7 +190,11 @@ class ActionGraph:
             "structured_events": [],
             "structured_event_history": list(structured_event_history or []),
             "perception_history": list(perception_history or []),
+            "minedojo_demo_metadata": None,
         }
+        metadata = getattr(self._orchestrator, "_active_minedojo_demo_metadata", None)
+        if isinstance(metadata, MineDojoDemoMetadata):
+            state["minedojo_demo_metadata"] = metadata.to_dict()
         with span_context(
             "langgraph.action_graph.run",
             langgraph_node_id="action_graph",
@@ -1183,6 +1192,7 @@ class MineDojoSelfDialogueExecutor:
             tags.extend(list(mission.tags))
         if self._env_params.get("sim_env"):
             tags.append(str(self._env_params.get("sim_env")))
+        tags.append(f"mission:{mission_id}")
 
         return SkillNode(
             identifier=skill_id,

@@ -7,7 +7,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -38,29 +38,77 @@ class MineDojoMission:
         }
 
 
+@dataclass(frozen=True)
+class MineDojoDemoMetadata:
+    """MineDojo デモを LangGraph や Actions へ渡す際の構造化メタデータ。"""
+
+    mission_id: str
+    demo_id: str
+    summary: str
+    tags: Tuple[str, ...] = field(default_factory=tuple)
+    source: str = "api"
+    duration: Optional[float] = None
+    success: Optional[bool] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """外部送信用に辞書へ変換する。"""
+
+        payload: Dict[str, Any] = {
+            "mission_id": self.mission_id,
+            "demo_id": self.demo_id,
+            "summary": self.summary,
+            "tags": list(self.tags),
+            "source": self.source,
+        }
+        if self.duration is not None:
+            payload["duration"] = self.duration
+        if self.success is not None:
+            payload["success"] = self.success
+        return payload
+
+    def to_prompt_payload(self) -> Dict[str, Any]:
+        """LLM への要約埋め込み用ペイロードを返す。"""
+
+        return {
+            "mission_id": self.mission_id,
+            "demo_id": self.demo_id,
+            "summary": self.summary,
+            "tags": list(self.tags),
+            "source": self.source,
+        }
+
+
 @dataclass
 class MineDojoDemonstration:
     """MineDojo のデモを Actions.play_vpt_actions と共有するための構造体。"""
 
+    mission_id: str
     demo_id: str
     summary: str
     actions: Sequence[Dict[str, Any]] = field(default_factory=tuple)
+    tags: Sequence[str] = field(default_factory=tuple)
     source: str = "api"
     raw: Dict[str, Any] = field(default_factory=dict)
 
-    def to_metadata(self) -> Dict[str, Any]:
+    def to_metadata(
+        self,
+        *,
+        mission_tags: Sequence[str] = (),
+    ) -> MineDojoDemoMetadata:
         """Actions 側へ転送する際のメタデータを生成する。"""
 
-        payload = {
-            "demo_id": self.demo_id,
-            "summary": self.summary,
-            "source": self.source,
-        }
-        if "duration" in self.raw:
-            payload["duration"] = self.raw["duration"]
-        if "success" in self.raw:
-            payload["success"] = self.raw["success"]
-        return payload
+        combined_tags = tuple(dict.fromkeys([*mission_tags, *self.tags]).keys())
+        duration = self.raw.get("duration") if isinstance(self.raw, dict) else None
+        success = self.raw.get("success") if isinstance(self.raw, dict) else None
+        return MineDojoDemoMetadata(
+            mission_id=self.mission_id,
+            demo_id=self.demo_id,
+            summary=self.summary,
+            tags=combined_tags,
+            source=self.source,
+            duration=float(duration) if isinstance(duration, (int, float)) else None,
+            success=bool(success) if isinstance(success, bool) else None,
+        )
 
 
 class MineDojoClient:
@@ -268,6 +316,10 @@ class MineDojoClient:
                 continue
             demo_id = str(item.get("id") or item.get("demo_id") or f"{mission_id}-{index}")
             summary = str(item.get("summary") or item.get("description") or "")
+            tags_field = item.get("tags")
+            tags: Sequence[str] = ()
+            if isinstance(tags_field, (list, tuple)):
+                tags = tuple(str(tag) for tag in tags_field if str(tag).strip())
             actions_field = item.get("actions") or item.get("trajectory")
             actions: Sequence[Dict[str, Any]] = []
             if isinstance(actions_field, list):
@@ -278,9 +330,11 @@ class MineDojoClient:
                 actions = normalized_actions
             demos.append(
                 MineDojoDemonstration(
+                    mission_id=mission_id,
                     demo_id=demo_id,
                     summary=summary,
                     actions=actions,
+                    tags=tags,
                     source=source,
                     raw=item,
                 )
@@ -291,5 +345,6 @@ class MineDojoClient:
 __all__ = [
     "MineDojoClient",
     "MineDojoMission",
+    "MineDojoDemoMetadata",
     "MineDojoDemonstration",
 ]

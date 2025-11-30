@@ -248,7 +248,14 @@ class SkillRepositoryStub:
         self._match = match
         self.record_usage_calls: List[Tuple[str, bool]] = []
 
-    async def match_skill(self, step: str, *, category: str) -> SkillMatch:
+    async def match_skill(
+        self,
+        step: str,
+        *,
+        category: str,
+        tags: tuple[str, ...] = (),
+        mission_id: Optional[str] = None,
+    ) -> SkillMatch:
         return self._match
 
     async def record_usage(self, skill_id: str, *, success: bool) -> None:

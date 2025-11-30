@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_DIR = PROJECT_ROOT / "python"
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
@@ -24,7 +24,7 @@ async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
     pytest.importorskip("langgraph")
 
     from agent import AgentOrchestrator  # type: ignore  # noqa: E402
-    from config import AgentConfig, MineDojoConfig  # type: ignore  # noqa: E402
+    from config import AgentConfig, LangSmithConfig, MineDojoConfig  # type: ignore  # noqa: E402
     from memory import Memory  # type: ignore  # noqa: E402
     from services.minedojo_client import (  # type: ignore  # noqa: E402
         MineDojoDemonstration,
@@ -65,9 +65,11 @@ async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
         ) -> List[MineDojoDemonstration]:
             return [
                 MineDojoDemonstration(
+                    mission_id=mission_id,
                     demo_id="demo-1",
                     summary="地下渓谷での採掘手順",
                     actions=[{"type": "moveTo", "args": {"x": 1, "y": 64, "z": -3}}],
+                    tags=("mining",),
                     source="test",
                     raw={"duration": 12.3, "success": True},
                 )
@@ -76,11 +78,27 @@ async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
     class StubSkillRepository:
         """スキル検索を無効化する簡易スタブ。"""
 
-        async def match_skill(self, text: str, *, category: Optional[str] = None) -> None:
+        def __init__(self) -> None:
+            self.nodes: Dict[str, Any] = {}
+
+        async def match_skill(
+            self,
+            text: str,
+            *,
+            category: Optional[str] = None,
+            tags: tuple[str, ...] = (),
+            mission_id: Optional[str] = None,
+        ) -> None:
             return None
 
         async def record_usage(self, skill_id: str, *, success: bool) -> None:  # pragma: no cover - not used
             return None
+
+        async def register_skill(self, node):  # pragma: no cover - not used
+            self.nodes[node.identifier] = node
+
+        async def get_tree(self):  # pragma: no cover - not used
+            return type("Tree", (), {"nodes": self.nodes})()
 
     config = AgentConfig(
         ws_url="ws://127.0.0.1:8765",
@@ -89,17 +107,27 @@ async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
         default_move_target=(0, 64, 0),
         default_move_target_raw="0,64,0",
         skill_library_path="/tmp/skills.json",
-        minedojo=MineDojoConfig(
-            api_base_url="https://example.org",
-            api_key=None,
-            dataset_dir=None,
-            cache_dir="/tmp/minedojo-cache",
-            request_timeout=5.0,
-        ),
-        llm_timeout_seconds=30.0,
-        queue_max_size=10,
-        worker_task_timeout_seconds=120.0,
-    )
+            minedojo=MineDojoConfig(
+                api_base_url="https://example.org",
+                api_key=None,
+                dataset_dir=None,
+                cache_dir="/tmp/minedojo-cache",
+                request_timeout=5.0,
+                sim_env="",
+                sim_seed=0,
+                sim_max_steps=0,
+            ),
+            langsmith=LangSmithConfig(
+                api_url="",
+                api_key=None,
+                project=None,
+                enabled=False,
+                tags=(),
+            ),
+            llm_timeout_seconds=30.0,
+            queue_max_size=10,
+            worker_task_timeout_seconds=120.0,
+        )
     actions = StubActions()
     memory = Memory()
     orchestrator = AgentOrchestrator(
@@ -133,6 +161,8 @@ async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
             {
                 "demo_id": "demo-1",
                 "summary": "地下渓谷での採掘手順",
+                "mission_id": "obtain_diamond",
+                "tags": ["mining", "safety"],
                 "action_types": ["moveTo"],
                 "action_count": 1,
             }
