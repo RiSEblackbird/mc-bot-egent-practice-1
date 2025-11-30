@@ -81,7 +81,7 @@ python agent.py
 - OS: Ubuntu 24.04.3 LTS（ローカル検証コンテナ）
 - Python: 3.12.12
 - Node.js: 22.x（`.nvmrc` の指定に従う）
-- Python 依存（固定版）: `openai==1.109.1` / `python-dotenv==1.0.1` / `websockets==12.0` / `httpx==0.27.2` / `pydantic==2.8.2` / `watchfiles==0.21.0` / `langgraph==0.1.16`
+- Python 依存（固定版）: `openai==1.109.1` / `python-dotenv==1.0.1` / `websockets==12.0` / `httpx==0.27.2` / `pydantic==2.8.2` / `watchfiles==0.21.0` / `langgraph==0.1.16` / `opentelemetry-api==1.27.0` / `opentelemetry-sdk==1.27.0` / `opentelemetry-exporter-otlp-proto-http==1.27.0`
 
 `pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/agent.py` の起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。
 
@@ -256,6 +256,11 @@ python -m python.cli tunnel --world world --anchor 100 12 200 --dir 1 0 0 --sect
 * `MINEDOJO_DATASET_DIR`: ローカルに配置した MineDojo データセットのルートディレクトリ。`missions/` と `demos/` サブディレクトリを想定。
 * `MINEDOJO_CACHE_DIR`: API 応答やデモをキャッシュするディレクトリ（既定: `var/cache/minedojo`）
 * `MINEDOJO_REQUEST_TIMEOUT`: API リクエストのタイムアウト秒数（既定: `10.0`）。0 以下の値は警告の上で既定値に丸められます。
+* `OTEL_EXPORTER_OTLP_ENDPOINT`: OpenTelemetry OTLP エクスポート先の URL。未指定なら `http://localhost:4318` を使用します。
+* `OTEL_TRACES_SAMPLER_RATIO`: トレースのサンプリング率（0.0～1.0）。開発時は 1.0 で全件出力し、本番では必要に応じて絞り込みます。
+
+LangGraph のノード実行、Responses API 呼び出し、AgentBridge HTTP 通信では OpenTelemetry の span を自動で開始します。`OTEL_EXPORTER_OTLP_ENDPOINT`
+とサンプリング率を設定すると、`langgraph_node_id` や `checkpoint_id` などの属性付きでトレースを収集できます。
 
 ## 5. 使い方（ゲーム内）
 

@@ -11,8 +11,10 @@ from .logging import (
     StructuredLogContext,
     clear_langgraph_context,
     get_current_log_context,
+    get_tracer,
     langgraph_log_context,
     log_structured_event,
+    span_context,
     setup_logger,
 )
 
@@ -20,7 +22,9 @@ __all__ = [
     "StructuredLogContext",
     "clear_langgraph_context",
     "get_current_log_context",
+    "get_tracer",
     "langgraph_log_context",
     "log_structured_event",
+    "span_context",
     "setup_logger",
 ]

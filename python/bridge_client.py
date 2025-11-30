@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
+from opentelemetry.trace import Status, StatusCode
 
-from utils import log_structured_event, setup_logger
+from utils import log_structured_event, setup_logger, span_context
 
 logger = setup_logger("bridge.http")
 
@@ -117,55 +118,74 @@ class BridgeClient:
         url = f"{self._base_url}{path}"
         attempt = 0
         backoff = 0.2
-        while True:
-            try:
-                response = self._client.request(method, url, json=json)
-                if response.status_code >= 400:
-                    payload: Any | None = None
-                    detail = response.text
-                    try:
-                        payload = response.json()
-                        if isinstance(payload, dict) and payload.get("error"):
-                            detail = str(payload.get("error"))
-                    except jsonlib.JSONDecodeError:
-                        payload = None
-                    raise BridgeError(
-                        f"AgentBridge error {response.status_code}: {detail}",
-                        status_code=response.status_code,
-                        payload=payload,
-                    )
-                if not response.content:
-                    return None
-                return response.json()
-            except (httpx.HTTPError, jsonlib.JSONDecodeError) as exc:  # type: ignore[arg-type]
-                attempt += 1
-                context = {
-                    "method": method,
-                    "path": path,
-                    "attempt": attempt,
-                    "max_attempts": BRIDGE_RETRY,
-                    "error": str(exc),
-                }
-                if attempt > BRIDGE_RETRY:
+        with span_context(
+            "bridge.http.request",
+            langgraph_node_id="bridge.http_request",
+            event_level="info",
+            attributes={"http.method": method, "http.url": url},
+        ) as span:
+            while True:
+                try:
+                    response = self._client.request(method, url, json=json)
+                    span.set_attribute("http.status_code", response.status_code)
+                    if response.status_code >= 400:
+                        payload: Any | None = None
+                        detail = response.text
+                        try:
+                            payload = response.json()
+                            if isinstance(payload, dict) and payload.get("error"):
+                                detail = str(payload.get("error"))
+                        except jsonlib.JSONDecodeError:
+                            payload = None
+                        span.set_status(
+                            Status(StatusCode.ERROR, f"AgentBridge error {response.status_code}")
+                        )
+                        span.record_exception(
+                            BridgeError(
+                                f"AgentBridge error {response.status_code}: {detail}",
+                                status_code=response.status_code,
+                                payload=payload,
+                            )
+                        )
+                        raise BridgeError(
+                            f"AgentBridge error {response.status_code}: {detail}",
+                            status_code=response.status_code,
+                            payload=payload,
+                        )
+                    if not response.content:
+                        return None
+                    return response.json()
+                except (httpx.HTTPError, jsonlib.JSONDecodeError) as exc:  # type: ignore[arg-type]
+                    attempt += 1
+                    context = {
+                        "method": method,
+                        "path": path,
+                        "attempt": attempt,
+                        "max_attempts": BRIDGE_RETRY,
+                        "error": str(exc),
+                    }
+                    span.set_attribute("bridge.retry_attempt", attempt)
+                    if attempt > BRIDGE_RETRY:
+                        span.set_status(Status(StatusCode.ERROR, str(exc)))
+                        log_structured_event(
+                            logger,
+                            "bridge http request failed permanently",
+                            level=logging.ERROR,
+                            event_level="fault",
+                            langgraph_node_id="bridge.http_request",
+                            context=context,
+                        )
+                        raise BridgeError(f"HTTP request to AgentBridge failed: {exc}") from exc
                     log_structured_event(
                         logger,
-                        "bridge http request failed permanently",
-                        level=logging.ERROR,
-                        event_level="fault",
+                        "bridge http request failed, scheduling retry",
+                        level=logging.WARNING,
+                        event_level="retry",
                         langgraph_node_id="bridge.http_request",
                         context=context,
                     )
-                    raise BridgeError(f"HTTP request to AgentBridge failed: {exc}") from exc
-                log_structured_event(
-                    logger,
-                    "bridge http request failed, scheduling retry",
-                    level=logging.WARNING,
-                    event_level="retry",
-                    langgraph_node_id="bridge.http_request",
-                    context=context,
-                )
-                time.sleep(backoff)
-                backoff *= 2
+                    time.sleep(backoff)
+                    backoff *= 2
 
 
 __all__ = ["BridgeClient", "BridgeError", "Frontier"]
