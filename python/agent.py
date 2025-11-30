@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -25,9 +26,11 @@ from config import AgentConfig, load_agent_config
 from services.minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
 from services.skill_repository import SkillRepository
 from actions import Actions
+from bridge_client import BridgeClient, BridgeError
 from bridge_ws import BotBridge
 from memory import Memory
 from planner import (
+    PlanArguments,
     PlanOut,
     ReActStep,
     BarrierNotificationError,
@@ -58,6 +61,12 @@ AGENT_WS_PORT = AGENT_CONFIG.agent_port
 DEFAULT_MOVE_TARGET_RAW = AGENT_CONFIG.default_move_target_raw
 DEFAULT_MOVE_TARGET = AGENT_CONFIG.default_move_target
 SKILL_LIBRARY_PATH = AGENT_CONFIG.skill_library_path
+STATUS_REFRESH_TIMEOUT_SECONDS = float(os.getenv("STATUS_REFRESH_TIMEOUT_SECONDS", "3.0"))
+STATUS_REFRESH_RETRY = int(os.getenv("STATUS_REFRESH_RETRY", "2"))
+STATUS_REFRESH_BACKOFF_SECONDS = float(os.getenv("STATUS_REFRESH_BACKOFF_SECONDS", "0.5"))
+BLOCK_EVAL_RADIUS = int(os.getenv("BLOCK_EVAL_RADIUS", "3"))
+BLOCK_EVAL_TIMEOUT_SECONDS = float(os.getenv("BLOCK_EVAL_TIMEOUT_SECONDS", "3.0"))
+BLOCK_EVAL_HEIGHT_DELTA = int(os.getenv("BLOCK_EVAL_HEIGHT_DELTA", "1"))
 
 logger.info(
     "Agent configuration loaded (ws_url=%s, bind=%s:%s, default_target=%s)",
@@ -256,6 +265,14 @@ class AgentOrchestrator:
         "inventory_status": "所持品の確認",
         "general_status": "状態の共有",
     }
+    _HAZARD_BLOCK_KEYWORDS = (
+        "lava",
+        "magma",
+        "fire",
+        "cactus",
+        "powder_snow",
+        "campfire",
+    )
     # 装備ステップ用のキーワード→装備対象の推測マップ。右手・左手のヒントも同時に解析する。
     _EQUIP_KEYWORD_RULES = (
         (("ツルハシ", "ピッケル", "pickaxe"), {"tool_type": "pickaxe"}),
@@ -331,6 +348,8 @@ class AgentOrchestrator:
         self._active_minedojo_mission: Optional[MineDojoMission] = None
         self._active_minedojo_demos: List[MineDojoDemonstration] = []
         self._active_minedojo_mission_id: Optional[str] = None
+        # 周辺環境の安全性を評価するため、Bridge HTTP クライアントを初期化しておく。
+        self._bridge_client = BridgeClient()
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -543,9 +562,136 @@ class AgentOrchestrator:
         self.logger.info("role switch applied role=%s label=%s", role_id, role_info["label"])
         return True
 
+    async def _prime_status_for_planning(self) -> None:
+        """LLM へ渡す前に Mineflayer 状況を収集し、メモリへ反映する。"""
+
+        requested = ["general"]
+        if not self.memory.get("player_pos_detail"):
+            requested.append("position")
+        if not self.memory.get("inventory_detail"):
+            requested.append("inventory")
+
+        failures: List[str] = []
+        for kind in requested:
+            ok = await self._request_status_with_backoff(kind)
+            if not ok:
+                failures.append(kind)
+
+        if failures:
+            await self._report_execution_barrier(
+                "状態取得",
+                f"{', '.join(failures)} の取得に失敗しました。Mineflayer への接続状況を確認してください。",
+            )
+
+    async def _request_status_with_backoff(self, kind: str) -> bool:
+        """タイムアウトと指数バックオフ付きで gather_status を呼び出す。"""
+
+        backoff = STATUS_REFRESH_BACKOFF_SECONDS
+        for attempt in range(1, STATUS_REFRESH_RETRY + 2):
+            try:
+                resp = await asyncio.wait_for(
+                    self.actions.gather_status(kind),
+                    timeout=STATUS_REFRESH_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    "gather_status timed out kind=%s attempt=%d", kind, attempt
+                )
+                resp = None
+            except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
+                self.logger.exception(
+                    "gather_status raised unexpected error kind=%s attempt=%d", kind, attempt
+                )
+                resp = {"ok": False, "error": str(exc)}
+
+            if isinstance(resp, dict) and resp.get("ok"):
+                self._cache_status(kind, resp.get("data") or {})
+                return True
+
+            if attempt <= STATUS_REFRESH_RETRY:
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+
+            error_detail = "Mineflayer から応答がありません。"
+            if isinstance(resp, dict) and resp.get("error"):
+                error_detail = str(resp.get("error"))
+            self.logger.warning(
+                "gather_status failed permanently kind=%s error=%s", kind, error_detail
+            )
+        return False
+
+    def _cache_status(self, kind: str, data: Dict[str, Any]) -> None:
+        """gather_status の結果を要約し、再利用しやすい形で保存する。"""
+
+        if kind == "position":
+            summary = self._summarize_position_status(data)
+            self.memory.set("player_pos", summary)
+            self.memory.set("player_pos_detail", data)
+            return
+
+        if kind == "inventory":
+            summary = self._summarize_inventory_status(data)
+            self.memory.set("inventory", summary)
+            self.memory.set("inventory_detail", data)
+            return
+
+        if kind == "general":
+            summary = self._summarize_general_status(data)
+            self.memory.set("general_status", summary)
+            self.memory.set("general_status_detail", data)
+            if isinstance(data, dict) and "digPermission" in data:
+                self.memory.set("dig_permission", data.get("digPermission"))
+            return
+
+        self.logger.info("cache_status skipped unknown kind=%s", kind)
+
+    async def _collect_block_evaluations(self) -> None:
+        """Bridge から近傍ブロックの情報を収集し、危険度の概略をメモリへ保持する。"""
+
+        detail = self.memory.get("player_pos_detail") or {}
+        try:
+            x = int(detail.get("x"))
+            y = int(detail.get("y"))
+            z = int(detail.get("z"))
+        except Exception:
+            self.logger.info(
+                "skip block evaluation because player position detail is unavailable"
+            )
+            return
+
+        world = str(detail.get("dimension") or detail.get("world") or "world")
+        positions: List[Dict[str, int]] = []
+        for dx in range(-BLOCK_EVAL_RADIUS, BLOCK_EVAL_RADIUS + 1):
+            for dy in range(-BLOCK_EVAL_HEIGHT_DELTA, BLOCK_EVAL_HEIGHT_DELTA + 1):
+                for dz in range(-BLOCK_EVAL_RADIUS, BLOCK_EVAL_RADIUS + 1):
+                    positions.append({"x": x + dx, "y": y + dy, "z": z + dz})
+
+        loop = asyncio.get_running_loop()
+        try:
+            evaluations = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: self._bridge_client.bulk_eval(world, positions)
+                ),
+                timeout=BLOCK_EVAL_TIMEOUT_SECONDS,
+            )
+        except (asyncio.TimeoutError, BridgeError) as exc:
+            self.logger.warning(
+                "block evaluation failed world=%s error=%s", world, exc
+            )
+            return
+        except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
+            self.logger.exception("unexpected error during block evaluation", exc_info=exc)
+            return
+
+        summary = self._summarize_block_evaluations(evaluations)
+        self.memory.set("block_evaluation", summary)
+
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
+        await self._prime_status_for_planning()
+        await self._collect_block_evaluations()
         context = self._build_context_snapshot()
         self.logger.info(
             "creating plan for username=%s message='%s' context=%s",
@@ -570,6 +716,13 @@ class AgentOrchestrator:
             plan_out.resp,
         )
 
+        structured_coords = self._extract_argument_coordinates(plan_out.arguments)
+        if structured_coords:
+            self.logger.info(
+                "plan arguments provided coordinates=%s", structured_coords
+            )
+        initial_target = structured_coords or user_hint_coords
+
         # LLM の丁寧な応答をそのままプレイヤーへ relay する。
         if plan_out.resp:
             self.logger.info(
@@ -579,7 +732,7 @@ class AgentOrchestrator:
             )
             await self.actions.say(plan_out.resp)
 
-        await self._execute_plan(plan_out, initial_target=user_hint_coords)
+        await self._execute_plan(plan_out, initial_target=initial_target)
         self.memory.set("last_chat", {"username": task.username, "message": task.message})
 
     def _format_position_payload(self, payload: Dict[str, Any]) -> Optional[str]:
@@ -612,6 +765,9 @@ class AgentOrchestrator:
         minedojo_context = self.memory.get("minedojo_context")
         if minedojo_context:
             snapshot["minedojo_support"] = minedojo_context
+        block_eval = self.memory.get("block_evaluation")
+        if block_eval:
+            snapshot["block_evaluation"] = block_eval
         reflection_context = self.memory.build_reflection_context()
         if reflection_context:
             snapshot["recent_reflections"] = reflection_context
@@ -637,7 +793,15 @@ class AgentOrchestrator:
                 として利用する。
         """
 
+        if plan_out.blocking:
+            await self._report_execution_barrier(
+                "プラン確認",
+                "LLM がユーザー確認を求めているため、作業を一時停止します。指示内容をご確認ください。",
+            )
+            return
+
         total_steps = len(plan_out.plan)
+        structured_coords = self._extract_argument_coordinates(plan_out.arguments)
         # プラン生成が空配列で戻るケースでは行動開始前から停滞するため、
         # 直ちに障壁として報告してプレイヤーへ状況を伝える。
         if total_steps == 0:
@@ -691,6 +855,8 @@ class AgentOrchestrator:
                 continue
 
             detection_category = self._classify_detection_task(normalized)
+            if not detection_category and plan_out.intent.strip().lower().startswith("report"):
+                detection_category = "general_status"
             if detection_category:
                 self.logger.info(
                     "plan_step index=%d classified as detection_report category=%s",
@@ -737,7 +903,7 @@ class AgentOrchestrator:
                 )
                 continue
 
-            coords = self._extract_coordinates(normalized)
+            coords = structured_coords or self._extract_coordinates(normalized)
             if coords:
                 self.logger.info(
                     "plan_step index=%d classified as coordinate_move coords=%s",
@@ -1338,6 +1504,34 @@ class AgentOrchestrator:
         self.logger.warning("unknown detection category encountered category=%s", category)
         return None
 
+    def _summarize_block_evaluations(
+        self, evaluations: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Bridge の評価結果を LLM へ渡しやすいフラグに変換する。"""
+
+        hazards: List[Dict[str, Any]] = []
+        liquids: List[Dict[str, Any]] = []
+        functional: List[Dict[str, Any]] = []
+        for entry in evaluations or []:
+            block_id = str(entry.get("block_id") or "").lower()
+            pos = entry.get("pos") or entry.get("position") or {}
+            marker = {"block": block_id or "unknown", "pos": pos}
+            if entry.get("is_liquid"):
+                liquids.append(marker)
+            if entry.get("near_functional"):
+                functional.append(marker)
+            if any(keyword in block_id for keyword in self._HAZARD_BLOCK_KEYWORDS):
+                hazards.append(marker)
+
+        return {
+            "has_liquid_nearby": bool(liquids),
+            "has_functional_nearby": bool(functional),
+            "has_hazard_nearby": bool(hazards),
+            "hazard_samples": hazards[:5],
+            "liquid_samples": liquids[:5],
+            "functional_samples": functional[:5],
+        }
+
     def _summarize_position_status(self, data: Dict[str, Any]) -> str:
         """Node 側から受け取った位置情報をプレイヤー向けの要約文へ整形する。"""
 
@@ -1861,6 +2055,24 @@ class AgentOrchestrator:
             if match:
                 x, y, z = (int(match.group(i)) for i in range(1, 4))
                 return x, y, z
+        return None
+
+    def _extract_argument_coordinates(
+        self, arguments: PlanArguments | Dict[str, Any] | None
+    ) -> Optional[Tuple[int, int, int]]:
+        """PlanOut.arguments から座標だけを安全に取り出す。"""
+
+        raw = None
+        if isinstance(arguments, PlanArguments):
+            raw = arguments.coordinates
+        elif isinstance(arguments, dict):
+            raw = arguments.get("coordinates")
+
+        if isinstance(raw, dict):
+            try:
+                return (int(raw.get("x")), int(raw.get("y")), int(raw.get("z")))
+            except Exception:
+                return None
         return None
 
     async def _move_to_coordinates(
