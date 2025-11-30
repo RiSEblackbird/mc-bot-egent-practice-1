@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,11 @@ from services.minedojo_client import (
 )
 from services.skill_repository import SkillRepository
 from actions import Actions
-from bridge_client import BridgeClient, BridgeError
+from bridge_client import (
+    BRIDGE_EVENT_STREAM_ENABLED,
+    BridgeClient,
+    BridgeError,
+)
 from bridge_ws import BotBridge
 from memory import Memory
 from planner import (
@@ -365,6 +370,10 @@ class AgentOrchestrator:
         self._active_minedojo_demo_metadata: Optional[MineDojoDemoMetadata] = None
         # 周辺環境の安全性を評価するため、Bridge HTTP クライアントを初期化しておく。
         self._bridge_client = BridgeClient()
+        self._bridge_event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._bridge_event_stop: Optional[asyncio.Event] = None
+        self._bridge_event_thread_stop: Optional[threading.Event] = None
+        self._bridge_event_tasks: List[asyncio.Task[Any]] = []
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -443,6 +452,40 @@ class AgentOrchestrator:
             finally:
                 self.queue.task_done()
 
+    async def start_bridge_event_listener(self) -> None:
+        """AgentBridge のイベントストリーム購読タスクを起動する。"""
+
+        if not BRIDGE_EVENT_STREAM_ENABLED:
+            self.logger.info("bridge event stream disabled via env; skip listener setup")
+            return
+        if self._bridge_event_tasks:
+            return
+
+        self._bridge_event_stop = asyncio.Event()
+        self._bridge_event_thread_stop = threading.Event()
+        pump = asyncio.create_task(self._bridge_event_pump(), name="bridge-event-pump")
+        consumer = asyncio.create_task(
+            self._bridge_event_consumer(), name="bridge-event-consumer"
+        )
+        self._bridge_event_tasks.extend([pump, consumer])
+
+    async def stop_bridge_event_listener(self) -> None:
+        """イベント購読タスクを停止し、スレッドセーフに後始末する。"""
+
+        if not self._bridge_event_tasks:
+            return
+
+        if self._bridge_event_stop:
+            self._bridge_event_stop.set()
+        if self._bridge_event_thread_stop:
+            self._bridge_event_thread_stop.set()
+
+        for task in list(self._bridge_event_tasks):
+            task.cancel()
+            with contextlib.suppress(Exception):
+                await task
+        self._bridge_event_tasks.clear()
+
     async def _handle_queue_overflow(self, incoming: ChatTask) -> None:
         """混雑時に最古のタスクを破棄し、最新チャットの受け付けを保証する。"""
 
@@ -470,6 +513,67 @@ class AgentOrchestrator:
         await self.actions.say(
             "処理が混雑しているため、古い指示をスキップし最新の指示を優先します。"
         )
+
+    async def _bridge_event_pump(self) -> None:
+        """SSE ストリームからのイベントをキューへ積むバックグラウンドタスク。"""
+
+        if self._bridge_event_stop is None or self._bridge_event_thread_stop is None:
+            return
+
+        loop = asyncio.get_running_loop()
+
+        def _enqueue(event: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(self._bridge_event_queue.put_nowait, event)
+
+        while not self._bridge_event_stop.is_set():
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._bridge_client.consume_event_stream(
+                        _enqueue, self._bridge_event_thread_stop
+                    ),
+                )
+            except BridgeError as exc:
+                log_structured_event(
+                    self.logger,
+                    "bridge event stream encountered recoverable error",
+                    level=logging.WARNING,
+                    event_level="warning",
+                    langgraph_node_id="agent.bridge_events",
+                    context={"error": str(exc)},
+                )
+            except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
+                log_structured_event(
+                    self.logger,
+                    "bridge event stream failed unexpectedly",
+                    level=logging.ERROR,
+                    event_level="fault",
+                    langgraph_node_id="agent.bridge_events",
+                    context={"error": str(exc)},
+                    exc_info=True,
+                )
+
+            if not self._bridge_event_stop.is_set():
+                await asyncio.sleep(1.0)
+
+    async def _bridge_event_consumer(self) -> None:
+        """Bridge イベントキューを消費し、検出レポートへ整理する。"""
+
+        if self._bridge_event_stop is None:
+            return
+
+        while not self._bridge_event_stop.is_set():
+            try:
+                payload = await asyncio.wait_for(
+                    self._bridge_event_queue.get(), timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            try:
+                await self._handle_bridge_event(payload)
+            finally:
+                self._bridge_event_queue.task_done()
 
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
@@ -973,7 +1077,7 @@ class AgentOrchestrator:
         # 直前に検出した移動座標を記録し、以降の「移動」ステップで座標が省略
         # された場合でも同じ目的地へ移動し続けられるようにする。
         last_target_coords: Optional[Tuple[int, int, int]] = initial_target
-        detection_reports: List[Dict[str, str]] = []
+        detection_reports: List[Dict[str, Any]] = []
         react_trace: List[ReActStep] = list(plan_out.react_trace)
         for index, step in enumerate(plan_out.plan, start=1):
             normalized = step.strip()
@@ -1357,7 +1461,7 @@ class AgentOrchestrator:
         *,
         failed_step: str,
         failure_reason: str,
-        detection_reports: List[Dict[str, str]],
+        detection_reports: List[Dict[str, Any]],
         action_backlog: List[Dict[str, str]],
         remaining_steps: List[str],
         replan_depth: int,
@@ -1376,6 +1480,14 @@ class AgentOrchestrator:
                 "previous reflection marked as failed id=%s", previous_pending.id
             )
 
+        merged_detection_reports: List[Dict[str, Any]] = list(detection_reports)
+        bridge_reports = self.memory.get("bridge_event_reports", [])
+        if isinstance(bridge_reports, list) and bridge_reports:
+            merged_detection_reports.extend(bridge_reports[-5:])
+            failure_reason = self._augment_failure_reason_with_events(
+                failure_reason, bridge_reports
+            )
+
         task_signature = self.memory.derive_task_signature(failed_step)
         previous_reflections = self.memory.export_reflections_for_prompt(
             task_signature=task_signature,
@@ -1385,7 +1497,7 @@ class AgentOrchestrator:
         reflection_prompt = build_reflection_prompt(
             failed_step,
             failure_reason,
-            detection_reports=detection_reports,
+            detection_reports=merged_detection_reports,
             action_backlog=action_backlog,
             previous_reflections=previous_reflections,
         )
@@ -1396,16 +1508,16 @@ class AgentOrchestrator:
             failure_reason=failure_reason,
             improvement=reflection_prompt,
             metadata={
-                "detection_reports": list(detection_reports),
+                "detection_reports": list(merged_detection_reports),
                 "action_backlog": list(action_backlog),
                 "remaining_steps": list(remaining_steps),
             },
         )
         self.memory.set("last_reflection_prompt", reflection_prompt)
 
-        if detection_reports:
+        if merged_detection_reports:
             await self._handle_detection_reports(
-                detection_reports,
+                merged_detection_reports,
                 already_responded=True,
             )
 
@@ -2264,7 +2376,7 @@ class AgentOrchestrator:
 
     async def _handle_detection_reports(
         self,
-        reports: Iterable[Dict[str, str]],
+        reports: Iterable[Dict[str, Any]],
         *,
         already_responded: bool,
     ) -> None:
@@ -2305,6 +2417,86 @@ class AgentOrchestrator:
             message = "。".join(segments) + "。"
 
         await self.actions.say(message)
+
+    async def _handle_bridge_event(self, payload: Dict[str, Any]) -> None:
+        """Bridge 側の SSE イベントを検出レポートとして整形する。"""
+
+        if not isinstance(payload, dict):
+            return
+
+        event_level = str(payload.get("event_level") or "info")
+        message = str(payload.get("message") or payload.get("type") or "event")
+        region = str(payload.get("region") or "").strip()
+        coords_text = self._format_block_pos(payload.get("block_pos"))
+
+        summary_parts = [f"[{event_level}] {message}"]
+        if region:
+            summary_parts.append(f"region={region}")
+        if coords_text:
+            summary_parts.append(f"pos={coords_text}")
+        summary = " / ".join(summary_parts)
+
+        report: Dict[str, Any] = {
+            "summary": summary,
+            "category": str(payload.get("type") or "bridge_event"),
+            "event_level": event_level,
+        }
+        if region:
+            report["region"] = region
+        if isinstance(payload.get("block_pos"), dict):
+            report["block_pos"] = payload["block_pos"]
+
+        history = self.memory.get("bridge_event_reports", [])
+        if not isinstance(history, list):
+            history = []
+        history.append(report)
+        self.memory.set("bridge_event_reports", history[-10:])
+
+        log_structured_event(
+            self.logger,
+            "bridge event received",
+            level=logging.INFO,
+            event_level=event_level,
+            langgraph_node_id="agent.bridge_events",
+            context={
+                "region": region or "unknown",
+                "summary": summary,
+            },
+        )
+
+    def _format_block_pos(self, block_pos: Any) -> str:
+        """Block 座標辞書を人間可読な文字列に整形する。"""
+
+        if isinstance(block_pos, dict):
+            try:
+                x = int(block_pos.get("x"))
+                y = int(block_pos.get("y"))
+                z = int(block_pos.get("z"))
+                return f"X={x} Y={y} Z={z}"
+            except Exception:
+                return ""
+        return ""
+
+    def _augment_failure_reason_with_events(
+        self, failure_reason: str, reports: Sequence[Dict[str, Any]]
+    ) -> str:
+        """最新の保護領域イベント情報を失敗理由へ添える。"""
+
+        if not reports:
+            return failure_reason
+
+        latest = reports[-1]
+        region = str(latest.get("region") or "").strip()
+        coords = self._format_block_pos(latest.get("block_pos"))
+        segments: List[str] = []
+        if region:
+            segments.append(f"保護領域: {region}")
+        if coords:
+            segments.append(f"座標: {coords}")
+        if not segments:
+            return failure_reason
+
+        return f"{failure_reason} (最近の検知: {' / '.join(segments)})"
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
@@ -2518,6 +2710,7 @@ async def main() -> None:
     )
     orchestrator = AgentOrchestrator(actions, mem, skill_repository=skill_repo)
     ws_server = AgentWebSocketServer(orchestrator)
+    await orchestrator.start_bridge_event_listener()
 
     worker_task = asyncio.create_task(orchestrator.worker(), name="agent-worker")
 
@@ -2531,6 +2724,7 @@ async def main() -> None:
             worker_task.cancel()
             with contextlib.suppress(Exception):
                 await worker_task
+            await orchestrator.stop_bridge_event_listener()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 package com.example.bridge.http;
 
 import com.example.bridge.AgentBridgePlugin;
+import com.example.bridge.events.BridgeEvent;
+import com.example.bridge.events.BridgeEventHub;
 import com.example.bridge.jobs.CardinalDirection;
 import com.example.bridge.jobs.JobRegistry;
 import com.example.bridge.jobs.MiningJob;
@@ -23,11 +25,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -55,6 +59,7 @@ public final class BridgeHttpServer {
     private final LangGraphRetryHook retryHook;
     private final Logger logger;
     private final ObjectMapper mapper;
+    private final BridgeEventHub eventHub = new BridgeEventHub();
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
     private HttpServer server;
@@ -91,6 +96,9 @@ public final class BridgeHttpServer {
         server.createContext("/v1/blocks/bulk_eval", new BulkEvalHandler());
         server.createContext("/v1/coreprotect/is_player_placed_bulk", new CoreProtectBulkHandler());
         server.createContext("/v1/events/disconnected", new DisconnectionHandler());
+        if (config.events().streamEnabled()) {
+            server.createContext("/v1/events/stream", new EventStreamHandler());
+        }
         server.setExecutor(executor);
         server.start();
         logger.info(() -> "AgentBridge HTTP server started on " + address);
@@ -199,6 +207,12 @@ public final class BridgeHttpServer {
             response.put("job_id", jobId.toString());
             response.set("frontier", toFrontierNode(job.window()));
             sendJson(exchange, 200, response);
+            publishEvent(
+                    "job_started",
+                    "ジョブが登録されました",
+                    "info",
+                    regionName(jobId),
+                    job.window().min());
         }
     }
 
@@ -224,6 +238,12 @@ public final class BridgeHttpServer {
             response.set("frontier", toFrontierNode(frontier));
             response.put("finished", job.isFinished());
             sendJson(exchange, 200, response);
+            publishEvent(
+                    "job_progress",
+                    "ジョブのフロンティアが更新されました",
+                    "info",
+                    regionName(jobId),
+                    frontier.max());
         }
     }
 
@@ -242,6 +262,12 @@ public final class BridgeHttpServer {
             ObjectNode response = mapper.createObjectNode();
             response.put("ok", true);
             sendJson(exchange, 200, response);
+            publishEvent(
+                    "job_stopped",
+                    "ジョブが停止されました",
+                    "info",
+                    regionName(jobId),
+                    null);
         }
     }
 
@@ -266,11 +292,13 @@ public final class BridgeHttpServer {
             }
             List<BlockVector3> positions = parsePositions(positionsNode);
             MiningJob.Frontier region = job.map(MiningJob::window).orElse(null);
+            String regionName = job.map(value -> regionName(value.jobId())).orElse(null);
             if (job.map(MiningJob::isBlocked).orElse(false)) {
                 sendLiquidStop(exchange, job.get());
                 return;
             }
-            BlockEvaluationResult result = callSync(() -> evaluateBlocks(world, positions, region));
+            BlockEvaluationResult result =
+                    callSync(() -> evaluateBlocks(world, positions, region, regionName));
             if (result.encounteredLiquid() && job.isPresent()) {
                 job.get().blockForLiquid(result.firstLiquidPosition());
                 sendLiquidStop(exchange, job.get(), result.firstLiquidPosition());
@@ -327,6 +355,49 @@ public final class BridgeHttpServer {
             ObjectNode response = mapper.createObjectNode();
             response.put("ok", true);
             sendJson(exchange, 200, response);
+        }
+    }
+
+    private final class EventStreamHandler extends BaseHandler {
+        @Override
+        protected void handleAuthed(HttpExchange exchange) throws Exception {
+            ensureMethod(exchange, "GET");
+            Headers headers = exchange.getResponseHeaders();
+            headers.add("Content-Type", "text/event-stream; charset=utf-8");
+            headers.add("Cache-Control", "no-cache");
+            headers.add("Connection", "keep-alive");
+            exchange.sendResponseHeaders(200, 0);
+            BlockingQueue<BridgeEvent> queue = eventHub.subscribe();
+            try (OutputStream os = exchange.getResponseBody()) {
+                sendSse(os, mapper.createObjectNode().put("message", "event stream started"));
+                while (true) {
+                    BridgeEvent event = queue.poll(config.events().keepaliveSeconds(), TimeUnit.SECONDS);
+                    if (event == null) {
+                        sendKeepAlive(os);
+                        continue;
+                    }
+                    sendSse(os, event.toJson(mapper));
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (IOException e) {
+                logger.info("Event stream closed by client");
+            } finally {
+                eventHub.unsubscribe(queue);
+            }
+        }
+
+        private void sendKeepAlive(OutputStream os) throws IOException {
+            os.write("event: keepalive\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        }
+
+        private void sendSse(OutputStream os, JsonNode payload) throws IOException {
+            byte[] body = mapper.writeValueAsBytes(payload);
+            os.write("data: ".getBytes(StandardCharsets.UTF_8));
+            os.write(body);
+            os.write("\n\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
         }
     }
 
@@ -394,9 +465,11 @@ public final class BridgeHttpServer {
         return node;
     }
 
-    private BlockEvaluationResult evaluateBlocks(World world, List<BlockVector3> positions, MiningJob.Frontier region) {
+    private BlockEvaluationResult evaluateBlocks(
+            World world, List<BlockVector3> positions, MiningJob.Frontier region, String regionName) {
         List<BlockEvaluation> list = new ArrayList<>();
         BlockVector3 firstLiquid = null;
+        BridgeEvent hazardEvent = null;
         for (BlockVector3 pos : positions) {
             Block block = world.getBlockAt(pos.getBlockX(), pos.getBlockY(), pos.getBlockZ());
             Material type = block.getType();
@@ -408,9 +481,25 @@ public final class BridgeHttpServer {
             if (isLiquid && inRegion && firstLiquid == null) {
                 // 液体検知時は最初の座標を保持し、Mineflayer に安全停止を促す。
                 firstLiquid = pos;
+                hazardEvent = new BridgeEvent(
+                        "danger_detected",
+                        "採掘領域内で液体を検知しました",
+                        "warning",
+                        regionName,
+                        pos);
+            } else if (hazardEvent == null && nearFunctional) {
+                hazardEvent = new BridgeEvent(
+                        "danger_detected",
+                        "機能ブロックへ近接しました",
+                        "warning",
+                        regionName,
+                        pos);
             }
             String blockId = type.getKey().toString();
             list.add(new BlockEvaluation(pos, blockId, isAir, isLiquid, nearFunctional, inRegion));
+        }
+        if (hazardEvent != null) {
+            eventHub.publish(hazardEvent);
         }
         return new BlockEvaluationResult(list, firstLiquid != null, firstLiquid);
     }
@@ -491,5 +580,9 @@ public final class BridgeHttpServer {
             List<BlockEvaluation> evaluations,
             boolean encounteredLiquid,
             BlockVector3 firstLiquidPosition) {
+    }
+
+    private void publishEvent(String type, String message, String eventLevel, String region, BlockVector3 blockPos) {
+        eventHub.publish(new BridgeEvent(type, message, eventLevel, region, blockPos));
     }
 }

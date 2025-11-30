@@ -7,8 +7,9 @@ import json as jsonlib
 import logging
 import os
 import time
+import threading
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import httpx
 from opentelemetry.trace import Status, StatusCode
@@ -21,6 +22,14 @@ BRIDGE_URL = os.getenv("BRIDGE_URL", "http://127.0.0.1:19071")
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "CHANGE_ME")
 BRIDGE_TIMEOUT = float(os.getenv("BRIDGE_HTTP_TIMEOUT", "3.0"))
 BRIDGE_RETRY = int(os.getenv("BRIDGE_HTTP_RETRY", "3"))
+BRIDGE_EVENT_STREAM_PATH = os.getenv("BRIDGE_EVENT_STREAM_PATH", "/v1/events/stream")
+BRIDGE_EVENT_STREAM_ENABLED = os.getenv("BRIDGE_EVENT_STREAM_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+BRIDGE_EVENT_STREAM_RECONNECT_DELAY = float(os.getenv("BRIDGE_EVENT_STREAM_RECONNECT_DELAY", "3.0"))
 
 
 def _default_headers() -> Dict[str, str]:
@@ -187,5 +196,93 @@ class BridgeClient:
                     time.sleep(backoff)
                     backoff *= 2
 
+    def consume_event_stream(
+        self,
+        on_event: Callable[[Dict[str, Any]], None],
+        stop_event: Optional[threading.Event] = None,
+    ) -> None:
+        """SSE イベントストリームを購読し、受信したデータをコールバックへ渡す。
 
-__all__ = ["BridgeClient", "BridgeError", "Frontier"]
+        ブロッキングで動作するため、asyncio 側からは run_in_executor などを介して
+        呼び出すことを想定している。stop_event がセットされた場合は安全に終了する。
+        """
+
+        if not BRIDGE_EVENT_STREAM_ENABLED:
+            logger.info("bridge event stream disabled; skip subscription")
+            return
+
+        url = f"{self._base_url}{BRIDGE_EVENT_STREAM_PATH}"
+        while stop_event is None or not stop_event.is_set():
+            try:
+                with self._client.stream("GET", url, timeout=None) as response:
+                    if response.status_code >= 400:
+                        raise BridgeError(
+                            f"event stream error {response.status_code}",
+                            status_code=response.status_code,
+                        )
+                    buffer: List[str] = []
+                    for line in response.iter_lines():
+                        if stop_event is not None and stop_event.is_set():
+                            return
+                        if line is None:
+                            continue
+                        stripped = line.strip()
+                        if not stripped:
+                            self._emit_buffered_event(buffer, on_event)
+                            buffer = []
+                            continue
+                        if stripped.startswith("event:"):
+                            # keepalive や event 名はログのみで利用し、データ抽出は data 行へ限定する。
+                            logger.debug("sse event field=%s", stripped)
+                            continue
+                        if stripped.startswith("data:"):
+                            buffer.append(stripped.replace("data:", "", 1).strip())
+                # ストリーム終了時の明示的な遅延を挟み、再接続時のスパムを防ぐ。
+                time.sleep(BRIDGE_EVENT_STREAM_RECONNECT_DELAY)
+            except BridgeError as exc:
+                log_structured_event(
+                    logger,
+                    "bridge event stream failed", 
+                    level=logging.WARNING,
+                    event_level="warning",
+                    context={"error": str(exc)},
+                )
+                time.sleep(BRIDGE_EVENT_STREAM_RECONNECT_DELAY)
+            except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
+                log_structured_event(
+                    logger,
+                    "bridge event stream unexpected error", 
+                    level=logging.ERROR,
+                    event_level="fault",
+                    context={"error": str(exc)},
+                    exc_info=True,
+                )
+                time.sleep(BRIDGE_EVENT_STREAM_RECONNECT_DELAY)
+
+    def _emit_buffered_event(
+        self, lines: List[str], on_event: Callable[[Dict[str, Any]], None]
+    ) -> None:
+        if not lines:
+            return
+        raw = "\n".join(lines)
+        try:
+            event = jsonlib.loads(raw)
+            if isinstance(event, dict):
+                on_event(event)
+        except jsonlib.JSONDecodeError:
+            log_structured_event(
+                logger,
+                "bridge event stream payload decode failed",
+                level=logging.WARNING,
+                event_level="warning",
+                context={"payload": raw},
+            )
+
+
+__all__ = [
+    "BridgeClient",
+    "BridgeError",
+    "Frontier",
+    "BRIDGE_EVENT_STREAM_ENABLED",
+    "BRIDGE_EVENT_STREAM_PATH",
+]
