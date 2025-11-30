@@ -42,7 +42,7 @@ const DEFAULT_OTEL_SERVICE_NAME = 'mc-node-bot';
 const DEFAULT_OTEL_ENVIRONMENT = 'development';
 
 const DEFAULT_CONTROL_MODE = 'command';
-const SUPPORTED_CONTROL_MODES = new Set(['command', 'vpt']);
+const SUPPORTED_CONTROL_MODES = new Set(['command', 'vpt', 'hybrid']);
 const DEFAULT_VPT_TICK_INTERVAL_MS = 50;
 const MIN_VPT_TICK_INTERVAL_MS = 10;
 const MAX_VPT_TICK_INTERVAL_MS = 250;
@@ -136,7 +136,7 @@ export interface AgentWebSocketResolution {
 }
 
 export interface ControlModeResolution {
-  mode: 'command' | 'vpt';
+  mode: 'command' | 'vpt' | 'hybrid';
   warnings: string[];
 }
 
@@ -481,7 +481,7 @@ export function resolveControlMode(rawMode: string | undefined): ControlModeReso
   }
 
   if (SUPPORTED_CONTROL_MODES.has(sanitized)) {
-    return { mode: sanitized as 'command' | 'vpt', warnings };
+    return { mode: sanitized as 'command' | 'vpt' | 'hybrid', warnings };
   }
 
   warnings.push(

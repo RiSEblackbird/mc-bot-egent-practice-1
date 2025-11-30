@@ -266,7 +266,14 @@ class ActionDirective(BaseModel):
     label: str = ""
     category: str = ""
     executor: Literal["mineflayer", "minedojo", "chat", "hybrid"] = "mineflayer"
-    args: Dict[str, Any] = Field(default_factory=dict)
+    args: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "executor 固有の追加パラメータ。"
+            "hybrid 指示では `vpt_actions` (List[Dict]) と `fallback_command` "
+            "(例: {'type': 'moveTo', 'args': {...}}) を期待する。"
+        ),
+    )
     safety_checks: List[str] = Field(default_factory=list)
     success_criteria: List[str] = Field(default_factory=list)
     fallback: str = ""

@@ -239,6 +239,10 @@ describe('resolveControlMode', () => {
     expect(resolveControlMode('vpt')).toEqual({ mode: 'vpt', warnings: [] });
   });
 
+  it('hybrid モードも受け付ける', () => {
+    expect(resolveControlMode('hybrid')).toEqual({ mode: 'hybrid', warnings: [] });
+  });
+
   it('未知のモードは警告付きで command へ戻す', () => {
     const result = resolveControlMode('invalid');
     expect(result.mode).toBe('command');

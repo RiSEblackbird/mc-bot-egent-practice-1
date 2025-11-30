@@ -462,11 +462,11 @@ Mineflayer 側で低レベル操作を逐次再生するため、VPT (Video PreT
 
 ### 4.3 Mineflayer 側の切り替え
 
-Node.js 側の実行モードは `CONTROL_MODE` 環境変数で切り替えます。既定値は `command`（従来のコマンド駆動）で、`vpt` を指定すると VPT 再生ループが有効になります。
+Node.js 側の実行モードは `CONTROL_MODE` 環境変数で切り替えます。既定値は `command`（従来のコマンド駆動）で、`vpt` を指定すると VPT 再生ループ専用モードになります。`hybrid` を指定すると通常はコマンド駆動のままですが、LangGraph から `ActionDirective.executor == "hybrid"` を受け取ったタイミングで `playVptActions` を許可し、VPT とコマンドをステップ単位で切り替えられます。
 
 ```env
 # .env または env.example を参照
-CONTROL_MODE=vpt
+CONTROL_MODE=hybrid
 VPT_TICK_INTERVAL_MS=50
 VPT_MAX_SEQUENCE_LENGTH=240
 ```
@@ -497,4 +497,19 @@ VPT_MAX_SEQUENCE_LENGTH=240
 
 * 本 README/コードは**プレーンテキストのみ**で完結（PDF/Word 不要）。
 * 実運用前に安全策（溶岩/落下/爆発回避）や失敗時のリカバリを拡充してください。
+
+## 9. 自律行動改善ロードマップ（自然言語インタラクション強化）
+
+`docs/tech_stack_diagram.md` 6–7 章に詳細なギャップ分析と提案を書き下ろしました。ハイライトは次の 4 点です。
+
+- **Context Fabric（LangGraph × Mineflayer × Paper × Minecraft）**  
+  Mineflayer の `perception`、AgentBridge (Paper) の SSE、Minecraft 座標を 1 つの時系列ストアへ統合し、OpenAI へのプロンプトへ「状況の空気感」を渡す。座標付きメモリと新しい `/v1/events/ws` で曖昧な自然言語でも安全判断を自律化します。
+- **Socratic Confidence Gate（LangGraph × OpenAI）**  
+  Responses API が返す `confidence`/`clarification_needed` を LangGraph の分岐に接続し、低信頼タスクは自動的に `gatherStatus` や追加質問を挟む。`PlanPriorityManager` をしきい値制御へ拡張し、人間らしい確認プロセスを再現します。
+- **Hybrid Directive Executor（Mineflayer × VPT × LangGraph）**  
+- `ActionDirective.executor == "hybrid"` を利用し、LangGraph から渡された `args.vpt_actions` / `args.fallback_command` を Python 側で解析して `Actions.execute_hybrid_action()` 経由で実行します。`CONTROL_MODE=hybrid` の場合は Mineflayer が通常コマンドを維持しながら、指示単位で VPT 再生を許可します。
+- **Skill Feedback Loop & CLI Telemetry（MineDojo × Paper × blazity CLI）**  
+  `MineDojoSelfDialogueExecutor` に自動再学習フックを追加し、AgentBridge の危険通知と合わせてスキル登録を回す。`python/cli.py` へ blazity 流の `agentbridge jobs watch` を追加し、Paper 上の異常をチャット無しでも追えるようにします。
+
+これらの改善は「自然言語だけで曖昧な指示を与え、人間同様の感覚で自律行動する」というゴールを段階的に達成するためのロードマップです。
 

@@ -15,6 +15,7 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -32,7 +33,7 @@ from services.minedojo_client import (
     MineDojoMission,
 )
 from services.skill_repository import SkillRepository
-from actions import Actions
+from actions import ActionValidationError, Actions
 from bridge_client import (
     BRIDGE_EVENT_STREAM_ENABLED,
     BridgeClient,
@@ -63,6 +64,13 @@ from agent_orchestrator import (
 logger = setup_logger("agent")
 
 load_dotenv()
+
+# LangGraph から渡される hybrid 指示の解析結果を保持する構造体。
+@dataclass
+class HybridDirectivePayload:
+    vpt_actions: List[Dict[str, Any]]
+    fallback_command: Optional[Dict[str, Any]]
+    metadata: Dict[str, Any]
 
 # --- 設定の読み込み --------------------------------------------------------
 
@@ -1281,6 +1289,104 @@ class AgentOrchestrator:
                 return coords
         return None
 
+    def _parse_hybrid_directive_args(
+        self,
+        directive: ActionDirective,
+    ) -> HybridDirectivePayload:
+        args = directive.args if isinstance(directive.args, dict) else {}
+        raw_vpt_actions: Any = None
+        if "vpt_actions" in args:
+            raw_vpt_actions = args.get("vpt_actions")
+        elif "vptActions" in args:
+            raw_vpt_actions = args.get("vptActions")
+        vpt_actions: List[Dict[str, Any]] = []
+        if raw_vpt_actions is not None:
+            if not isinstance(raw_vpt_actions, list):
+                raise ValueError("vpt_actions は配列で指定してください。")
+            for index, item in enumerate(raw_vpt_actions):
+                if not isinstance(item, dict):
+                    raise ValueError(f"vpt_actions[{index}] はオブジェクトで指定してください。")
+                vpt_actions.append(item)
+
+        fallback_command = args.get("fallback_command")
+        if fallback_command is None and "fallbackCommand" in args:
+            fallback_command = args.get("fallbackCommand")
+        if fallback_command is not None and not isinstance(fallback_command, dict):
+            raise ValueError("fallback_command はオブジェクトで指定してください。")
+
+        metadata = args.get("metadata")
+        if metadata is None and "vpt_metadata" in args:
+            metadata = args.get("vpt_metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError("metadata はオブジェクトで指定してください。")
+        metadata = dict(metadata or {})
+
+        if not vpt_actions and fallback_command is None:
+            raise ValueError("hybrid 指示には vpt_actions もしくは fallback_command のいずれかが必要です。")
+
+        return HybridDirectivePayload(
+            vpt_actions=vpt_actions,
+            fallback_command=fallback_command,
+            metadata=metadata,
+        )
+
+    async def _execute_hybrid_directive(
+        self,
+        directive: ActionDirective,
+        payload: HybridDirectivePayload,
+        *,
+        directive_meta: Optional[Dict[str, Any]],
+        react_entry: Optional[ReActStep],
+        thought_text: str,
+        index: int,
+        total_steps: int,
+    ) -> bool:
+        try:
+            with self._directive_scope(directive_meta):
+                result = await self.actions.execute_hybrid_action(
+                    vpt_actions=payload.vpt_actions,
+                    fallback_command=payload.fallback_command,
+                    metadata=payload.metadata or None,
+                )
+        except ActionValidationError as exc:
+            self.logger.warning("hybrid directive validation failed: %s", exc)
+            await self._report_execution_barrier(
+                directive.label or directive.step or "hybrid",
+                f"ハイブリッド指示の検証に失敗しました: {exc}",
+            )
+            return False
+        except Exception:
+            self.logger.exception("hybrid directive failed unexpectedly")
+            await self._report_execution_barrier(
+                directive.label or directive.step or "hybrid",
+                "ハイブリッド指示の実行で予期しないエラーが発生しました。",
+            )
+            return False
+
+        if not result.get("ok"):
+            await self._report_execution_barrier(
+                directive.label or directive.step or "hybrid",
+                f"Mineflayer から ok=false が返却されました: {result}",
+            )
+            return False
+
+        executor_used = result.get("executor") or "hybrid"
+        observation_text = f"ハイブリッド指示を {executor_used} 経路で完了しました。"
+        if react_entry:
+            react_entry.observation = observation_text
+
+        self._emit_react_log(
+            index=index,
+            total_steps=total_steps,
+            thought=thought_text,
+            action=directive.label or directive.step or "hybrid",
+            observation=observation_text,
+            status="completed",
+            event_level="progress",
+            log_level=logging.INFO,
+        )
+        return True
+
     def _coerce_coordinate_tuple(self, payload: Any) -> Optional[Tuple[int, int, int]]:
         if not isinstance(payload, dict):
             return None
@@ -1443,6 +1549,27 @@ class AgentOrchestrator:
                         event_level=event_level,
                         log_level=log_level,
                     )
+                    continue
+
+            if directive and directive_executor == "hybrid":
+                try:
+                    hybrid_payload = self._parse_hybrid_directive_args(directive)
+                except ValueError as exc:
+                    await self._report_execution_barrier(
+                        directive.label or directive.step or "hybrid",
+                        f"ハイブリッド指示の解析に失敗しました: {exc}",
+                    )
+                    continue
+                handled = await self._execute_hybrid_directive(
+                    directive,
+                    hybrid_payload,
+                    directive_meta=directive_meta,
+                    react_entry=react_entry,
+                    thought_text=thought_text,
+                    index=index,
+                    total_steps=total_steps,
+                )
+                if handled:
                     continue
 
             detection_category = None
