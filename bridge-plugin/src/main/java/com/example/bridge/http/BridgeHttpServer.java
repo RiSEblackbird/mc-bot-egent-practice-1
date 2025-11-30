@@ -331,13 +331,13 @@ public final class BridgeHttpServer {
     }
 
     private boolean authenticate(HttpExchange exchange) {
-        String expected = config.apiKey();
-        if (expected == null || expected.isEmpty()) {
-            return true;
+        if (!config.hasValidApiKey()) {
+            logger.warning(() -> "Rejecting request because api_key is not configured; check config.yml");
+            return false;
         }
         Headers headers = exchange.getRequestHeaders();
-        String provided = headers.getFirst("X-API-Key");
-        return expected.equals(provided);
+        String provided = Optional.ofNullable(headers.getFirst("X-API-Key")).map(String::trim).orElse("");
+        return !provided.isEmpty() && config.apiKey().equals(provided);
     }
 
     private void ensureMethod(HttpExchange exchange, String expected) {

@@ -21,6 +21,12 @@ public final class AgentBridgeConfig {
     private final LoggingConfig logging;
     private final LangGraphConfig langGraph;
 
+    /**
+     * API キーの未設定状態を明示するための既定値。
+     * 空文字やこの値のままでは認証を無効として扱い、HTTP サーバー起動前に検出する。
+     */
+    private static final String DEFAULT_API_KEY = "CHANGE_ME";
+
     private AgentBridgeConfig(
             String bindAddress,
             int port,
@@ -86,7 +92,7 @@ public final class AgentBridgeConfig {
         Objects.requireNonNull(raw, "raw configuration");
         String bind = raw.getString("bind", "127.0.0.1");
         int port = clampPort(raw.getInt("port", 19071));
-        String apiKey = raw.getString("api_key", "CHANGE_ME");
+        String apiKey = sanitizeApiKey(raw.getString("api_key", DEFAULT_API_KEY));
         TimeoutConfig timeout = new TimeoutConfig(Math.max(raw.getInt("timeouts.http_ms", 3000), 100));
         CoreProtectConfig coreProtectConfig =
                 new CoreProtectConfig(Math.max(raw.getInt("coreprotect.lookup_seconds", 315360000), 1));
@@ -120,6 +126,24 @@ public final class AgentBridgeConfig {
             return 19071;
         }
         return candidate;
+    }
+
+    private static String sanitizeApiKey(String raw) {
+        String normalized = Objects.toString(raw, "").trim();
+        if (normalized.isEmpty() || DEFAULT_API_KEY.equalsIgnoreCase(normalized)) {
+            return "";
+        }
+        return normalized;
+    }
+
+    /**
+     * HTTP ブリッジの認証用 API キーが有効かを判定する。
+     * <p>
+     * 起動前チェックやハンドラで利用し、誤ってデフォルト値のまま公開してしまうことを防ぐ。
+     * </p>
+     */
+    public boolean hasValidApiKey() {
+        return !apiKey.isEmpty();
     }
 
     /** HTTP 関連のタイムアウト設定。 */

@@ -1,5 +1,6 @@
 bind: 127.0.0.1
 port: 19071
+# 必須: Python エージェントからの呼び出しを認証するためのシークレット。空や CHANGE_ME のままだと起動を拒否します。
 api_key: "CHANGE_ME"
 timeouts:
   http_ms: 3000
