@@ -42,23 +42,29 @@ public final class CoreProtectFacade {
         }
         for (BlockVector3 pos : positions) {
             Block block = world.getBlockAt(pos.getBlockX(), pos.getBlockY(), pos.getBlockZ());
-            boolean playerPlaced = isPlayerPlaced(block, seconds);
-            results.add(new Result(pos, playerPlaced, Optional.empty()));
+            Optional<String> playerName = findPlacingPlayer(block, seconds);
+            boolean playerPlaced = playerName.isPresent();
+            results.add(new Result(pos, playerPlaced, playerName));
         }
         return results;
     }
 
-    private boolean isPlayerPlaced(Block block, int seconds) {
+    /**
+     * ブロックがプレイヤーによって設置された場合は、そのプレイヤー名を Optional で返す。
+     * CoreProtect API の戻り値仕様が不明な環境でも、parseResult の getPlayer を起点に
+     * Optional.ofNullable で安全にラップし、副作用なく呼び出せるようにする。
+     */
+    private Optional<String> findPlacingPlayer(Block block, int seconds) {
         ensureApi();
         if (api == null) {
-            return false;
+            return Optional.empty();
         }
         try {
             Method blockLookup = api.getClass().getMethod("blockLookup", Block.class, int.class);
             @SuppressWarnings("unchecked")
             List<String[]> rows = (List<String[]>) blockLookup.invoke(api, block, seconds);
             if (rows == null) {
-                return false;
+                return Optional.empty();
             }
             Method parseResult = api.getClass().getMethod("parseResult", String[].class);
             Method getActionId = null;
@@ -75,15 +81,13 @@ public final class CoreProtectFacade {
                 int actionId = (Integer) getActionId.invoke(parsed);
                 if (isPlaceAction(actionId) && getPlayer != null) {
                     Object who = getPlayer.invoke(parsed);
-                    if (who != null) {
-                        return true;
-                    }
+                    return Optional.ofNullable(who).map(Object::toString);
                 }
             }
         } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
             logger.warning("CoreProtect lookup failed: " + e.getMessage());
         }
-        return false;
+        return Optional.empty();
     }
 
     private boolean isPlaceAction(int actionId) {
