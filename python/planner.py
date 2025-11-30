@@ -207,9 +207,43 @@ class ReActStep(BaseModel):
     observation: str = ""
 
 
+class PlanArguments(BaseModel):
+    """LLM が推定した実行パラメータを型安全に保持するためのスキーマ。"""
+
+    coordinates: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="移動や採掘の起点となる座標 (X/Y/Z)。",
+    )
+    quantity: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="要求された数量（負数は不正値として拒否する）。",
+    )
+    target: Optional[str] = Field(
+        default=None,
+        description="対象ブロックやアイテムの名称。",
+    )
+    notes: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="補足情報（自由形式）。",
+    )
+
+
 class PlanOut(BaseModel):
     plan: List[str] = Field(default_factory=list)  # 実行ステップ（高レベル）
     resp: str = ""  # プレイヤー向け日本語応答
+    intent: str = Field(
+        default="",
+        description="LLM が推定したメイン意図（例: move/build/gather など）。",
+    )
+    arguments: PlanArguments = Field(
+        default_factory=PlanArguments,
+        description="座標や数量などの構造化パラメータ群。",
+    )
+    blocking: bool = Field(
+        default=False,
+        description="ユーザー確認が必要な場合に true。false なら即時実行してよい。",
+    )
     react_trace: List[ReActStep] = Field(
         default_factory=list,
         description="Responses API から得た ReAct ループの素案。Observation は Mineflayer 実行結果で更新する。",
@@ -379,10 +413,14 @@ SYSTEM = """あなたはMinecraftの自律ボットです。日本語の自然�
 は、同じ内容を繰り返し尋ねないでください。
 
 出力は必ず json 形式のオブジェクトで、キーは "plan": string[], "resp": string,
+"intent": string, "arguments": object, "blocking": boolean,
 "react_trace": {"thought": string, "action": string, "observation": string}[] とする。
 react_trace の observation は環境からの観測値で後から上書きされるため、
 空文字列のまま残してください。thought にはステップを採択した理由を
 日本語で 1 文以内で要約し、action には実行する具体的な操作を記述します。
+"intent" には move/build/gather など主な行動タイプを、"arguments" には
+座標や数量、対象名を含む構造化パラメータを含め、"blocking" は実行前に
+プレイヤー確認が必要なら true を返してください。
 """
 BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞している作業の概要を理解し、
 プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
@@ -422,6 +460,14 @@ json のみ。例：
 {{
   "plan": ["畑へ移動", "小麦を収穫", "パンを作る"],
   "resp": "了解しました。小麦を収穫してパンを作りますね。",
+  "intent": "farm",
+  "arguments": {{
+    "coordinates": {{"x": -10, "y": 64, "z": 20}},
+    "quantity": 12,
+    "target": "wheat",
+    "notes": {{"needs_tools": true}}
+  }},
+  "blocking": false,
   "react_trace": [
     {{"thought": "農作業を開始する準備が必要", "action": "畑へ移動", "observation": ""}},
     {{"thought": "材料を確保する", "action": "小麦を収穫", "observation": ""}},
