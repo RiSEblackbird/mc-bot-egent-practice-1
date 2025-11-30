@@ -132,6 +132,41 @@ class EquipFailureActions:
         }
 
 
+class AutoRecoveryActions:
+    """MineDojo 自動リカバリー用の最小アクションスタブ。"""
+
+    def __init__(self) -> None:
+        self.say_messages: List[str] = []
+
+    async def say(self, text: str) -> Dict[str, bool]:
+        self.say_messages.append(text)
+        return {"ok": True}
+
+
+class DummySelfDialogueExecutor:
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    async def run_self_dialogue(
+        self,
+        mission_id: str,
+        trace: List[Any],
+        *,
+        skill_id: str,
+        title: str,
+        success: bool,
+    ) -> None:
+        self.calls.append(
+            {
+                "mission_id": mission_id,
+                "trace_len": len(trace),
+                "skill_id": skill_id,
+                "title": title,
+                "success": success,
+            }
+        )
+
+
 def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None:
     """採掘失敗時に障壁通知を挟んで再計画が走ることを統合テストする。"""
 
@@ -323,3 +358,51 @@ def test_barrier_timeout_uses_short_message(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert actions.say_messages[0] == expected_message
+
+
+def test_minedojo_autorecovery_runs_for_empty_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    actions = AutoRecoveryActions()
+    memory = Memory()
+    orchestrator = AgentOrchestrator(actions, memory)
+    dummy_executor = DummySelfDialogueExecutor()
+    orchestrator._self_dialogue_executor = dummy_executor  # type: ignore[attr-defined]
+
+    plan_out = PlanOut(
+        plan=[],
+        resp="了解しました。",
+        intent="mine",
+        react_trace=[],
+    )
+
+    async def runner() -> bool:
+        return await orchestrator._maybe_trigger_minedojo_autorecovery(plan_out)
+
+    triggered = asyncio.run(runner())
+
+    assert triggered
+    assert actions.say_messages
+    assert dummy_executor.calls
+    assert dummy_executor.calls[0]["mission_id"] == "obtain_diamond"
+
+
+def test_minedojo_autorecovery_skips_without_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    actions = AutoRecoveryActions()
+    memory = Memory()
+    orchestrator = AgentOrchestrator(actions, memory)
+    dummy_executor = DummySelfDialogueExecutor()
+    orchestrator._self_dialogue_executor = dummy_executor  # type: ignore[attr-defined]
+
+    plan_out = PlanOut(
+        plan=[],
+        resp="了解しました。",
+        intent="unknown_intent",
+        react_trace=[],
+    )
+
+    async def runner() -> bool:
+        return await orchestrator._maybe_trigger_minedojo_autorecovery(plan_out)
+
+    triggered = asyncio.run(runner())
+    assert triggered is False
+    assert not actions.say_messages
+    assert not dummy_executor.calls

@@ -56,6 +56,8 @@ Python エージェントから MineDojo のミッション/デモを参照す�
 5. `MineDojoSelfDialogueExecutor` は `MINEDOJO_SIM_*` で指定された環境を使い、`python/services/minedojo_client.py` が返すデモを
   `Actions.play_vpt_actions` へ引き渡す前に検証します。シミュレーション失敗時は `recovery_hints` に反省点を追記し、
   LangGraph が次のプラン生成で参照できるようにします。
+6. `python/agent.py` の `_maybe_trigger_minedojo_autorecovery` が、プラン生成に失敗した場合や MineDojo 対応カテゴリで十分な
+  手順が得られなかった場合に自己対話ループを自動で起動し、チャットへ確認メッセージを送信します。
 
 ## 5. 自動スキル登録とタグ検索
 

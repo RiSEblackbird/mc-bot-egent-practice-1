@@ -223,6 +223,74 @@ def test_plan_graph_priority_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     asyncio.run(reset_plan_priority())
 
 
+def test_low_confidence_triggers_pre_action_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyResponse:
+        def __init__(self, text: str) -> None:
+            self.output_text = text
+            self.output: List[Any] = []
+
+    class QueueAsyncOpenAI:
+        def __init__(self, queue: List[DummyResponse]) -> None:
+            self._queue = queue
+            self.responses = self
+
+        async def create(self, **_: Any) -> DummyResponse:
+            if not self._queue:
+                raise RuntimeError("no more responses queued")
+            return self._queue.pop(0)
+
+    plan_payload = json.dumps(
+        {
+            "plan": ["安全に周囲を確認する"],
+            "resp": "了解しました。",
+            "intent": "explore",
+            "arguments": {
+                "coordinates": None,
+                "quantity": None,
+                "target": None,
+                "notes": {},
+                "confidence": 0.2,
+                "clarification_needed": "none",
+                "detected_modalities": [],
+            },
+            "blocking": False,
+            "react_trace": [],
+            "confidence": 0.2,
+            "clarification_needed": "none",
+            "detected_modalities": [],
+            "backlog": [],
+            "next_action": "execute",
+            "goal_profile": {
+                "summary": "",
+                "category": "",
+                "priority": "medium",
+                "success_criteria": [],
+                "blockers": [],
+            },
+            "constraints": [],
+            "execution_hints": [],
+            "directives": [],
+            "recovery_hints": [],
+        }
+    )
+    follow_up = "作業開始前に、現在位置や危険物の有無をもう一度教えてください。"
+    queue: List[DummyResponse] = [DummyResponse(plan_payload), DummyResponse(follow_up)]
+
+    monkeypatch.setattr(
+        sys.modules["planner"].openai,  # type: ignore[index]
+        "AsyncOpenAI",
+        lambda: QueueAsyncOpenAI(queue),
+    )
+
+    asyncio.run(reset_plan_priority())
+    result = asyncio.run(plan("危険がないか確認して", {}))
+
+    assert result.next_action == "chat"
+    assert "危険物" in result.resp
+    assert result.backlog
+    assert result.backlog[-1]["label"] == "自動確認"
+
+
 def test_react_loop_logs_observations(
     caplog: pytest.LogCaptureFixture, orchestrator_noop: AgentOrchestrator
 ) -> None:

@@ -58,6 +58,8 @@ DEFAULT_TEMPERATURE = 0.3
 GPT5_MODEL_PREFIX = "gpt-5"
 ALLOWED_VERBOSITY_LEVELS = {"low", "medium", "high"}
 ALLOWED_REASONING_EFFORT = {"low", "medium", "high"}
+PLAN_CONFIDENCE_REVIEW_THRESHOLD = float(os.getenv("PLAN_CONFIDENCE_REVIEW_THRESHOLD", "0.55"))
+PLAN_CONFIDENCE_CRITICAL_THRESHOLD = float(os.getenv("PLAN_CONFIDENCE_CRITICAL_THRESHOLD", "0.35"))
 
 # gpt-5-mini をはじめとした一部のモデルは温度固定で API が受け付けないため、
 # 送信時には temperature フィールドを省略する必要がある。
@@ -70,6 +72,8 @@ class PlanPriorityManager:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._priority = "normal"
+        self._review_threshold = PLAN_CONFIDENCE_REVIEW_THRESHOLD
+        self._critical_threshold = PLAN_CONFIDENCE_CRITICAL_THRESHOLD
 
     async def mark_success(self) -> str:
         async with self._lock:
@@ -84,6 +88,23 @@ class PlanPriorityManager:
     async def snapshot(self) -> str:
         async with self._lock:
             return self._priority
+
+    def evaluate_confidence_gate(self, plan_out: PlanOut) -> Dict[str, Any]:
+        """Determine whether a pre-action review is required for the given plan."""
+
+        reason = ""
+        if getattr(plan_out, "blocking", False):
+            return {"needs_review": False, "reason": reason}
+        if getattr(plan_out, "clarification_needed", "none") != "none":
+            return {"needs_review": False, "reason": reason}
+
+        confidence = float(getattr(plan_out, "confidence", 0.0) or 0.0)
+        if confidence <= self._critical_threshold:
+            reason = f"confidence={confidence:.2f}"
+        elif confidence <= self._review_threshold:
+            reason = f"confidence={confidence:.2f}"
+
+        return {"needs_review": bool(reason), "reason": reason}
 
 
 _PRIORITY_MANAGER = PlanPriorityManager()
@@ -533,6 +554,43 @@ def _build_plan_graph() -> CompiledStateGraph:
         )
         return result
 
+    async def pre_action_review(state: _PlanState) -> Dict[str, Any]:
+        plan_out = state.get("plan_out")
+        backlog: List[Dict[str, str]] = list(state.get("backlog") or [])
+        if not isinstance(plan_out, PlanOut):
+            return {"backlog": backlog}
+
+        evaluation = manager.evaluate_confidence_gate(plan_out)
+        if not evaluation["needs_review"]:
+            return {"plan_out": plan_out, "backlog": backlog}
+
+        follow_up = await _compose_pre_action_follow_up(plan_out, evaluation["reason"])
+        plan_out.resp = follow_up
+        plan_out.next_action = "chat"
+        entry = {
+            "category": "chat",
+            "label": "自動確認",
+            "message": follow_up,
+            "reason": evaluation["reason"],
+        }
+        backlog.append(entry)
+        plan_out.backlog = backlog
+        result = {
+            "plan_out": plan_out,
+            "backlog": backlog,
+            "confirmation_required": True,
+            "follow_up_message": follow_up,
+        }
+        result.update(
+            record_structured_step(
+                state,
+                step_label="pre_action_review",
+                inputs={"confidence": getattr(plan_out, "confidence", 0.0)},
+                outputs={"needs_review": True},
+            )
+        )
+        return result
+
 
 def _normalize_directives(plan_out: PlanOut) -> None:
     """plan ステップ数と directive リストを整合させ、欠損フィールドを補完する。"""
@@ -600,15 +658,13 @@ def _extract_recovery_hints_from_context(state: _PlanState) -> List[str]:
 
         plan_out = state.get("plan_out")
         backlog: List[Dict[str, str]] = list(state.get("backlog") or [])
-        confirmation_required = False
+        confirmation_required = bool(state.get("confirmation_required"))
         follow_up_message = ""
 
         if isinstance(plan_out, PlanOut):
             follow_up_message = plan_out.resp.strip()
-            confirmation_required = bool(
-                plan_out.blocking or plan_out.clarification_needed != "none"
-            )
-            if confirmation_required and follow_up_message:
+            blocking = bool(plan_out.blocking or plan_out.clarification_needed != "none")
+            if blocking and follow_up_message:
                 backlog.append(
                     {
                         "category": "chat",
@@ -618,6 +674,8 @@ def _extract_recovery_hints_from_context(state: _PlanState) -> List[str]:
                         or ("blocking" if plan_out.blocking else "none"),
                     }
                 )
+            if blocking or confirmation_required:
+                confirmation_required = True
                 plan_out.next_action = "chat"
             else:
                 plan_out.next_action = "execute"
@@ -698,6 +756,7 @@ def _extract_recovery_hints_from_context(state: _PlanState) -> List[str]:
     graph.add_node("call_llm", call_llm)
     graph.add_node("parse_plan", parse_plan)
     graph.add_node("normalize_react_trace", normalize_react_trace)
+    graph.add_node("pre_action_review", pre_action_review)
     graph.add_node("intent_negotiation", intent_negotiation)
     graph.add_node("route_to_chat", route_to_chat)
     graph.add_node("fallback_plan", fallback_plan)
@@ -711,11 +770,8 @@ def _extract_recovery_hints_from_context(state: _PlanState) -> List[str]:
         lambda state: "success" if "plan_out" in state else "failure",
         {"success": "normalize_react_trace", "failure": "fallback_plan"},
     )
-    graph.add_conditional_edges(
-        "normalize_react_trace",
-        lambda state: "needs_chat" if state.get("confirmation_required") else "ready",
-        {"ready": "intent_negotiation", "needs_chat": "intent_negotiation"},
-    )
+    graph.add_edge("normalize_react_trace", "pre_action_review")
+    graph.add_edge("pre_action_review", "intent_negotiation")
     graph.add_conditional_edges(
         "intent_negotiation",
         lambda state: "chat" if state.get("confirmation_required") else "execute",
@@ -786,6 +842,9 @@ BARRIER_SYSTEM = """あなたはMinecraftのサポートボットです。停滞
 プレイヤーに丁寧で簡潔な日本語メッセージを作成してください。状況説明と、
 必要な確認事項や追加指示の依頼を 2 文程度で伝えてください。出力は必ず
 json オブジェクトで、キーは "message": string のみを含めてください。"""
+SOCRATIC_REVIEW_SYSTEM = """あなたは計画の安全性を見直すレビューアです。実行計画の要約と
+推定確信度が提供されるので、プレイヤーに 1～2 文の丁寧な日本語で確認質問を行ってください。
+作業に不安がある理由や追加で必要な情報を簡潔に伝え、過度に謝らず落ち着いた口調で書きます。"""
 
 
 def build_barrier_prompt(step: str, reason: str, context: Dict[str, Any]) -> str:
@@ -803,6 +862,28 @@ def build_barrier_prompt(step: str, reason: str, context: Dict[str, Any]) -> str
 # 出力要件
 状況を説明し、プレイヤーに確認したい事項を丁寧に尋ねてください。
 応答は {{"message": "..."}} 形式の json オブジェクトで出力してください。
+"""
+
+
+def build_pre_action_review_prompt(plan_out: PlanOut, reason: str) -> str:
+    """Confidence gate 用のフォローアップ質問プロンプトを生成する。"""
+
+    steps_text = "\n".join(f"- {step}" for step in plan_out.plan) or "- (手順なし)"
+    goal_summary = plan_out.goal_profile.summary if plan_out.goal_profile else ""
+    intent = plan_out.intent or "unknown"
+    return f"""# 計画概要
+intent: {intent}
+goal: {goal_summary}
+steps:
+{steps_text}
+
+# 確信度
+confidence: {plan_out.confidence:.2f}
+reason: {reason or 'none'}
+
+# 期待する出力
+プレイヤーに対して丁寧に確認する 1～2 文の日本語だけを返してください。
+危険要素や不足情報について簡潔に触れ、追加で欲しい情報を質問してください。
 """
 
 def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
@@ -943,6 +1024,25 @@ def _build_responses_payload(system_prompt: str, user_prompt: str) -> Dict[str, 
         payload["reasoning"] = {"effort": reasoning_effort}
 
     return payload
+
+
+async def _compose_pre_action_follow_up(plan_out: PlanOut, reason: str) -> str:
+    """Responses API を利用してソクラテス式のフォローアップ文を生成する。"""
+
+    client = openai.AsyncOpenAI()
+    prompt = build_pre_action_review_prompt(plan_out, reason)
+    payload = _build_responses_payload(SOCRATIC_REVIEW_SYSTEM, prompt)
+    try:
+        resp = await asyncio.wait_for(
+            client.responses.create(**payload),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+        text = _extract_output_text(resp).strip()
+        if text:
+            return text
+    except Exception as exc:  # pragma: no cover - LLM 障害はログのみに留める
+        logger.warning("pre_action_review compose failed: %s", exc)
+    return "作業内容に不確実な点があるため、追加の指示をいただけますか？"
 
 
 def _extract_output_text(response: Response) -> str:
