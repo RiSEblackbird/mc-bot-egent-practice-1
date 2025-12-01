@@ -15,7 +15,6 @@ import re
 import time
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -58,6 +57,7 @@ from runtime.rules import (
     ORE_PICKAXE_REQUIREMENTS,
     PICKAXE_TIER_BY_NAME,
 )
+from runtime.status_service import StatusService
 
 logger = setup_logger("agent")
 
@@ -172,15 +172,27 @@ class AgentOrchestrator:
         self.inventory_sync = inventory_sync or InventorySynchronizer(
             summarizer=summarize_inventory_status
         )
+        # LangGraph 側での意思決定に活用する閾値や履歴上限をまとめて保持する。
+        self.low_food_threshold = LOW_FOOD_THRESHOLD
+        self.structured_event_history_limit = STRUCTURED_EVENT_HISTORY_LIMIT
+        self.perception_history_limit = PERCEPTION_HISTORY_LIMIT
+        # 状態取得の実装を専用サービスへ委譲し、要約や履歴更新を集約する。
+        self.status_service = StatusService(
+            actions=self.actions,
+            memory=self.memory,
+            inventory_sync=self.inventory_sync,
+            logger=self.logger,
+            status_timeout_seconds=STATUS_REFRESH_TIMEOUT_SECONDS,
+            status_retry=STATUS_REFRESH_RETRY,
+            status_backoff_seconds=STATUS_REFRESH_BACKOFF_SECONDS,
+            structured_event_history_limit=self.structured_event_history_limit,
+            perception_history_limit=self.perception_history_limit,
+        )
         # LangGraph ベースのタスクハンドラを初期化して、カテゴリ別モジュールを明確化する。
         self._action_graph = ActionGraph(self)
         self._current_role_id: str = "generalist"
         self._pending_role: Optional[Tuple[str, Optional[str]]] = None
         self._shared_agents: Dict[str, Dict[str, Any]] = {}
-        # LangGraph 側での意思決定に活用する閾値や履歴上限をまとめて保持する。
-        self.low_food_threshold = LOW_FOOD_THRESHOLD
-        self.structured_event_history_limit = STRUCTURED_EVENT_HISTORY_LIMIT
-        self.perception_history_limit = PERCEPTION_HISTORY_LIMIT
         # MineDojo クライアントを初期化し、テスト時にはスタブを差し込めるようにする。
         self.minedojo_client = minedojo_client or MineDojoClient(self.config.minedojo)
         self._active_minedojo_mission: Optional[MineDojoMission] = None
@@ -195,7 +207,7 @@ class AgentOrchestrator:
             set_memory=self.memory.set,
             request_role_switch=self.request_role_switch,
             format_position=self._format_position_payload,
-            ingest_perception=self._ingest_perception_snapshot,
+            ingest_perception=self.status_service.ingest_perception_snapshot,
             apply_primary_role=self._apply_primary_role_update,
         )
         self._bridge_events = BridgeEventListener(
@@ -307,282 +319,22 @@ class AgentOrchestrator:
         self.logger.info("role switch applied role=%s label=%s", role_id, role_info["label"])
         return True
 
-    async def _prime_status_for_planning(self) -> None:
-        """LLM へ渡す前に Mineflayer 状況を収集し、メモリへ反映する。"""
-
-        requested = ["general"]
-        if not self.memory.get("player_pos_detail"):
-            requested.append("position")
-        if not self.memory.get("inventory_detail"):
-            requested.append("inventory")
-
-        failures: List[str] = []
-        for kind in requested:
-            ok = await self._request_status_with_backoff(kind)
-            if not ok:
-                failures.append(kind)
-
-        if failures:
-            await self._report_execution_barrier(
-                "状態取得",
-                f"{', '.join(failures)} の取得に失敗しました。Mineflayer への接続状況を確認してください。",
-            )
-
-    async def _request_status_with_backoff(self, kind: str) -> bool:
-        """タイムアウトと指数バックオフ付きで gather_status を呼び出す。"""
-
-        backoff = STATUS_REFRESH_BACKOFF_SECONDS
-        for attempt in range(1, STATUS_REFRESH_RETRY + 2):
-            try:
-                resp = await asyncio.wait_for(
-                    self.actions.gather_status(kind),
-                    timeout=STATUS_REFRESH_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                self.logger.warning(
-                    "gather_status timed out kind=%s attempt=%d", kind, attempt
-                )
-                resp = None
-            except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
-                self.logger.exception(
-                    "gather_status raised unexpected error kind=%s attempt=%d", kind, attempt
-                )
-                resp = {"ok": False, "error": str(exc)}
-
-            if isinstance(resp, dict) and resp.get("ok"):
-                self._cache_status(kind, resp.get("data") or {})
-                return True
-
-            if attempt <= STATUS_REFRESH_RETRY:
-                await asyncio.sleep(backoff)
-                backoff *= 2
-                continue
-
-            error_detail = "Mineflayer から応答がありません。"
-            if isinstance(resp, dict) and resp.get("error"):
-                error_detail = str(resp.get("error"))
-            self.logger.warning(
-                "gather_status failed permanently kind=%s error=%s", kind, error_detail
-            )
-        return False
-
-    def _cache_status(self, kind: str, data: Dict[str, Any]) -> None:
-        """gather_status の結果を要約し、再利用しやすい形で保存する。"""
-
-        if kind == "position":
-            summary = self._summarize_position_status(data)
-            self.memory.set("player_pos", summary)
-            self.memory.set("player_pos_detail", data)
-            return
-
-        if kind == "inventory":
-            summary = self.inventory_sync.summarize(data)
-            self.memory.set("inventory", summary)
-            self.memory.set("inventory_detail", data)
-            return
-
-        if kind == "general":
-            summary = self._summarize_general_status(data)
-            self.memory.set("general_status", summary)
-            self.memory.set("general_status_detail", data)
-            if isinstance(data, dict) and "digPermission" in data:
-                self.memory.set("dig_permission", data.get("digPermission"))
-            self._record_structured_event_history(data)
-            self._store_perception_from_status(data)
-            return
-
-        self.logger.info("cache_status skipped unknown kind=%s", kind)
-
-    def _record_structured_event_history(self, payload: Dict[str, Any]) -> None:
-        """Mineflayer 側の構造化イベント配列を履歴に蓄積する。"""
-
-        history = self._load_history("structured_event_history")
-        limit = getattr(self, "structured_event_history_limit", STRUCTURED_EVENT_HISTORY_LIMIT)
-        for key in ("structuredEvents", "events", "eventHistory"):
-            candidate = payload.get(key)
-            if isinstance(candidate, list):
-                new_events = [item for item in candidate if isinstance(item, dict)]
-                if new_events:
-                    history.extend(new_events)
-                break
-
-        trimmed = history[-limit:]
-        self.memory.set("structured_event_history", trimmed)
-
-    def _store_perception_from_status(self, status: Dict[str, Any]) -> None:
-        """general ステータスに含まれる perception 情報を履歴へ追加する。"""
-
-        perception_payload = None
-        for key in ("perception", "perceptionSnapshot", "perception_snapshot"):
-            candidate = status.get(key)
-            if isinstance(candidate, dict):
-                perception_payload = candidate
-                break
-
-        snapshot = self._build_perception_snapshot(perception_payload)
-        if snapshot is None:
-            return
-
-        self._ingest_perception_snapshot(snapshot, source="gather_status")
-
-    def _build_perception_snapshot(self, extra: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """位置・空腹度・天候をまとめた perception スナップショットを生成する。"""
-
-        pos_detail = self.memory.get("player_pos_detail") or {}
-        general_detail = self.memory.get("general_status_detail") or {}
-        if not isinstance(pos_detail, dict):
-            pos_detail = {}
-        if not isinstance(general_detail, dict):
-            general_detail = {}
-        base = extra if isinstance(extra, dict) else {}
-
-        position = None
-        if all(axis in pos_detail for axis in ("x", "y", "z")):
-            position = {
-                "x": pos_detail.get("x"),
-                "y": pos_detail.get("y"),
-                "z": pos_detail.get("z"),
-                "dimension": pos_detail.get("dimension") or pos_detail.get("world"),
-            }
-
-        hunger = base.get("food") or base.get("foodLevel") or base.get("hunger")
-        if hunger is None:
-            hunger = (
-                general_detail.get("food")
-                or general_detail.get("foodLevel")
-                or general_detail.get("hunger")
-            )
-
-        weather = base.get("weather") or general_detail.get("weather")
-
-        snapshot = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "position": position,
-            "food_level": hunger,
-            "health": base.get("health") or general_detail.get("health"),
-            "weather": weather,
-            "is_raining": base.get("isRaining") or general_detail.get("isRaining"),
-        }
-
-        if isinstance(base, dict):
-            for source_key, target_key in (
-                ("weather", "weather"),
-                ("time", "time"),
-                ("lighting", "lighting"),
-                ("hazards", "hazards"),
-                ("nearby_entities", "nearby_entities"),
-                ("nearbyEntities", "nearby_entities"),
-                ("warnings", "warnings"),
-                ("summary", "summary"),
-            ):
-                value = base.get(source_key)
-                if value is not None:
-                    snapshot[target_key] = value
-
-        if not any(value is not None for value in snapshot.values()):
-            return None
-
-        return snapshot
-
-    def _ingest_perception_snapshot(self, snapshot: Dict[str, Any], *, source: str) -> None:
-        """perception スナップショットを履歴へ追加し、要約を更新する。"""
-
-        history = self._append_perception_snapshot(snapshot)
-        self.memory.set("perception_snapshots", history)
-        summary = self._summarize_perception_snapshot(snapshot, source=source)
-        if summary:
-            self.memory.set("perception_summary", summary)
-
-    def _append_perception_snapshot(self, snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """perception スナップショットを履歴へ追加し、上限件数で丸める。"""
-
-        history = self._load_history("perception_snapshots")
-        limit = getattr(self, "perception_history_limit", PERCEPTION_HISTORY_LIMIT)
-        history.append(snapshot)
-        return history[-limit:]
-
-    def _summarize_perception_snapshot(
-        self, snapshot: Dict[str, Any], *, source: str = "unknown"
-    ) -> Optional[str]:
-        """Node 側から届いた perception スナップショットを短い文章へ要約する。"""
-
-        parts: List[str] = []
-        hazards = snapshot.get("hazards")
-        if isinstance(hazards, dict):
-            liquid_count = hazards.get("liquids")
-            voids = hazards.get("voids")
-            if isinstance(liquid_count, (int, float)) and liquid_count > 0:
-                parts.append(f"液体検知: {int(liquid_count)} 箇所")
-            if isinstance(voids, (int, float)) and voids > 0:
-                parts.append(f"落下リスク: {int(voids)} 箇所")
-
-        entities = snapshot.get("nearby_entities") or snapshot.get("nearbyEntities")
-        if isinstance(entities, dict):
-            hostile_count = entities.get("hostiles")
-            if isinstance(hostile_count, (int, float)) and hostile_count > 0:
-                details = entities.get("details") or []
-                formatted = []
-                if isinstance(details, list):
-                    for entry in details[:3]:
-                        if not isinstance(entry, dict):
-                            continue
-                        if entry.get("kind") not in {"hostile", "Hostile"}:
-                            continue
-                        name = entry.get("name") or "敵対モブ"
-                        distance = entry.get("distance")
-                        bearing = entry.get("bearing") or ""
-                        if isinstance(distance, (int, float)):
-                            formatted.append(f"{name}({distance:.1f}m{bearing})")
-                        else:
-                            formatted.append(str(name))
-                parts.append(
-                    f"敵対モブ {int(hostile_count)} 体: {', '.join(formatted) if formatted else '詳細不明'}"
-                )
-
-        lighting = snapshot.get("lighting")
-        if isinstance(lighting, dict):
-            block_light = lighting.get("block")
-            if isinstance(block_light, (int, float)):
-                parts.append(f"明るさ: {block_light}")
-
-        weather = snapshot.get("weather")
-        if isinstance(weather, dict):
-            label = weather.get("label")
-            if isinstance(label, str) and label:
-                parts.append(f"天候: {label}")
-
-        summary = " / ".join(part for part in parts if part)
-        return summary or None
-
-    def _load_history(self, key: str) -> List[Dict[str, Any]]:
-        """メモリに格納された履歴リストを辞書のみ抽出して返す。"""
-
-        raw = self.memory.get(key, [])
-        if not isinstance(raw, list):
-            return []
-        return [item for item in raw if isinstance(item, dict)]
-
     def _collect_recent_mineflayer_context(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Mineflayer 由来の履歴を LangGraph へ渡すためにまとめて取得する。"""
 
-        structured_event_history = self._load_history("structured_event_history")
-        perception_history = self._load_history("perception_snapshots")
+        return self.status_service.collect_recent_mineflayer_context()
 
-        # 直近のメモリ内容から最新スナップショットを生成し、欠損時にも状態復元できるようにする。
-        snapshot = self._build_perception_snapshot()
-        if snapshot:
-            perception_history.append(snapshot)
-        event_limit = getattr(self, "structured_event_history_limit", STRUCTURED_EVENT_HISTORY_LIMIT)
-        perception_limit = getattr(self, "perception_history_limit", PERCEPTION_HISTORY_LIMIT)
-        structured_event_history = structured_event_history[-event_limit:]
-        perception_history = perception_history[-perception_limit:]
+    def _build_perception_snapshot(
+        self, extra: Optional[Dict[str, Any]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """ステータスサービス経由で perception スナップショットを生成する互換ラッパー。"""
 
-        if snapshot:
-            self.memory.set("perception_snapshots", perception_history)
-        if structured_event_history:
-            self.memory.set("structured_event_history", structured_event_history)
+        return self.status_service.build_perception_snapshot(extra)
 
-        return structured_event_history, perception_history
+    def _ingest_perception_snapshot(self, snapshot: Dict[str, Any], *, source: str) -> None:
+        """従来のエントリポイントを保ちながら perception ingestion をサービスへ委譲する。"""
+
+        self.status_service.ingest_perception_snapshot(snapshot, source=source)
 
     async def _collect_block_evaluations(self) -> None:
         """Bridge から近傍ブロックの情報を収集し、危険度の概略をメモリへ保持する。"""
@@ -628,9 +380,16 @@ class AgentOrchestrator:
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
-        await self._prime_status_for_planning()
+        failures = await self.status_service.prime_status_for_planning()
+        if failures:
+            await self._report_execution_barrier(
+                "状態取得",
+                f"{', '.join(failures)} の取得に失敗しました。Mineflayer への接続状況を確認してください。",
+            )
         await self._collect_block_evaluations()
-        context = self._build_context_snapshot()
+        context = self.status_service.build_context_snapshot(
+            current_role_id=self._current_role_id
+        )
         self.logger.info(
             "creating plan for username=%s message='%s' context=%s",
             task.username,
@@ -689,51 +448,6 @@ class AgentOrchestrator:
         dimension = payload.get("dimension")
         dimension_label = dimension if isinstance(dimension, str) and dimension else "unknown"
         return f"X={int(x)} / Y={int(y)} / Z={int(z)}（ディメンション: {dimension_label}）"
-
-    def _build_context_snapshot(self) -> Dict[str, Any]:
-        """LLM へ渡す簡易コンテキストを生成する。"""
-
-        snapshot = {
-            "player_pos": self.memory.get("player_pos", "不明"),
-            "inventory_summary": self.memory.get("inventory", "不明"),
-            "general_status": self.memory.get("general_status", "未記録"),
-            "dig_permission": self.memory.get("dig_permission", "未評価"),
-            "last_chat": self.memory.get("last_chat", "未記録"),
-            "last_destination": self.memory.get("last_destination", "未記録"),
-            "active_role": self.memory.get(
-                "agent_active_role",
-                {"id": self._current_role_id, "label": "汎用サポーター"},
-            ),
-        }
-        minedojo_context = self.memory.get("minedojo_context")
-        if minedojo_context:
-            snapshot["minedojo_support"] = minedojo_context
-        block_eval = self.memory.get("block_evaluation")
-        if block_eval:
-            snapshot["block_evaluation"] = block_eval
-        structured_history = self.memory.get("structured_event_history")
-        if isinstance(structured_history, list) and structured_history:
-            snapshot["structured_event_history"] = structured_history[-3:]
-        perception_history = self.memory.get("perception_snapshots")
-        if isinstance(perception_history, list) and perception_history:
-            snapshot["perception_history"] = perception_history[-3:]
-        perception_summary = self.memory.get("perception_summary")
-        if isinstance(perception_summary, str) and perception_summary.strip():
-            snapshot["perception_summary"] = perception_summary.strip()
-        last_plan_summary = self.memory.get("last_plan_summary")
-        if isinstance(last_plan_summary, dict) and last_plan_summary:
-            snapshot["last_plan_summary"] = last_plan_summary
-        reflection_context = self.memory.build_reflection_context()
-        if reflection_context:
-            snapshot["recent_reflections"] = reflection_context
-        active_reflection_prompt = self.memory.get_active_reflection_prompt()
-        if active_reflection_prompt:
-            snapshot["active_reflection_prompt"] = active_reflection_prompt
-        recovery_hints = self.memory.get("recovery_hints")
-        if isinstance(recovery_hints, list) and recovery_hints:
-            snapshot["recovery_hints"] = recovery_hints
-        self.logger.info("context snapshot built=%s", snapshot)
-        return snapshot
 
     def _record_plan_summary(self, plan_out: PlanOut) -> None:
         """ゴール・制約・directive を Memory と構造化ログへ残す。"""
@@ -1614,7 +1328,9 @@ class AgentOrchestrator:
             )
             return
 
-        context = self._build_context_snapshot()
+        context = self.status_service.build_context_snapshot(
+            current_role_id=self._current_role_id
+        )
         inventory_detail = self.memory.get("inventory_detail")
         # 所持品詳細を replan コンテキストへ含めることで、直前の装備失敗で
         # ツルハシが不足しているなどの状況を LLM へ明確に伝えられる。
@@ -1794,7 +1510,7 @@ class AgentOrchestrator:
                 return None
 
             data = resp.get("data") or {}
-            summary = self._summarize_position_status(data)
+            summary = self.status_service.summarize_position_status(data)
             self.memory.set("player_pos", summary)
             self.memory.set("player_pos_detail", data)
             return {"category": category, "summary": summary, "data": data}
@@ -1826,7 +1542,7 @@ class AgentOrchestrator:
                 return None
 
             data = resp.get("data") or {}
-            summary = self._summarize_general_status(data)
+            summary = self.status_service.summarize_general_status(data)
             self.memory.set("general_status", summary)
             self.memory.set("general_status_detail", data)
             if isinstance(data, dict) and "digPermission" in data:
@@ -2613,7 +2329,9 @@ class AgentOrchestrator:
         """障壁内容を LLM に渡して、プレイヤー向けの確認メッセージを生成する。"""
 
         try:
-            context = self._build_context_snapshot()
+            context = self.status_service.build_context_snapshot(
+                current_role_id=self._current_role_id
+            )
             context.update({"queue_backlog": self.chat_queue.backlog_size})
             llm_message = await compose_barrier_notification(step, reason, context)
             if llm_message:
