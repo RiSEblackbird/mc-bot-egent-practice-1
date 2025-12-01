@@ -47,12 +47,9 @@ from planner import (
 )
 from skills import SkillMatch, SkillNode
 from utils import ThoughtActionObservationTracer, log_structured_event, setup_logger
-from agent_orchestrator import (
-    ActionGraph,
-    ActionTaskRule,
-    ChatTask,
-    build_reflection_prompt,
-)
+from runtime.action_graph import ActionGraph, ActionTaskRule, ChatTask
+from runtime.inventory_sync import InventorySynchronizer, summarize_inventory_status
+from runtime.reflection_prompt import build_reflection_prompt
 from runtime.minedojo import MineDojoSelfDialogueExecutor
 from runtime.hybrid_directive import HybridDirectiveHandler, HybridDirectivePayload
 
@@ -328,6 +325,7 @@ class AgentOrchestrator:
         skill_repository: SkillRepository | None = None,
         config: AgentConfig | None = None,
         minedojo_client: MineDojoClient | None = None,
+        inventory_sync: InventorySynchronizer | None = None,
     ) -> None:
         self.actions = actions
         self.memory = memory
@@ -356,6 +354,10 @@ class AgentOrchestrator:
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
         self.default_move_target = self.config.default_move_target
         self.logger = setup_logger("agent.orchestrator")
+        # Mineflayer インベントリ取得の実装を差し替えやすくするため、依存注入で同期クラスを保持する。
+        self.inventory_sync = inventory_sync or InventorySynchronizer(
+            summarizer=summarize_inventory_status
+        )
         # LangGraph ベースのタスクハンドラを初期化して、カテゴリ別モジュールを明確化する。
         self._action_graph = ActionGraph(self)
         self._current_role_id: str = "generalist"
@@ -778,7 +780,7 @@ class AgentOrchestrator:
             return
 
         if kind == "inventory":
-            summary = self._summarize_inventory_status(data)
+            summary = self.inventory_sync.summarize(data)
             self.memory.set("inventory", summary)
             self.memory.set("inventory_detail", data)
             return
@@ -2209,7 +2211,7 @@ class AgentOrchestrator:
                 return None
 
             data = resp.get("data") or {}
-            summary = self._summarize_inventory_status(data)
+            summary = self.inventory_sync.summarize(data)
             self.memory.set("inventory", summary)
             self.memory.set("inventory_detail", data)
             return {"category": category, "summary": summary, "data": data}
@@ -2281,23 +2283,6 @@ class AgentOrchestrator:
                     return f"現在位置は X={x} / Y={y} / Z={z}（ディメンション: {dimension}）です。"
 
         return "現在位置の最新情報を取得しました。"
-
-    def _summarize_inventory_status(self, data: Dict[str, Any]) -> str:
-        """インベントリ情報を主要要約へ変換する。"""
-
-        if isinstance(data, dict):
-            formatted = str(data.get("formatted") or "").strip()
-            if formatted:
-                return formatted
-
-            items = data.get("items")
-            if isinstance(items, list):
-                item_count = len(items)
-                pickaxes = data.get("pickaxes")
-                pickaxe_count = len(pickaxes) if isinstance(pickaxes, list) else 0
-                return f"所持品は {item_count} 種類を確認しました（ツルハシ {pickaxe_count} 本）。"
-
-        return "所持品一覧を取得しました。"
 
     def _summarize_general_status(self, data: Dict[str, Any]) -> str:
         """体力・満腹度・掘削許可のステータスを読みやすい文章にまとめる。"""

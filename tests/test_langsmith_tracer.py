@@ -8,7 +8,7 @@ PYTHON_DIR = PROJECT_ROOT / "python"
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
-from agent_orchestrator import MineDojoSelfDialogueExecutor  # type: ignore  # noqa: E402
+from runtime.minedojo import MineDojoSelfDialogueExecutor  # type: ignore  # noqa: E402
 from planner import ReActStep  # type: ignore  # noqa: E402
 from services.minedojo_client import (  # type: ignore  # noqa: E402
     MineDojoClient,

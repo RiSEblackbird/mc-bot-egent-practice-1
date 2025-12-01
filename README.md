@@ -124,7 +124,7 @@ Responses API のタイムアウトは `LLM_TIMEOUT_SECONDS` で制御でき、�
 
 Python 側で LangGraph の流れを確認したい場合は `UnifiedAgentGraph.render_mermaid()` を呼び出すと、
 「意図解析 → プラン生成 → アクションディスパッチ → Mineflayer 連携」の順に並んだ Mermaid 文字列を出力できます。
-`python/agent_orchestrator.py` に定義されている統合グラフを `graph = UnifiedAgentGraph(orchestrator)` で初期化し、
+`python/runtime/action_graph.py` に定義されている統合グラフを `graph = UnifiedAgentGraph(orchestrator)` で初期化し、
 `print(graph.render_mermaid())` を実行するだけでステップ一覧を図式化できるため、曖昧な指示を受けた際の
 ルーティング確認や新人メンバー向けの説明資料作成に活用してください。
 
@@ -163,6 +163,15 @@ Node 側が push する `perception` イベントや `gatherStatus(kind=\"enviro
 要約には敵対モブ数・危険ブロック・照度・天候などが 1 行で記録され、LangGraph の状態・LLM プロンプト・障壁通知・ActionGraph のバックログ判断にそのまま利用されます。
 `bridge_event_reports` に含まれる attributes（例: job_id, hazard, world）も summary へ取り込まれるため、Paper 側で発生した危険と Mineflayer 近傍の観測値をセットで追跡できるようになりました。
 
+
+#### 3.2.7 Runtime モジュール構成
+
+LangGraph の責務が増えたため、`python/runtime` 配下に以下のモジュールを切り出しています。依存方向は `runtime/* -> utils` のみになるよう整理し、Agent 本体とは依存注入で接続します。
+
+- `python/runtime/action_graph.py`: LangGraph のノード定義とステート初期化をまとめたモジュール。`ActionGraph`/`UnifiedAgentGraph` がカテゴリごとの処理をハンドオフします。
+- `python/runtime/inventory_sync.py`: Mineflayer からの所持品スナップショット取得と要約を担当。`InventorySynchronizer` をコンストラクタ引数に渡すことでオーケストレータの差し替えを容易にします。
+- `python/runtime/reflection_prompt.py`: Reflexion 用プロンプト生成を共通化し、再計画ノードから安全に再利用できるようにしたユーティリティ。
+
 #### MineDojo ミッション連携
 
 * Python エージェントは行動タスクの分類結果から MineDojo ミッション ID を推論し、該当カテゴリでは `python/services/minedojo_client.py` を介してミッション情報とデモを取得します。
@@ -182,10 +191,10 @@ Node 側が push する `perception` イベントや `gatherStatus(kind=\"enviro
 #### LangGraph 構造化ログとリカバリー
 
 * `python/utils/logging.py` に構造化ロギングユーティリティを追加し、LangGraph ノード ID・チェックポイント ID・イベントレベルを JSON 形式で出力します。`log_structured_event` を利用すると、ノード固有の `context` メタデータを辞書で渡せます。
-* `python/agent_orchestrator.py` の建築ノードはチェックポイント更新時に `action.handle_building` というノード名でログを記録し、`event_level="recovery"` かどうかでクラッシュ復旧か通常進行かを区別します。調達計画や配置バッチもログへ含めるため、資材不足の原因調査が簡単になります。
+* `python/runtime/action_graph.py` の建築ノードはチェックポイント更新時に `action.handle_building` というノード名でログを記録し、`event_level="recovery"` かどうかでクラッシュ復旧か通常進行かを区別します。調達計画や配置バッチもログへ含めるため、資材不足の原因調査が簡単になります。
 * `python/bridge_client.py` の HTTP 再試行も構造化ログへ統一し、最終的に失敗した場合は `event_level="fault"` を付けて LangGraph 側の再試行ノード連携に備えます。409 (液体検知) は `BridgeError` の `status_code`/`payload` に保存されるため、Mineflayer へ危険箇所を知らせて自律停止できます。
 * `python/agent.py` の ReAct ループは、各ステップの Thought/Action/Observation を `react_step` イベントとして構造化ログに記録し、Mineflayer から得られた実行結果を Observation フィールドへ即座に反映します。
-2025 年 2 月時点では `python/agent_orchestrator.py` に LangGraph ベースのステートマシンを導入し、採掘・建築・防衛の
+2025 年 2 月時点では `python/runtime/action_graph.py` に LangGraph ベースのステートマシンを導入し、採掘・建築・防衛の
 モジュールをノード単位で独立させました。これにより再計画時の分岐が視覚化され、`mine` → `equip` のような連鎖的な
 処理もグラフ上で明示されます。同様に `python/planner.py` の LLM 呼び出しも LangGraph の条件分岐ノードに置き換え、
 失敗時は優先度を `high` へ自動昇格、成功時は `normal` へ戻す優先度マネージャーと同期しています。新しいシナリオテスト
@@ -440,7 +449,7 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 | --- | --- | --- | --- |
 | Voyager | LLM 主導での自律探索・ツール発見 | `python/planner.py` / `python/memory.py` / `docs/building_state_machine.md` | 部分対応 |
 | ReAct | 推論 (Reason) と行動 (Act) の往復で環境を制御 | `python/agent.py` / `python/planner.py` / `python/actions.py` | 実装済み |
-| Reflexion | 失敗経験を自己評価して行動計画へ反映 | `python/utils/logging.py` / `python/agent_orchestrator.py` / `tests/test_langgraph_scenarios.py` | 部分対応 |
+| Reflexion | 失敗経験を自己評価して行動計画へ反映 | `python/utils/logging.py` / `python/runtime/reflection_prompt.py` / `python/runtime/action_graph.py` / `tests/test_langgraph_scenarios.py` | 部分対応 |
 | VPT | 操作シーケンスの模倣学習による政策獲得 | `node-bot/bot.ts` / `node-bot/runtime/roles.ts` | 未対応 |
 | MineDojo | Minecraft タスクの大規模データセット化 | `docs/tunnel_mode_design.md` / `tests/e2e/test_multi_agent_roles.py` | 部分対応 |
 
@@ -449,7 +458,7 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 1. **プレイヤーチャット受付**（`node-bot/bot.ts`）: ReAct の「Act」フェーズとして、Mineflayer がチャットを検知し環境観測を添えて Python へ転送します。
 2. **LLM プランニング**（`python/planner.py`）: Voyager の探索指針と MineDojo のタスク分類をもとに LangGraph 内でステップを組み立て、Reason フェーズの思考をログ化します。
 3. **アクション合成・実行**（`python/actions.py` → `node-bot/runtime/roles.ts`）: ReAct の決定結果を具体的な Mineflayer コマンドへ落とし込み、VPT で想定する操作トレースに近い粒度で命令を分解します。
-4. **自己評価と再計画**（`python/agent_orchestrator.py`）: Reflexion の考え方で失敗ログを振り返り、必要に応じて Voyager 流の探索プランを再生成します。
+4. **自己評価と再計画**（`python/runtime/reflection_prompt.py` / `python/runtime/action_graph.py`）: Reflexion の考え方で失敗ログを振り返り、必要に応じて Voyager 流の探索プランを再生成します。
 
 #### Voyager — [https://arxiv.org/abs/2305.16291](https://arxiv.org/abs/2305.16291)
 
@@ -469,7 +478,7 @@ ReAct は言語モデルに推論（Reason）と行動（Act）の交互実行�
 
 Reflexion は失敗体験を言語モデル自身が振り返り、学習した方策を自己修正するアプローチです。本プロジェクトでは構造化ログと LangGraph の再計画ノードを通じて、障害発生時の原因・対応履歴を記録し、次のプラン生成で参照できるようにすることで Reflexion の自律改善を部分的に実現しています。
 
-- 関連モジュール: [`python/utils/logging.py`](python/utils/logging.py), [`python/agent_orchestrator.py`](python/agent_orchestrator.py), [`tests/test_langgraph_scenarios.py`](tests/test_langgraph_scenarios.py)
+- 関連モジュール: [`python/utils/logging.py`](python/utils/logging.py), [`python/runtime/reflection_prompt.py`](python/runtime/reflection_prompt.py), [`python/runtime/action_graph.py`](python/runtime/action_graph.py), [`tests/test_langgraph_scenarios.py`](tests/test_langgraph_scenarios.py)
 - 今後の改善ポイント: LLM が自己評価を行う際の成功/失敗ラベルを定量化し、再計画時に重み付けされたメモリ検索を行う仕組みを追加する。
 
 #### VPT — [https://arxiv.org/abs/2206.04615](https://arxiv.org/abs/2206.04615)
