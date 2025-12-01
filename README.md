@@ -36,6 +36,17 @@ java -Xms4G -Xmx4G -jar .\paper-1.21.1.jar --nogui
 
 開発中は `server.properties` の `online-mode=false` を推奨。
 
+### Bridge HTTP サーバーの構成と拡張手順
+
+Paper プラグイン側の REST API は `bridge-plugin/src/main/java/com/example/bridge/http` 配下にまとめています。`BaseHandler` が認証・例外処理・JSON 変換を共通化し、`http/handlers/` 配下へ具体的なエンドポイントを 1 クラスずつ配置しています。サーバー起動やコンテキスト登録は `BridgeHttpServer` のみが担当するため、依存関係はすべてコンストラクタで注入し、ユニットテストではモックを差し替えやすい設計です。
+
+新しい REST API を追加する場合は以下の手順に沿ってください。
+
+1. `http/handlers/` にハンドラクラスを追加し、`BaseHandler` を継承して認証と共通レスポンス処理を再利用する。
+2. 必要な依存（`JobRegistry` や `WorldGuardFacade` など）はコンストラクタ引数で受け取り、フィールドへ保持する。
+3. `BridgeHttpServer#registerContexts` に新ハンドラのコンテキストを登録する。イベントストリームのようなオプショナル機能は設定フラグで有効化可否を分岐させる。
+4. 追加したエンドポイントの想定リクエスト/レスポンス例をテストし、Mineflayer や Python クライアントからの利用手順を README/ドキュメントへ追記する。
+
 ## 3. セットアップ
 
 ### 3.1 Node（Mineflayer ボット）
