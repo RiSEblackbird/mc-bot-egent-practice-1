@@ -45,6 +45,7 @@ Node 側のボット実装は TypeScript 化しており、`npm start` を実行
 本リポジトリ直下の `.nvmrc` は 22 系を指しているので、`nvm use` でバージョンを切り替えられます。
 
 Mineflayer 起動時の環境変数は `node-bot/runtime/config.ts` へ集約しており、Docker 実行時の `MC_HOST` 補正や `MC_VERSION` のフォールバック、`MOVE_GOAL_TOLERANCE` の上下限チェックを一括で行います。
+WebSocket サーバーの起動・接続管理は `node-bot/runtime/server.ts` に分離し、OpenTelemetry の初期化は `node-bot/runtime/telemetryRuntime.ts` へ整理しました。コマンド/レスポンス型も `node-bot/runtime/types.ts` へ集約しているため、IDE から追跡しやすくなっています。
 設定変更のテストは `node-bot/tests/config.test.ts` を実行すると安全に回帰確認できます。
 
 制御ループの設定値は `node-bot/bot.ts` の冒頭で初期化してからログへ出力するよう整理しました。`npm start` で Mineflayer ボットを再起動し、
@@ -155,7 +156,7 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 - `directives` … 各 plan ステップと 1:1 で結びつく `ActionDirective`。`executor`（`mineflayer` / `minedojo` / `chat`）と `args.coordinates` を指定すると、Python 側はヒューリスティックをスキップし、指示カテゴリ・座標をそのまま LangGraph へ渡します。
 - `recovery_hints` … 直近の障壁や Reflexion プロンプトから引き継いだ教訓。`planner.graph.record_recovery_hints()`（既存の `langgraph_state` エイリアス経由でも可）を通じて再計画ノードへも共有され、同じ失敗の再発を防ぎます。
 
-Python エージェントは directive メタデータを `Actions.begin_directive_scope()` → `_dispatch()` を経由して WebSocket ペイロードの `meta` に添付します。`node-bot/runtime/telemetry.ts` は `command.meta.directive_id` / `command.meta.executor` を span 属性へ記録し、`mineflayer.directive.received` カウンターとしてメトリクス化するため、OpenTelemetry 上で「どの目的の指示がどの executor へ渡ったか」を直接観測できます。
+Python エージェントは directive メタデータを `Actions.begin_directive_scope()` → `_dispatch()` を経由して WebSocket ペイロードの `meta` に添付します。`node-bot/runtime/telemetryRuntime.ts` は `command.meta.directive_id` / `command.meta.executor` を span 属性へ記録し、`mineflayer.directive.received` カウンターとしてメトリクス化するため、OpenTelemetry 上で「どの目的の指示がどの executor へ渡ったか」を直接観測できます。
 
 #### 3.2.6 周囲状況の即時共有
 
