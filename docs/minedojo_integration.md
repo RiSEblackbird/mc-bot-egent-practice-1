@@ -53,7 +53,7 @@ Python エージェントから MineDojo のミッション/デモを参照す�
 2. `MineDojoClient` がキャッシュ→ローカル→API の順にミッション情報とデモを探索し、成功した場合は `Actions.play_vpt_actions` にデモを自動送信します。
 3. LLM プロンプトへはミッション概要とデモ要約が `minedojo_context` キーとして注入されます。ミッション ID・タグを含む構造化メタデータを LangGraph 状態へ残すため、後続のステップでも同一ミッションかどうかを判別しやすくなりました。
 4. MineDojo から得た情報は `tests/integration/test_minedojo_adapter.py` で検証しており、スタブクライアントを差し込むことで外部サービスへアクセスせずに回帰テストを実行できます。デモの自動登録と再利用の流れは `tests/integration/test_minedojo_skill_registration.py` で統合的に確認できます。
-5. `MineDojoSelfDialogueExecutor` は `MINEDOJO_SIM_*` で指定された環境を使い、`python/services/minedojo_client.py` が返すデモを
+5. `python/runtime/minedojo.py` に移動した `MineDojoSelfDialogueExecutor` は `MINEDOJO_SIM_*` で指定された環境を使い、`python/services/minedojo_client.py` が返すデモを
   `Actions.play_vpt_actions` へ引き渡す前に検証します。シミュレーション失敗時は `recovery_hints` に反省点を追記し、
   LangGraph が次のプラン生成で参照できるようにします。
 6. `python/agent.py` の `_maybe_trigger_minedojo_autorecovery` が、プラン生成に失敗した場合や MineDojo 対応カテゴリで十分な

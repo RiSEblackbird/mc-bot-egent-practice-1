@@ -91,13 +91,13 @@ python agent.py
 - Python 依存（固定版）: `openai==1.109.1` / `python-dotenv==1.0.1` / `websockets==12.0` / `httpx==0.27.2` / `pydantic==2.8.2` / `watchfiles==0.21.0` / `langgraph==0.1.16` / `opentelemetry-api==1.27.0` / `opentelemetry-sdk==1.27.0` / `opentelemetry-exporter-otlp-proto-http==1.27.0`
  / `langsmith==0.1.147`
 
-`pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/agent.py` の起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。
+`pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/runtime/bootstrap.py` を経由したエージェント起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。`python -m python` でパッケージエントリポイントから起動できます。
 
 #### 3.2.2 依存更新時のチェックリスト
 
 1. **クリーン環境での検証**: `.venv` を作り直し、`pip install -r ../requirements.txt` を実行して新しい制約でも解決できるか確認する。
 2. **自動テスト**: 依存追加・更新後は少なくとも `pytest tests/test_agent_config.py tests/test_structured_logging.py` を走らせ、設定読み込みと構造化ログの互換性を確認する。LangGraph/LLM 周辺を触った場合は `pytest tests/test_langgraph_scenarios.py` も追加で実行する。
-3. **手動起動チェック**: `cp ../env.example ../.env` の後に `python python/agent.py --help` を実行し、WebSocket バインドまで到達すること、`openai.types.responses.Response` などの型解決が通ることを目視する。
+3. **手動起動チェック**: `cp ../env.example ../.env` の後に `python -m python` を実行し、WebSocket バインドまで到達すること、`openai.types.responses.Response` などの型解決が通ることを目視する。
 4. **破壊的変更のサイン検知**: `client.responses.create` 呼び出しシグネチャや `EasyInputMessageParam` のフィールドに差分が出ていないかを確認し、変更があれば `python/planner.py` のペイロード生成ロジックを追従させる。
 
 Python エージェントは `AGENT_WS_HOST` / `AGENT_WS_PORT` で指定したポートに WebSocket サーバーを公開します。
@@ -106,6 +106,7 @@ Python 側で LLM プランニングとアクション実行が行われます�
 「移動」系のステップで座標が指定されなかった場合のフォールバック座標を調整できます。なお Python エージェント
 は、直前に検出した座標付きステップを記憶し、直後に続く「移動」「向かう」などの抽象ステップでは同じ目的地を
 再利用するため、計画途中で座標の記述が省略されても同じ地点へ向かい続けます。
+ランタイムは `python/runtime` 配下へ分割しており、`bootstrap.py` が設定読込と依存組み立て、`websocket_server.py` が WebSocket 受信ループ、`minedojo.py` が自己対話やスキル登録ヘルパーを担います。`python/__main__.py` からはこれらを束ねて `python -m python` で起動できます。
 設定値の読み込みは `python/config.py` に統合しており、ポート番号やデフォルト座標のバリデーションを一括で処理します。
 ユニットテスト `tests/test_agent_config.py` で挙動を確認できるため、環境変数を追加した場合も回帰チェックが容易です。
 Responses API のタイムアウトは `LLM_TIMEOUT_SECONDS` で制御でき、既定値 30 秒を過ぎるとフォールバックプランへ即時切り替えます。

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 # gpt-5-mini を用いたプランニング：自然文→PLAN/RESP の二分出力
+from __future__ import annotations
+
 import asyncio
 import os
 from typing import Any, Dict, List, Optional, Literal

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import re
@@ -20,11 +19,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from dotenv import load_dotenv
-from websockets import WebSocketServerProtocol
-from websockets.exceptions import ConnectionClosedOK, ConnectionClosedError
-from websockets.server import serve
-
 from config import AgentConfig, load_agent_config
 from services.minedojo_client import (
     MineDojoClient,
@@ -33,7 +27,7 @@ from services.minedojo_client import (
     MineDojoMission,
 )
 from services.skill_repository import SkillRepository
-from actions import ActionValidationError, Actions
+from actions import Actions
 from bridge_client import (
     BRIDGE_EVENT_STREAM_ENABLED,
     BridgeClient,
@@ -57,20 +51,12 @@ from agent_orchestrator import (
     ActionGraph,
     ActionTaskRule,
     ChatTask,
-    MineDojoSelfDialogueExecutor,
     build_reflection_prompt,
 )
+from runtime.minedojo import MineDojoSelfDialogueExecutor
+from runtime.hybrid_directive import HybridDirectiveHandler, HybridDirectivePayload
 
 logger = setup_logger("agent")
-
-load_dotenv()
-
-# LangGraph から渡される hybrid 指示の解析結果を保持する構造体。
-@dataclass
-class HybridDirectivePayload:
-    vpt_actions: List[Dict[str, Any]]
-    fallback_command: Optional[Dict[str, Any]]
-    metadata: Dict[str, Any]
 
 # --- 設定の読み込み --------------------------------------------------------
 
@@ -402,6 +388,8 @@ class AgentOrchestrator:
                 "sim_max_steps": self.config.minedojo.sim_max_steps,
             },
         )
+        # hybrid 指示の解析・実行を専用クラスへ委譲して、オーケストレーターの責務を明確化する。
+        self._hybrid_handler = HybridDirectiveHandler(self)
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積む。"""
@@ -1361,42 +1349,7 @@ class AgentOrchestrator:
         self,
         directive: ActionDirective,
     ) -> HybridDirectivePayload:
-        args = directive.args if isinstance(directive.args, dict) else {}
-        raw_vpt_actions: Any = None
-        if "vpt_actions" in args:
-            raw_vpt_actions = args.get("vpt_actions")
-        elif "vptActions" in args:
-            raw_vpt_actions = args.get("vptActions")
-        vpt_actions: List[Dict[str, Any]] = []
-        if raw_vpt_actions is not None:
-            if not isinstance(raw_vpt_actions, list):
-                raise ValueError("vpt_actions は配列で指定してください。")
-            for index, item in enumerate(raw_vpt_actions):
-                if not isinstance(item, dict):
-                    raise ValueError(f"vpt_actions[{index}] はオブジェクトで指定してください。")
-                vpt_actions.append(item)
-
-        fallback_command = args.get("fallback_command")
-        if fallback_command is None and "fallbackCommand" in args:
-            fallback_command = args.get("fallbackCommand")
-        if fallback_command is not None and not isinstance(fallback_command, dict):
-            raise ValueError("fallback_command はオブジェクトで指定してください。")
-
-        metadata = args.get("metadata")
-        if metadata is None and "vpt_metadata" in args:
-            metadata = args.get("vpt_metadata")
-        if metadata is not None and not isinstance(metadata, dict):
-            raise ValueError("metadata はオブジェクトで指定してください。")
-        metadata = dict(metadata or {})
-
-        if not vpt_actions and fallback_command is None:
-            raise ValueError("hybrid 指示には vpt_actions もしくは fallback_command のいずれかが必要です。")
-
-        return HybridDirectivePayload(
-            vpt_actions=vpt_actions,
-            fallback_command=fallback_command,
-            metadata=metadata,
-        )
+        return self._hybrid_handler.parse_arguments(directive)
 
     async def _execute_hybrid_directive(
         self,
@@ -1409,51 +1362,15 @@ class AgentOrchestrator:
         index: int,
         total_steps: int,
     ) -> bool:
-        try:
-            with self._directive_scope(directive_meta):
-                result = await self.actions.execute_hybrid_action(
-                    vpt_actions=payload.vpt_actions,
-                    fallback_command=payload.fallback_command,
-                    metadata=payload.metadata or None,
-                )
-        except ActionValidationError as exc:
-            self.logger.warning("hybrid directive validation failed: %s", exc)
-            await self._report_execution_barrier(
-                directive.label or directive.step or "hybrid",
-                f"ハイブリッド指示の検証に失敗しました: {exc}",
-            )
-            return False
-        except Exception:
-            self.logger.exception("hybrid directive failed unexpectedly")
-            await self._report_execution_barrier(
-                directive.label or directive.step or "hybrid",
-                "ハイブリッド指示の実行で予期しないエラーが発生しました。",
-            )
-            return False
-
-        if not result.get("ok"):
-            await self._report_execution_barrier(
-                directive.label or directive.step or "hybrid",
-                f"Mineflayer から ok=false が返却されました: {result}",
-            )
-            return False
-
-        executor_used = result.get("executor") or "hybrid"
-        observation_text = f"ハイブリッド指示を {executor_used} 経路で完了しました。"
-        if react_entry:
-            react_entry.observation = observation_text
-
-        self._emit_react_log(
+        return await self._hybrid_handler.execute(
+            directive,
+            payload,
+            directive_meta=directive_meta,
+            react_entry=react_entry,
+            thought_text=thought_text,
             index=index,
             total_steps=total_steps,
-            thought=thought_text,
-            action=directive.label or directive.step or "hybrid",
-            observation=observation_text,
-            status="completed",
-            event_level="progress",
-            log_level=logging.INFO,
         )
-        return True
 
     def _coerce_coordinate_tuple(self, payload: Any) -> Optional[Tuple[int, int, int]]:
         if not isinstance(payload, dict):
@@ -3151,134 +3068,3 @@ class AgentOrchestrator:
         return text if len(text) <= limit else f"{text[:limit]}…"
 
 
-class AgentWebSocketServer:
-    """Node -> Python のチャット転送を受け付ける WebSocket サーバー。"""
-
-    def __init__(self, orchestrator: AgentOrchestrator) -> None:
-        self.orchestrator = orchestrator
-        self.logger = setup_logger("agent.ws")
-
-    async def handler(self, websocket: WebSocketServerProtocol) -> None:
-        """各接続ごとに JSON コマンドを受信・処理する。"""
-
-        peer = f"{websocket.remote_address}" if websocket.remote_address else "unknown"
-        self.logger.info("connection opened from %s", peer)
-        try:
-            async for raw in websocket:
-                response = await self._handle_message(raw)
-                await websocket.send(json.dumps(response, ensure_ascii=False))
-        except (ConnectionClosedOK, ConnectionClosedError):
-            self.logger.info("connection closed from %s", peer)
-        except Exception:
-            self.logger.exception("unexpected error while handling connection from %s", peer)
-
-    async def _handle_message(self, raw: str) -> Dict[str, Any]:
-        """受信文字列を解析し、サポートするコマンドへ振り分ける。"""
-
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            self.logger.error("invalid JSON payload=%s", raw)
-            return {"ok": False, "error": "invalid json"}
-
-        payload_type = payload.get("type")
-        if payload_type == "chat":
-            args = payload.get("args") or {}
-            username = str(args.get("username", "")).strip() or "Player"
-            message = str(args.get("message", "")).strip()
-
-            if not message:
-                self.logger.warning("empty chat message received username=%s", username)
-                return {"ok": False, "error": "empty message"}
-
-            await self.orchestrator.enqueue_chat(username, message)
-            return {"ok": True}
-
-        if payload_type == "agentEvent":
-            args = payload.get("args") or {}
-            await self.orchestrator.handle_agent_event(args)
-            return {"ok": True}
-
-        self.logger.error("unsupported payload type=%s", payload_type)
-        return {"ok": False, "error": "unsupported type"}
-
-
-async def run_minedojo_self_dialogue(
-    mission_id: str,
-    react_trace: Sequence[ReActStep],
-    *,
-    skill_id: str,
-    title: str,
-    success: bool = True,
-) -> None:
-    """MineDojo 環境向け自己対話を単体実行する簡易エントリポイント。"""
-
-    bridge = BotBridge(WS_URL)
-    actions = Actions(bridge)
-    seed_path = Path(__file__).resolve().parent / "skills" / "seed_library.json"
-    skill_repo = SkillRepository(
-        SKILL_LIBRARY_PATH,
-        seed_path=str(seed_path),
-    )
-    minedojo_client = MineDojoClient(AGENT_CONFIG.minedojo)
-    tracer = ThoughtActionObservationTracer(
-        api_url=AGENT_CONFIG.langsmith.api_url,
-        api_key=AGENT_CONFIG.langsmith.api_key,
-        project=AGENT_CONFIG.langsmith.project,
-        default_tags=AGENT_CONFIG.langsmith.tags,
-        enabled=AGENT_CONFIG.langsmith.enabled,
-    )
-    executor = MineDojoSelfDialogueExecutor(
-        actions=actions,
-        client=minedojo_client,
-        skill_repository=skill_repo,
-        tracer=tracer,
-        env_params={
-            "sim_env": AGENT_CONFIG.minedojo.sim_env,
-            "sim_seed": AGENT_CONFIG.minedojo.sim_seed,
-            "sim_max_steps": AGENT_CONFIG.minedojo.sim_max_steps,
-        },
-    )
-    await executor.run_self_dialogue(
-        mission_id,
-        react_trace,
-        skill_id=skill_id,
-        title=title,
-        success=success,
-    )
-    await minedojo_client.aclose()
-
-
-async def main() -> None:
-    """エージェントを起動し、WebSocket サーバーとワーカーを開始する。"""
-
-    bridge = BotBridge(WS_URL)
-    actions = Actions(bridge)
-    mem = Memory()
-    # 既定のスキル定義を JSON から読み込み、学習済みスキルとの差分を蓄積できるようにする。
-    seed_path = Path(__file__).resolve().parent / "skills" / "seed_library.json"
-    skill_repo = SkillRepository(
-        SKILL_LIBRARY_PATH,
-        seed_path=str(seed_path),
-    )
-    orchestrator = AgentOrchestrator(actions, mem, skill_repository=skill_repo)
-    ws_server = AgentWebSocketServer(orchestrator)
-    await orchestrator.start_bridge_event_listener()
-
-    worker_task = asyncio.create_task(orchestrator.worker(), name="agent-worker")
-
-    async with serve(ws_server.handler, AGENT_WS_HOST, AGENT_WS_PORT):
-        logger.info("Python agent is listening on ws://%s:%s", AGENT_WS_HOST, AGENT_WS_PORT)
-        try:
-            await asyncio.Future()  # 実行を継続
-        except asyncio.CancelledError:
-            logger.info("main loop cancelled")
-        finally:
-            worker_task.cancel()
-            with contextlib.suppress(Exception):
-                await worker_task
-            await orchestrator.stop_bridge_event_listener()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
