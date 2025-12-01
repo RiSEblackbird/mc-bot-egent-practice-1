@@ -12,7 +12,6 @@ import contextlib
 import logging
 import os
 import re
-import threading
 import time
 import json
 from dataclasses import dataclass
@@ -29,11 +28,7 @@ from services.minedojo_client import (
 )
 from services.skill_repository import SkillRepository
 from actions import Actions
-from bridge_client import (
-    BRIDGE_EVENT_STREAM_ENABLED,
-    BridgeClient,
-    BridgeError,
-)
+from bridge_client import BridgeClient, BridgeError
 from bridge_ws import BotBridge
 from memory import Memory
 from planner import (
@@ -54,6 +49,7 @@ from runtime.inventory_sync import InventorySynchronizer, summarize_inventory_st
 from runtime.reflection_prompt import build_reflection_prompt
 from runtime.minedojo import MineDojoSelfDialogueExecutor
 from runtime.hybrid_directive import HybridDirectiveHandler, HybridDirectivePayload
+from runtime.bridge_events import BridgeEventHooks, BridgeEventListener
 from runtime.rules import (
     ACTION_TASK_RULES,
     COORD_PATTERNS,
@@ -193,10 +189,21 @@ class AgentOrchestrator:
         self._active_minedojo_demo_metadata: Optional[MineDojoDemoMetadata] = None
         # 周辺環境の安全性を評価するため、Bridge HTTP クライアントを初期化しておく。
         self._bridge_client = BridgeClient()
-        self._bridge_event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
-        self._bridge_event_stop: Optional[asyncio.Event] = None
-        self._bridge_event_thread_stop: Optional[threading.Event] = None
-        self._bridge_event_tasks: List[asyncio.Task[Any]] = []
+        # Bridge イベント購読は専用リスナーへ委譲し、メモリ更新やロール切替のみを
+        # コールバックで注入する。インフラ層の詳細を切り離すことでテスト容易性を高める。
+        bridge_hooks = BridgeEventHooks(
+            set_memory=self.memory.set,
+            request_role_switch=self.request_role_switch,
+            format_position=self._format_position_payload,
+            ingest_perception=self._ingest_perception_snapshot,
+            apply_primary_role=self._apply_primary_role_update,
+        )
+        self._bridge_events = BridgeEventListener(
+            bridge_client=self._bridge_client,
+            hooks=bridge_hooks,
+            shared_agents=self._shared_agents,
+            logger=self.logger,
+        )
         self._self_dialogue_executor = MineDojoSelfDialogueExecutor(
             actions=self.actions,
             client=self.minedojo_client,
@@ -224,161 +231,27 @@ class AgentOrchestrator:
     async def start_bridge_event_listener(self) -> None:
         """AgentBridge のイベントストリーム購読タスクを起動する。"""
 
-        if not BRIDGE_EVENT_STREAM_ENABLED:
-            self.logger.info("bridge event stream disabled via env; skip listener setup")
-            return
-        if self._bridge_event_tasks:
-            return
-
-        self._bridge_event_stop = asyncio.Event()
-        self._bridge_event_thread_stop = threading.Event()
-        pump = asyncio.create_task(self._bridge_event_pump(), name="bridge-event-pump")
-        consumer = asyncio.create_task(
-            self._bridge_event_consumer(), name="bridge-event-consumer"
-        )
-        self._bridge_event_tasks.extend([pump, consumer])
+        await self._bridge_events.start()
 
     async def stop_bridge_event_listener(self) -> None:
         """イベント購読タスクを停止し、スレッドセーフに後始末する。"""
 
-        if not self._bridge_event_tasks:
-            return
-
-        if self._bridge_event_stop:
-            self._bridge_event_stop.set()
-        if self._bridge_event_thread_stop:
-            self._bridge_event_thread_stop.set()
-
-        for task in list(self._bridge_event_tasks):
-            task.cancel()
-            with contextlib.suppress(Exception):
-                await task
-        self._bridge_event_tasks.clear()
-
-    async def _bridge_event_pump(self) -> None:
-        """SSE ストリームからのイベントをキューへ積むバックグラウンドタスク。"""
-
-        if self._bridge_event_stop is None or self._bridge_event_thread_stop is None:
-            return
-
-        loop = asyncio.get_running_loop()
-
-        def _enqueue(event: Dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(self._bridge_event_queue.put_nowait, event)
-
-        while not self._bridge_event_stop.is_set():
-            try:
-                await loop.run_in_executor(
-                    None,
-                    lambda: self._bridge_client.consume_event_stream(
-                        _enqueue, self._bridge_event_thread_stop
-                    ),
-                )
-            except BridgeError as exc:
-                log_structured_event(
-                    self.logger,
-                    "bridge event stream encountered recoverable error",
-                    level=logging.WARNING,
-                    event_level="warning",
-                    langgraph_node_id="agent.bridge_events",
-                    context={"error": str(exc)},
-                )
-            except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
-                log_structured_event(
-                    self.logger,
-                    "bridge event stream failed unexpectedly",
-                    level=logging.ERROR,
-                    event_level="fault",
-                    langgraph_node_id="agent.bridge_events",
-                    context={"error": str(exc)},
-                    exc_info=True,
-                )
-
-            if not self._bridge_event_stop.is_set():
-                await asyncio.sleep(1.0)
-
-    async def _bridge_event_consumer(self) -> None:
-        """Bridge イベントキューを消費し、検出レポートへ整理する。"""
-
-        if self._bridge_event_stop is None:
-            return
-
-        while not self._bridge_event_stop.is_set():
-            try:
-                payload = await asyncio.wait_for(
-                    self._bridge_event_queue.get(), timeout=1.0
-                )
-            except asyncio.TimeoutError:
-                continue
-
-            try:
-                await self._handle_bridge_event(payload)
-            finally:
-                self._bridge_event_queue.task_done()
+        await self._bridge_events.stop()
 
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
 
-        events: List[Dict[str, Any]] = []
-        raw_events = args.get("events")
-        if isinstance(raw_events, list):
-            events.extend([item for item in raw_events if isinstance(item, dict)])
+        await self._bridge_events.handle_agent_event(args)
 
-        single_event = args.get("event")
-        if isinstance(single_event, dict):
-            events.append(single_event)
+    def _apply_primary_role_update(self, role_info: Dict[str, Any]) -> None:
+        """Bridge イベント由来の役割情報を一次エージェントへ反映する。"""
 
-        if not events:
-            self.logger.error("agent event payload missing event=%s", args)
-            return
-
-        for event in events:
-            channel = str(event.get("channel", ""))
-            if channel != "multi-agent":
-                self.logger.warning("unsupported event channel=%s", channel)
-                continue
-
-            agent_id = str(event.get("agentId", "primary") or "primary")
-            agent_state = dict(self._shared_agents.get(agent_id, {}))
-            agent_state["timestamp"] = event.get("timestamp")
-
-            kind = str(event.get("event", ""))
-            payload = event.get("payload")
-            if isinstance(payload, dict):
-                agent_state.setdefault("events", []).append({"kind": kind, "payload": payload})
-
-            if kind == "position" and isinstance(payload, dict):
-                agent_state["position"] = payload
-                formatted = self._format_position_payload(payload)
-                if formatted:
-                    self.memory.set("player_pos", formatted)
-            elif kind == "status" and isinstance(payload, dict):
-                agent_state["status"] = payload
-                threat = str(payload.get("threatLevel", "")).lower()
-                if threat in {"high", "critical"}:
-                    self.request_role_switch("defender", reason="threat-alert")
-                supply = str(payload.get("supplyDemand", "")).lower()
-                if supply == "shortage":
-                    self.request_role_switch("supplier", reason="supply-shortage")
-            elif kind == "roleUpdate" and isinstance(payload, dict):
-                role_id = str(payload.get("roleId", "generalist") or "generalist")
-                role_label = str(payload.get("label", role_id))
-                role_info = {
-                    "id": role_id,
-                    "label": role_label,
-                    "reason": payload.get("reason"),
-                    "responsibilities": payload.get("responsibilities"),
-                }
-                agent_state["role"] = role_info
-                if agent_id == "primary":
-                    self._current_role_id = role_id
-                    self.memory.set("agent_active_role", role_info)
-            elif kind == "perception" and isinstance(payload, dict):
-                self._ingest_perception_snapshot(payload, source="agent-event")
-
-            self._shared_agents[agent_id] = agent_state
-
-        self.memory.set("multi_agent", self._shared_agents)
+        role_id = str(role_info.get("id", "generalist") or "generalist")
+        self._current_role_id = role_id
+        primary_state = self._shared_agents.setdefault("primary", {})
+        primary_state["role"] = role_info
+        self._shared_agents["primary"] = primary_state
+        self.memory.set("agent_active_role", role_info)
 
     def request_role_switch(self, role_id: str, *, reason: Optional[str] = None) -> None:
         """LangGraph ノードからの役割切替要求をキューへ記録する。"""
