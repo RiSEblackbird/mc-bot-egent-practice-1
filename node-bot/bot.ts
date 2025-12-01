@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { WebSocketServer, WebSocket, RawData } from 'ws';
+import { WebSocket } from 'ws';
 import { loadBotRuntimeConfig } from './runtime/config.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 import {
@@ -22,7 +22,9 @@ import {
   createInitialAgentRoleState,
   resolveAgentRole,
 } from './runtime/roles.js';
-import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetry.js';
+import { startCommandServer } from './runtime/server.js';
+import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
+import type { AgentBridgeSessionState, AgentEventEnvelope, CommandPayload, CommandResponse, MultiAgentEventPayload } from './runtime/types.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
 const { pathfinder, Movements, goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
@@ -84,50 +86,6 @@ const reconnectCounter = telemetry.reconnectCounter;
 const directiveCounter = telemetry.directiveCounter;
 const perceptionSnapshotHistogram = telemetry.perceptionSnapshotDurationMs;
 const perceptionErrorCounter = telemetry.perceptionErrorCounter;
-
-// ---- 型定義 ----
-// 受信するコマンド種別のユニオン。追加実装時はここを拡張する。
-type CommandType =
-  | 'chat'
-  | 'moveTo'
-  | 'equipItem'
-  | 'gatherStatus'
-  | 'gatherVptObservation'
-  | 'mineOre'
-  | 'setAgentRole'
-  | 'registerSkill'
-  | 'invokeSkill'
-  | 'skillExplore'
-  | 'playVptActions';
-
-// WebSocket で受信するメッセージの基本形。
-interface CommandPayload {
-  type: CommandType;
-  args: Record<string, unknown>;
-  meta?: Record<string, unknown>;
-}
-
-// 成功・失敗を Python 側へ返すためのレスポンス型。
-interface CommandResponse {
-  ok: boolean;
-  error?: string;
-  data?: unknown;
-}
-
-interface MultiAgentEventPayload {
-  channel: 'multi-agent';
-  event: 'roleUpdate' | 'position' | 'status' | 'perception';
-  agentId: string;
-  timestamp: number;
-  payload: Record<string, unknown>;
-}
-
-interface AgentEventEnvelope {
-  type: 'agentEvent';
-  args: { event?: MultiAgentEventPayload; events?: MultiAgentEventPayload[] };
-}
-
-type AgentBridgeSessionState = 'disconnected' | 'connecting' | 'connected';
 
 type GatherStatusKind = 'position' | 'inventory' | 'general' | 'environment';
 
@@ -1033,68 +991,7 @@ function getActiveBot(): Bot | null {
   return bot;
 }
 
-// ---- WebSocket サーバ（Python -> Node） ----
-// Docker ブリッジ越しの Python エージェントが接続できるよう、host/port を明示的に指定する。
-const wss = new WebSocketServer({ host: WS_HOST, port: WS_PORT });
-console.log(`[WS] listening on ws://${WS_HOST}:${WS_PORT}`);
-
-// ---- WebSocket コマンド処理 ----
-// 1 接続につき 1 コマンドというシンプル設計。必要に応じて永続接続へ拡張予定。
-wss.on('connection', (ws: WebSocket, request) => {
-  const clientId = randomUUID();
-  const remoteAddress = `${request.socket.remoteAddress ?? 'unknown'}:${request.socket.remotePort ?? 'unknown'}`;
-
-  console.log(`[WS] connection opened id=${clientId} from ${remoteAddress}`);
-
-  ws.on('message', async (raw) => {
-    const rawText = raw.toString();
-    // OpenTelemetry: 受信した単発コマンドの処理時間と結果を 1 span に集約して計測する。
-    try {
-      await runWithSpan(
-        tracer,
-        'websocket.message',
-        {
-          'ws.client_id': clientId,
-          'ws.remote_address': remoteAddress,
-          'ws.payload_length': rawText.length,
-        },
-        async (span) => {
-          console.log(`[WS] (${clientId}) received payload: ${rawText}`);
-          const response = await handleIncomingMessage(raw);
-          span.setAttribute('ws.response_ok', response.ok);
-          if (!response.ok) {
-            span.setStatus({ code: SpanStatusCode.ERROR, message: response.error ?? 'WS command failed' });
-          }
-          console.log(`[WS] (${clientId}) sending response: ${JSON.stringify(response)}`);
-          ws.send(JSON.stringify(response));
-        },
-      );
-    } catch (error) {
-      console.error('[WS] failed to process message span', error);
-    }
-  });
-
-  ws.on('close', (code, reason) => {
-    const readableReason = reason.toString() || 'no reason';
-    console.log(`[WS] connection closed id=${clientId} code=${code} reason=${readableReason}`);
-  });
-
-  ws.on('error', (error) => {
-    console.error(`[WS] connection error id=${clientId}`, error);
-  });
-});
-
-// ---- コマンド処理関数 ----
-// 受信したデータをバリデーションし、対応するアクションを実行する。
-async function handleIncomingMessage(raw: RawData): Promise<CommandResponse> {
-  try {
-    const payload = JSON.parse(raw.toString()) as CommandPayload;
-    return await executeCommand(payload);
-  } catch (error) {
-    console.error('[WS] invalid payload', error);
-    return { ok: false, error: 'Invalid payload format' };
-  }
-}
+startCommandServer({ host: WS_HOST, port: WS_PORT }, { tracer, executeCommand });
 
 // ---- コマンド実行関数 ----
 // 将来的にコマンド種別が増えても見通しよく拡張できるよう、switch 文で分岐させる。
