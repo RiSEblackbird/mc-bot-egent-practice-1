@@ -49,6 +49,7 @@ from planner import (
 from skills import SkillMatch, SkillNode
 from utils import ThoughtActionObservationTracer, log_structured_event, setup_logger
 from runtime.action_graph import ActionGraph, ActionTaskRule, ChatTask
+from runtime.chat_queue import ChatQueue
 from runtime.inventory_sync import InventorySynchronizer, summarize_inventory_status
 from runtime.reflection_prompt import build_reflection_prompt
 from runtime.minedojo import MineDojoSelfDialogueExecutor
@@ -159,13 +160,18 @@ class AgentOrchestrator:
             default_tags=langsmith_cfg.tags,
             enabled=langsmith_cfg.enabled,
         )
-        # 混雑時の背圧を明示的に制御するため、設定値に応じてキュー上限を固定する。
-        self.queue: asyncio.Queue[ChatTask] = asyncio.Queue(
-            maxsize=self.config.queue_max_size
-        )
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
         self.default_move_target = self.config.default_move_target
         self.logger = setup_logger("agent.orchestrator")
+        # チャットキューを専用クラスへ委譲し、プラン実行やチャット応答用コールバックを依存注入する。
+        self.chat_queue = ChatQueue(
+            process_task=self._process_chat,
+            say=self.actions.say,
+            queue_max_size=self.config.queue_max_size,
+            task_timeout_seconds=self.config.worker_task_timeout_seconds,
+            timeout_retry_limit=self._MAX_TASK_TIMEOUT_RETRY,
+            logger=self.logger,
+        )
         # Mineflayer インベントリ取得の実装を差し替えやすくするため、依存注入で同期クラスを保持する。
         self.inventory_sync = inventory_sync or InventorySynchronizer(
             summarizer=summarize_inventory_status
@@ -206,81 +212,14 @@ class AgentOrchestrator:
         self._hybrid_handler = HybridDirectiveHandler(self)
 
     async def enqueue_chat(self, username: str, message: str) -> None:
-        """WebSocket から受け取ったチャットをワーカーに積む。"""
+        """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""
 
-        task = ChatTask(username=username, message=message)
-        # 直近の指示を優先するため、キュー満杯時は最古のタスクを破棄して新規指示の受付を確保する。
-        if self.queue.maxsize > 0 and self.queue.qsize() >= self.queue.maxsize:
-            await self._handle_queue_overflow(task)
-        await self.queue.put(task)
-        self.logger.info(
-            "chat task enqueued username=%s message=%s queue_size=%d",
-            username,
-            message,
-            self.queue.qsize(),
-        )
+        await self.chat_queue.enqueue_chat(username, message)
 
     async def worker(self) -> None:
-        """チャットキューを逐次処理するバックグラウンドタスク。"""
+        """チャットキューを逐次処理するバックグラウンドタスクの委譲。"""
 
-        while True:
-            queue_before = self.queue.qsize()
-            self.logger.info(
-                "worker awaiting task queue_size_before_get=%d", queue_before
-            )
-            task = await self.queue.get()
-            try:
-                started_at = time.perf_counter()
-                await asyncio.wait_for(
-                    self._process_chat(task),
-                    timeout=self.config.worker_task_timeout_seconds,
-                )
-                elapsed = time.perf_counter() - started_at
-                self.logger.info(
-                    "worker processed username=%s duration=%.3fs remaining_queue=%d",
-                    task.username,
-                    elapsed,
-                    self.queue.qsize(),
-                )
-            except asyncio.TimeoutError:
-                elapsed = time.perf_counter() - started_at
-                log_structured_event(
-                    self.logger,
-                    "chat task timed out; re-queuing or dropping per retry limit",
-                    level=logging.WARNING,
-                    event_level="warning",
-                    context={
-                        "username": task.username,
-                        "duration_sec": round(elapsed, 3),
-                        "timeout_limit_sec": self.config.worker_task_timeout_seconds,
-                        "retry_count": task.retry_count,
-                        "retry_limit": self._MAX_TASK_TIMEOUT_RETRY,
-                    },
-                    exc_info=True,
-                )
-                if task.retry_count < self._MAX_TASK_TIMEOUT_RETRY:
-                    task.retry_count += 1
-                    if self.queue.maxsize > 0 and self.queue.qsize() >= self.queue.maxsize:
-                        await self._handle_queue_overflow(task)
-                    await self.queue.put(task)
-                    self.logger.warning(
-                        "chat task timeout requeued username=%s retry=%d",
-                        task.username,
-                        task.retry_count,
-                    )
-                else:
-                    await self.actions.say(
-                        "処理が長時間停止したため、この指示をスキップしました。最新の指示を優先します。"
-                    )
-                    self.logger.error(
-                        "chat task timeout dropped username=%s retry_limit=%d",
-                        task.username,
-                        self._MAX_TASK_TIMEOUT_RETRY,
-                    )
-            except Exception:
-                self.logger.exception("failed to process chat task username=%s", task.username)
-            finally:
-                self.queue.task_done()
+        await self.chat_queue.worker()
 
     async def start_bridge_event_listener(self) -> None:
         """AgentBridge のイベントストリーム購読タスクを起動する。"""
@@ -315,34 +254,6 @@ class AgentOrchestrator:
             with contextlib.suppress(Exception):
                 await task
         self._bridge_event_tasks.clear()
-
-    async def _handle_queue_overflow(self, incoming: ChatTask) -> None:
-        """混雑時に最古のタスクを破棄し、最新チャットの受け付けを保証する。"""
-
-        dropped: Optional[ChatTask] = None
-        try:
-            dropped = self.queue.get_nowait()
-            # get() で取り出した分を完了扱いにして、未完了カウンタの不整合を防ぐ。
-            self.queue.task_done()
-        except asyncio.QueueEmpty:
-            dropped = None
-
-        log_structured_event(
-            self.logger,
-            "chat queue overflow detected; dropping oldest task to prioritize latest instruction",
-            level=logging.WARNING,
-            event_level="warning",
-            context={
-                "policy": "drop_oldest",
-                "queue_size": self.queue.qsize(),
-                "queue_max_size": self.queue.maxsize,
-                "incoming_username": incoming.username,
-                "dropped_username": getattr(dropped, "username", None),
-            },
-        )
-        await self.actions.say(
-            "処理が混雑しているため、古い指示をスキップし最新の指示を優先します。"
-        )
 
     async def _bridge_event_pump(self) -> None:
         """SSE ストリームからのイベントをキューへ積むバックグラウンドタスク。"""
@@ -2830,7 +2741,7 @@ class AgentOrchestrator:
 
         try:
             context = self._build_context_snapshot()
-            context.update({"queue_backlog": self.queue.qsize()})
+            context.update({"queue_backlog": self.chat_queue.backlog_size})
             llm_message = await compose_barrier_notification(step, reason, context)
             if llm_message:
                 self.logger.info(
