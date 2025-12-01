@@ -53,6 +53,14 @@ from runtime.inventory_sync import InventorySynchronizer, summarize_inventory_st
 from runtime.reflection_prompt import build_reflection_prompt
 from runtime.minedojo import MineDojoSelfDialogueExecutor
 from runtime.hybrid_directive import HybridDirectiveHandler, HybridDirectivePayload
+from runtime.rules import (
+    ACTION_TASK_RULES,
+    COORD_PATTERNS,
+    DETECTION_TASK_KEYWORDS,
+    EQUIP_KEYWORD_RULES,
+    ORE_PICKAXE_REQUIREMENTS,
+    PICKAXE_TIER_BY_NAME,
+)
 
 logger = setup_logger("agent")
 
@@ -95,147 +103,8 @@ class AgentOrchestrator:
     # 埋め続けると新規指示を受け付けられなくなるため、再計画と同じ深さで早期開放する。
     _MAX_TASK_TIMEOUT_RETRY = _MAX_REPLAN_DEPTH
 
-    # Mineflayer へ渡す座標はプレイヤーの指示の表記揺れが多いため、複数の正規表現
-    # を用意して柔軟に抽出する。スラッシュ区切り（-36 / 73 / -66）や全角スラッシュ、
-    # カンマ区切り、XYZ: -36 / 73 / -66 などを一括で処理できるようにしている。
-    # プレイヤーは座標を多彩な表記で共有するため、ここでは代表的な揺れを広くカバー
-    # する正規表現を複数用意する。スラッシュ／カンマ区切りに加え、XYZ ラベル付き
-    # 表記や波括弧を伴う書き方も解析できるようにし、座標の再確認を最小化する。
-    _COORD_PATTERNS = (
-        re.compile(r"(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)"),
-        re.compile(
-            r"XYZ[:：]?\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)\s*(?:[,/]|／)\s*(-?\d+)"
-        ),
-        re.compile(
-            r"X\s*[:＝=]?\s*(-?\d+)[^\d-]+Y\s*[:＝=]?\s*(-?\d+)[^\d-]+Z\s*[:＝=]?\s*(-?\d+)",
-            re.IGNORECASE,
-        ),
-    )
-    # 行動系タスクをカテゴリごとに整理し、未実装アクションでも丁寧に扱えるようにする。
-    # keywords は分類、hints は移動継続など暗黙の補助に利用する。
-    _ACTION_TASK_RULES: Dict[str, ActionTaskRule] = {
-        "move": ActionTaskRule(
-            keywords=(
-                "移動",
-                "向かう",
-                "歩く",
-                "進む",
-                "到達",
-                "到着",
-                "目指す",
-            ),
-            hints=(
-                "段差",
-                "足場",
-                "はしご",
-                "登",
-                "降",
-                "経路",
-                "通路",
-                "迂回",
-                "高さ",
-            ),
-            label="指定地点への移動",
-            implemented=True,
-            priority=15,
-        ),
-        "mine": ActionTaskRule(
-            keywords=(
-                "採掘",
-                "採鉱",
-                "鉱石",
-                "掘る",
-                "ブランチ",
-            ),
-            label="採掘作業",
-            priority=10,
-        ),
-        "farm": ActionTaskRule(
-            keywords=(
-                "収穫",
-                "畑",
-                "農",
-                "植え",
-                "耕す",
-            ),
-            label="農作業",
-        ),
-        "craft": ActionTaskRule(
-            keywords=(
-                "クラフト",
-                "作成",
-                "作る",
-                "製作",
-            ),
-            label="クラフト処理",
-        ),
-        "follow": ActionTaskRule(
-            keywords=(
-                "ついて",
-                "追尾",
-                "同行",
-                "付いて",
-            ),
-            label="追従行動",
-        ),
-        "build": ActionTaskRule(
-            keywords=(
-                "建て",
-                "建築",
-                "建造",
-                "組み立て",
-            ),
-            label="建築作業",
-        ),
-        "fight": ActionTaskRule(
-            keywords=(
-                "戦う",
-                "迎撃",
-                "戦闘",
-                "倒す",
-                "守る",
-            ),
-            label="戦闘行動",
-        ),
-        "equip": ActionTaskRule(
-            keywords=(
-                "装備",
-                "持ち替え",
-                "手に持つ",
-                "構える",
-            ),
-            label="装備持ち替え",
-            implemented=True,
-            priority=20,
-        ),
-        "deliver": ActionTaskRule(
-            keywords=(
-                "渡す",
-                "届ける",
-                "受け渡し",
-                "納品",
-            ),
-            label="アイテム受け渡し",
-        ),
-        "storage": ActionTaskRule(
-            keywords=(
-                "チェスト",
-                "収納",
-                "保管",
-                "しまう",
-            ),
-            label="保管操作",
-        ),
-        "gather": ActionTaskRule(
-            keywords=(
-                "集め",
-                "確保",
-                "調達",
-                "集める",
-            ),
-            label="素材収集",
-        ),
-    }
+    # 座標抽出パターンは runtime.rules.COORD_PATTERNS で一元管理する。
+    # 行動カテゴリのルールセットは runtime.rules.ACTION_TASK_RULES として共有する。
     # MineDojo のミッション ID へ分類カテゴリをマッピングする。カテゴリ追加時に
     # 参照することで、デモ取得の影響範囲を明示できるようにしている。
     _MINEDOJO_MISSION_BINDINGS: Dict[str, str] = {
@@ -243,31 +112,7 @@ class AgentOrchestrator:
         "farm": "harvest_wheat",
         "build": "build_simple_house",
     }
-    # 現在位置や所持品などを確認してチャットへ報告するだけのステップは、
-    # 移動や採取といったアクションとは別系統の「検出報告タスク」として扱い、
-    # 進捗報告のテンプレートに流れ込まないように専用の分類を用意する。
-    _DETECTION_TASK_KEYWORDS = {
-        "player_position": (
-            "現在位置",
-            "現在地",
-            "座標",
-            "座標を報告",
-            "XYZ",
-        ),
-        "inventory_status": (
-            "所持品",
-            "インベントリ",
-            "持ち物",
-            "手持ち",
-            "アイテム一覧",
-        ),
-        "general_status": (
-            "状態を報告",
-            "状況を報告",
-            "体力の状況",
-            "満腹度",
-        ),
-    }
+    # 検出系タスクのキーワード分類は runtime.rules.DETECTION_TASK_KEYWORDS を参照する。
     _DETECTION_LABELS = {
         "player_position": "現在位置の報告",
         "inventory_status": "所持品の確認",
@@ -281,42 +126,8 @@ class AgentOrchestrator:
         "powder_snow",
         "campfire",
     )
-    # 装備ステップ用のキーワード→装備対象の推測マップ。右手・左手のヒントも同時に解析する。
-    _EQUIP_KEYWORD_RULES = (
-        (("ツルハシ", "ピッケル", "pickaxe"), {"tool_type": "pickaxe"}),
-        (("剣", "ソード", "sword"), {"tool_type": "sword"}),
-        (("斧", "おの", "axe"), {"tool_type": "axe"}),
-        (("シャベル", "スコップ", "shovel", "spade"), {"tool_type": "shovel"}),
-        (("クワ", "鍬", "hoe"), {"tool_type": "hoe"}),
-        (("盾", "シールド", "shield"), {"tool_type": "shield"}),
-        (("松明", "たいまつ", "torch"), {"item_name": "torch"}),
-    )
-    # 採掘に必要なツルハシのランクと、対応するアイテム名の評価指標。
-    # Mineflayer が返すアイテム名（name）は vanilla の ID に準拠するため、
-    # それぞれに序列を割り当てて比較する。木≒金 < 石 < 鉄 < ダイヤ < ネザライト。
-    _PICKAXE_TIER_BY_NAME = {
-        "wooden_pickaxe": 1,
-        "golden_pickaxe": 1,
-        "stone_pickaxe": 2,
-        "iron_pickaxe": 3,
-        "diamond_pickaxe": 4,
-        "netherite_pickaxe": 5,
-    }
-    # 各鉱石がドロップするために必要な最小ツルハシランクを定義する。
-    _ORE_PICKAXE_REQUIREMENTS = {
-        "diamond_ore": 3,
-        "deepslate_diamond_ore": 3,
-        "redstone_ore": 3,
-        "deepslate_redstone_ore": 3,
-        "gold_ore": 3,
-        "deepslate_gold_ore": 3,
-        "lapis_ore": 2,
-        "deepslate_lapis_ore": 2,
-        "iron_ore": 2,
-        "deepslate_iron_ore": 2,
-        "coal_ore": 1,
-        "deepslate_coal_ore": 1,
-    }
+    # 装備ステップのキーワード解析ルールは runtime.rules.EQUIP_KEYWORD_RULES を利用する。
+    # 採掘に必要なツルハシランクの対応表は runtime.rules へ切り出して共有する。
 
     def __init__(
         self,
@@ -1562,7 +1373,7 @@ class AgentOrchestrator:
                     continue
 
             detection_category = None
-            if directive and directive.category in self._DETECTION_TASK_KEYWORDS:
+            if directive and directive.category in DETECTION_TASK_KEYWORDS:
                 detection_category = directive.category
             if not detection_category:
                 detection_category = self._classify_detection_task(normalized)
@@ -1726,7 +1537,7 @@ class AgentOrchestrator:
                 continue
 
             action_category = None
-            if directive and directive.category in self._ACTION_TASK_RULES:
+            if directive and directive.category in ACTION_TASK_RULES:
                 action_category = directive.category
             if not action_category:
                 action_category = self._classify_action_task(normalized)
@@ -2071,20 +1882,20 @@ class AgentOrchestrator:
     def _is_move_step(self, text: str) -> bool:
         """ステップが明示的に移動を要求しているかを判定する。"""
 
-        rule = self._ACTION_TASK_RULES.get("move")
+        rule = ACTION_TASK_RULES.get("move")
         return bool(rule and self._match_keywords(text, rule.keywords))
 
     def _should_continue_move(self, text: str) -> bool:
         """段差調整など移動継続で吸収できるステップかどうかを推測する。"""
 
-        rule = self._ACTION_TASK_RULES.get("move")
+        rule = ACTION_TASK_RULES.get("move")
         return bool(rule and self._match_keywords(text, rule.hints))
 
     def _classify_detection_task(self, text: str) -> Optional[str]:
         """検出報告タスク（位置・所持品などの確認系ステップ）を分類する。"""
 
         normalized = text.replace(" ", "").replace("　", "")
-        for category, keywords in self._DETECTION_TASK_KEYWORDS.items():
+        for category, keywords in DETECTION_TASK_KEYWORDS.items():
             for keyword in keywords:
                 if keyword in normalized:
                     return category
@@ -2100,7 +1911,7 @@ class AgentOrchestrator:
         elif "右手" in text:
             destination = "hand"
 
-        for keywords, mapping in self._EQUIP_KEYWORD_RULES:
+        for keywords, mapping in EQUIP_KEYWORD_RULES:
             if any(keyword and keyword in text for keyword in keywords):
                 result: Dict[str, str] = {"destination": destination}
                 result.update(mapping)
@@ -2322,7 +2133,7 @@ class AgentOrchestrator:
         best_category: Optional[str] = None
         best_score: Optional[Tuple[int, int, int, int]] = None
 
-        for order_index, (category, rule) in enumerate(self._ACTION_TASK_RULES.items()):
+        for order_index, (category, rule) in enumerate(ACTION_TASK_RULES.items()):
             # 各カテゴリ候補を優先度→一致キーワード数→キーワード長→定義順で採点する。
             matched_keywords = set()
             longest_keyword = 0
@@ -2671,7 +2482,7 @@ class AgentOrchestrator:
     ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
         """行動タスクを処理し、失敗時は理由を添えて返す。"""
 
-        rule = self._ACTION_TASK_RULES.get(category)
+        rule = ACTION_TASK_RULES.get(category)
         if not rule:
             backlog.append({"category": category, "step": step, "label": category})
             self.logger.warning(
@@ -2717,7 +2528,7 @@ class AgentOrchestrator:
         # 対象鉱石の中でもっとも高い要求ランクを算出する。
         required_tier = 1
         for ore in ore_names:
-            tier = self._ORE_PICKAXE_REQUIREMENTS.get(ore, 1)
+            tier = ORE_PICKAXE_REQUIREMENTS.get(ore, 1)
             required_tier = max(required_tier, tier)
 
         best_candidate: Optional[Dict[str, Any]] = None
@@ -2730,7 +2541,7 @@ class AgentOrchestrator:
             if not isinstance(name, str):
                 continue
 
-            tier = self._PICKAXE_TIER_BY_NAME.get(name)
+            tier = PICKAXE_TIER_BY_NAME.get(name)
             if tier is None or tier < required_tier:
                 continue
 
@@ -2960,7 +2771,7 @@ class AgentOrchestrator:
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
 
-        for pattern in self._COORD_PATTERNS:
+        for pattern in COORD_PATTERNS:
             match = pattern.search(text)
             if match:
                 x, y, z = (int(match.group(i)) for i in range(1, 4))
