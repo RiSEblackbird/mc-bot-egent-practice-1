@@ -197,9 +197,9 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 
 - `bridge-plugin/src/main/java/com/example/bridge/AgentBridgePlugin.java` で Paper イベントリスナー（WorldGuard／CoreProtect／液体検知）を登録し、`BridgeEventHub` へ `region_hazard` / `job_state` / `world_alert` などの `BridgeEvent` を publish する。
 - HTTP 層では既存の SSE `/v1/events/stream` を強化しつつ、新たに WebSocket `/v1/events/ws` を追加して LangGraph ノードが pull せずともリアルタイムに push を受け取れるようにする。`bridge-plugin/src/main/java/com/example/bridge/http/BridgeHttpServer.java` の `EventStreamHandler` を共通のイベントマルチプレクサに差し替える想定。
-- Python 側では `BridgeClient.consume_event_stream()` と `agent.py::_handle_bridge_event()` を使い回し、チャットレス運用でも `BridgeEvent` が `bridge_event_reports` → `detection_reports` に自動でマージされる。これにより「今どこを掘れるか」を毎回ユーザーが質問する必要がなくなる。
+- Python 側では `BridgeClient.consume_event_stream()` と `python/bridge_role_handler.py::BridgeRoleHandler.handle_bridge_event()` を使い回し、チャットレス運用でも `BridgeEvent` が `bridge_event_reports` → `detection_reports` に自動でマージされる。これにより「今どこを掘れるか」を毎回ユーザーが質問する必要がなくなる。
 - 2025/11 アップデートでは `BridgeEvent` に `attributes` フィールドを追加し、ジョブ ID・危険カテゴリ・WorldGuard リージョン・液体/空洞カウントを SSE 上で共有できるようになった。Python 側はこれを `perception_summary` と統合し、周辺状況を 1 行で LLM へ渡す。
-- Python エージェントでは `BridgeClient.consume_event_stream()` → `Agent._handle_bridge_event()` → `Agent._ingest_perception_snapshot()` の経路で `perception_history_limit` 件の `perception_snapshots` / `bridge_event_reports` を更新し、LangGraph プロンプトや `Memory` で即座に再利用できる。
+- Python エージェントでは `BridgeClient.consume_event_stream()` → `BridgeRoleHandler.handle_bridge_event()` → `PerceptionCoordinator.ingest_perception_snapshot()` の経路で `perception_history_limit` 件の `perception_snapshots` / `bridge_event_reports` を更新し、LangGraph プロンプトや `Memory` で即座に再利用できる。
 
 ---
 
@@ -236,7 +236,7 @@ LangGraph / Mineflayer / MineDojo / AgentBridge（Paper）/ OpenAI / blazity CLI
 
 ### 6.1 認知レイヤー（LangGraph × Mineflayer × Paper × Minecraft）
 
-- `python/agent.py` の `_summarize_perception_snapshot` は液体・敵対モブ・照度などを 1 行の文字列へ圧縮しており、座標系や過去イベントとの時間的な相関が LangGraph に届かないため、曖昧な自然言語指示に対して「いま危険なのか？」を推論しづらい状態です。`bridge_event_reports` も同一メモリスロットへ 10 件だけ保持しており（`_handle_bridge_event` 参照）、AgentBridge が送る Paper 側の危険アラートと Node 側の `perception` が分断されています。```893:961:python/agent.py // ...``` 
+- `python/agent.py` の `_summarize_perception_snapshot` は液体・敵対モブ・照度などを 1 行の文字列へ圧縮しており、座標系や過去イベントとの時間的な相関が LangGraph に届かないため、曖昧な自然言語指示に対して「いま危険なのか？」を推論しづらい状態です。`bridge_event_reports` も同一メモリスロットへ 10 件だけ保持しており（`BridgeRoleHandler.handle_bridge_event()` 参照）、AgentBridge が送る Paper 側の危険アラートと Node 側の `perception` が分断されています。```893:961:python/agent.py // ...``` 
 
 ### 6.2 計画レイヤー（LangGraph × OpenAI）
 

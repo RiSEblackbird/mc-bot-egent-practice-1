@@ -10,79 +10,50 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import re
 import time
 import json
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from config import AgentConfig, load_agent_config
+from agent_bootstrap import build_agent_dependencies
+from chat_pipeline import ChatPipeline
+from bridge_role_handler import BridgeRoleHandler
+from perception_service import PerceptionCoordinator
+from agent_settings import (
+    AgentRuntimeSettings,
+    DEFAULT_AGENT_RUNTIME_SETTINGS,
+)
+from config import AgentConfig
 from services.minedojo_client import MineDojoClient
 from services.skill_repository import SkillRepository
 from actions import Actions
-from bridge_client import BridgeClient, BridgeError
-from bridge_ws import BotBridge
 from memory import Memory
 from planner import (
     ActionDirective,
     PlanArguments,
     PlanOut,
     ReActStep,
-    BarrierNotificationError,
-    BarrierNotificationTimeout,
-    compose_barrier_notification,
     plan,
 )
 from skills import SkillMatch, SkillNode
-from utils import ThoughtActionObservationTracer, log_structured_event, setup_logger
-from runtime.action_graph import ActionGraph, ActionTaskRule, ChatTask
-from runtime.chat_queue import ChatQueue
-from runtime.inventory_sync import InventorySynchronizer, summarize_inventory_status
+from utils import log_structured_event, setup_logger
+from runtime.action_graph import ActionTaskRule, ChatTask
+from runtime.inventory_sync import InventorySynchronizer
 from runtime.reflection_prompt import build_reflection_prompt
-from runtime.hybrid_directive import HybridDirectiveHandler, HybridDirectivePayload
-from runtime.bridge_events import BridgeEventHooks, BridgeEventListener
+from runtime.hybrid_directive import HybridDirectivePayload
 from runtime.rules import (
     ACTION_TASK_RULES,
     COORD_PATTERNS,
     DETECTION_TASK_KEYWORDS,
     EQUIP_KEYWORD_RULES,
-    ORE_PICKAXE_REQUIREMENTS,
-    PICKAXE_TIER_BY_NAME,
 )
-from runtime.status_service import StatusService
-from runtime.minedojo_handler import MineDojoHandler
 
 logger = setup_logger("agent")
 
 # --- 設定の読み込み --------------------------------------------------------
 
-_CONFIG_RESULT = load_agent_config()
-AGENT_CONFIG: AgentConfig = _CONFIG_RESULT.config
-WS_URL = AGENT_CONFIG.ws_url
-AGENT_WS_HOST = AGENT_CONFIG.agent_host
-AGENT_WS_PORT = AGENT_CONFIG.agent_port
-DEFAULT_MOVE_TARGET_RAW = AGENT_CONFIG.default_move_target_raw
-DEFAULT_MOVE_TARGET = AGENT_CONFIG.default_move_target
-SKILL_LIBRARY_PATH = AGENT_CONFIG.skill_library_path
-STATUS_REFRESH_TIMEOUT_SECONDS = float(os.getenv("STATUS_REFRESH_TIMEOUT_SECONDS", "3.0"))
-STATUS_REFRESH_RETRY = int(os.getenv("STATUS_REFRESH_RETRY", "2"))
-STATUS_REFRESH_BACKOFF_SECONDS = float(os.getenv("STATUS_REFRESH_BACKOFF_SECONDS", "0.5"))
-BLOCK_EVAL_RADIUS = int(os.getenv("BLOCK_EVAL_RADIUS", "3"))
-BLOCK_EVAL_TIMEOUT_SECONDS = float(os.getenv("BLOCK_EVAL_TIMEOUT_SECONDS", "3.0"))
-BLOCK_EVAL_HEIGHT_DELTA = int(os.getenv("BLOCK_EVAL_HEIGHT_DELTA", "1"))
-STRUCTURED_EVENT_HISTORY_LIMIT = int(os.getenv("STRUCTURED_EVENT_HISTORY_LIMIT", "10"))
-PERCEPTION_HISTORY_LIMIT = int(os.getenv("PERCEPTION_HISTORY_LIMIT", "5"))
-LOW_FOOD_THRESHOLD = int(os.getenv("LOW_FOOD_THRESHOLD", "6"))
-
-logger.info(
-    "Agent configuration loaded (ws_url=%s, bind=%s:%s, default_target=%s)",
-    WS_URL,
-    AGENT_WS_HOST,
-    AGENT_WS_PORT,
-    DEFAULT_MOVE_TARGET,
-)
+RUNTIME_SETTINGS = DEFAULT_AGENT_RUNTIME_SETTINGS
+AGENT_CONFIG: AgentConfig = RUNTIME_SETTINGS.config
 
 
 class AgentOrchestrator:
@@ -121,96 +92,44 @@ class AgentOrchestrator:
         *,
         skill_repository: SkillRepository | None = None,
         config: AgentConfig | None = None,
+        runtime_settings: AgentRuntimeSettings | None = None,
         minedojo_client: MineDojoClient | None = None,
         inventory_sync: InventorySynchronizer | None = None,
     ) -> None:
         self.actions = actions
         self.memory = memory
-        repo = skill_repository
-        if repo is None:
-            seed_path = Path(__file__).resolve().parent / "skills" / "seed_library.json"
-            repo = SkillRepository(
-                SKILL_LIBRARY_PATH,
-                seed_path=str(seed_path),
-            )
-        # Voyager 互換のスキルライブラリを共有し、タスク実行前に再利用候補を即座に取得する。
-        self.skill_repository = repo
-        self.config = config or AGENT_CONFIG
-        langsmith_cfg = self.config.langsmith
-        self._tracer = ThoughtActionObservationTracer(
-            api_url=langsmith_cfg.api_url,
-            api_key=langsmith_cfg.api_key,
-            project=langsmith_cfg.project,
-            default_tags=langsmith_cfg.tags,
-            enabled=langsmith_cfg.enabled,
-        )
+        self.settings = runtime_settings or RUNTIME_SETTINGS
+        self.config = config or self.settings.config
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
         self.default_move_target = self.config.default_move_target
         self.logger = setup_logger("agent.orchestrator")
-        # チャットキューを専用クラスへ委譲し、プラン実行やチャット応答用コールバックを依存注入する。
-        self.chat_queue = ChatQueue(
-            process_task=self._process_chat,
-            say=self._safe_say,
-            queue_max_size=self.config.queue_max_size,
-            task_timeout_seconds=self.config.worker_task_timeout_seconds,
-            timeout_retry_limit=self._MAX_TASK_TIMEOUT_RETRY,
-            logger=self.logger,
-        )
-        # Mineflayer インベントリ取得の実装を差し替えやすくするため、依存注入で同期クラスを保持する。
-        self.inventory_sync = inventory_sync or InventorySynchronizer(
-            summarizer=summarize_inventory_status
-        )
         # LangGraph 側での意思決定に活用する閾値や履歴上限をまとめて保持する。
-        self.low_food_threshold = LOW_FOOD_THRESHOLD
-        self.structured_event_history_limit = STRUCTURED_EVENT_HISTORY_LIMIT
-        self.perception_history_limit = PERCEPTION_HISTORY_LIMIT
-        # 状態取得の実装を専用サービスへ委譲し、要約や履歴更新を集約する。
-        self.status_service = StatusService(
+        self.low_food_threshold = self.settings.low_food_threshold
+        self.structured_event_history_limit = self.settings.structured_event_history_limit
+        self.perception_history_limit = self.settings.perception_history_limit
+        dependencies = build_agent_dependencies(
+            owner=self,
             actions=self.actions,
             memory=self.memory,
-            inventory_sync=self.inventory_sync,
-            logger=self.logger,
-            status_timeout_seconds=STATUS_REFRESH_TIMEOUT_SECONDS,
-            status_retry=STATUS_REFRESH_RETRY,
-            status_backoff_seconds=STATUS_REFRESH_BACKOFF_SECONDS,
-            structured_event_history_limit=self.structured_event_history_limit,
-            perception_history_limit=self.perception_history_limit,
-        )
-        # LangGraph ベースのタスクハンドラを初期化して、カテゴリ別モジュールを明確化する。
-        self._action_graph = ActionGraph(self)
-        self._current_role_id: str = "generalist"
-        self._pending_role: Optional[Tuple[str, Optional[str]]] = None
-        self._shared_agents: Dict[str, Dict[str, Any]] = {}
-        # MineDojo クライアントとハンドラーを初期化し、ミッション取得や自己対話を委譲する。
-        self.minedojo_client = minedojo_client or MineDojoClient(self.config.minedojo)
-        self.minedojo_handler = MineDojoHandler(
-            actions=self.actions,
-            memory=self.memory,
-            skill_repository=self.skill_repository,
-            minedojo_client=self.minedojo_client,
-            tracer=self._tracer,
             config=self.config,
+            settings=self.settings,
             logger=self.logger,
+            skill_repository=skill_repository,
+            inventory_sync=inventory_sync,
+            minedojo_client=minedojo_client,
         )
-        # 周辺環境の安全性を評価するため、Bridge HTTP クライアントを初期化しておく。
-        self._bridge_client = BridgeClient()
-        # Bridge イベント購読は専用リスナーへ委譲し、メモリ更新やロール切替のみを
-        # コールバックで注入する。インフラ層の詳細を切り離すことでテスト容易性を高める。
-        bridge_hooks = BridgeEventHooks(
-            set_memory=self.memory.set,
-            request_role_switch=self.request_role_switch,
-            format_position=self._format_position_payload,
-            ingest_perception=self.status_service.ingest_perception_snapshot,
-            apply_primary_role=self._apply_primary_role_update,
-        )
-        self._bridge_events = BridgeEventListener(
-            bridge_client=self._bridge_client,
-            hooks=bridge_hooks,
-            shared_agents=self._shared_agents,
-            logger=self.logger,
-        )
-        # hybrid 指示の解析・実行を専用クラスへ委譲して、オーケストレーターの責務を明確化する。
-        self._hybrid_handler = HybridDirectiveHandler(self)
+        self.skill_repository = dependencies.skill_repository
+        self._tracer = dependencies.tracer
+        self.inventory_sync = dependencies.inventory_sync
+        self.status_service = dependencies.status_service
+        self._action_graph = dependencies.action_graph
+        self.chat_queue = dependencies.chat_queue
+        self.minedojo_client = dependencies.minedojo_client
+        self.minedojo_handler = dependencies.minedojo_handler
+        self._hybrid_handler = dependencies.hybrid_handler
+        self._chat_pipeline = ChatPipeline(self)
+        self._bridge_roles = BridgeRoleHandler(self)
+        self._perception = PerceptionCoordinator(self)
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""
@@ -237,199 +156,61 @@ class AgentOrchestrator:
     async def start_bridge_event_listener(self) -> None:
         """AgentBridge のイベントストリーム購読タスクを起動する。"""
 
-        await self._bridge_events.start()
+        await self._bridge_roles.start_listener()
 
     async def stop_bridge_event_listener(self) -> None:
         """イベント購読タスクを停止し、スレッドセーフに後始末する。"""
 
-        await self._bridge_events.stop()
+        await self._bridge_roles.stop_listener()
 
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
 
-        await self._bridge_events.handle_agent_event(args)
-
-    def _apply_primary_role_update(self, role_info: Dict[str, Any]) -> None:
-        """Bridge イベント由来の役割情報を一次エージェントへ反映する。"""
-
-        role_id = str(role_info.get("id", "generalist") or "generalist")
-        self._current_role_id = role_id
-        primary_state = self._shared_agents.setdefault("primary", {})
-        primary_state["role"] = role_info
-        self._shared_agents["primary"] = primary_state
-        self.memory.set("agent_active_role", role_info)
+        await self._bridge_roles.handle_agent_event(args)
 
     def request_role_switch(self, role_id: str, *, reason: Optional[str] = None) -> None:
         """LangGraph ノードからの役割切替要求をキューへ記録する。"""
 
-        sanitized = (role_id or "").strip() or "generalist"
-        if sanitized == self._current_role_id:
-            return
-        self._pending_role = (sanitized, reason)
-        self.logger.info(
-            "pending role switch registered role=%s reason=%s",
-            sanitized,
-            reason,
-        )
+        self._bridge_roles.request_role_switch(role_id, reason=reason)
 
     def _consume_pending_role_switch(self) -> Optional[Tuple[str, Optional[str]]]:
-        pending = self._pending_role
-        self._pending_role = None
-        return pending
+        return self._bridge_roles.consume_pending_role_switch()
 
     @property
     def current_role(self) -> str:
-        return self._current_role_id
+        return self._bridge_roles.current_role
 
     async def _apply_role_switch(self, role_id: str, reason: Optional[str]) -> bool:
         """実際に Node 側へ役割変更コマンドを送信し、成功時は記憶を更新する。"""
 
-        if role_id == self._current_role_id:
-            return False
-
-        resp = await self.actions.set_role(role_id, reason=reason)
-        if not resp.get("ok"):
-            self.logger.warning("role switch command failed role=%s resp=%s", role_id, resp)
-            return False
-
-        label = None
-        data = resp.get("data")
-        if isinstance(data, dict):
-            label_raw = data.get("label")
-            if isinstance(label_raw, str):
-                label = label_raw
-
-        role_info = {
-            "id": role_id,
-            "label": label or role_id,
-            "reason": reason,
-        }
-        self._current_role_id = role_id
-        primary_state = self._shared_agents.setdefault("primary", {})
-        primary_state["role"] = role_info
-        self._shared_agents["primary"] = primary_state
-        self.memory.set("agent_active_role", role_info)
-        self.memory.set("multi_agent", self._shared_agents)
-        self.logger.info("role switch applied role=%s label=%s", role_id, role_info["label"])
-        return True
+        return await self._bridge_roles.apply_role_switch(role_id, reason)
 
     def _collect_recent_mineflayer_context(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Mineflayer 由来の履歴を LangGraph へ渡すためにまとめて取得する。"""
 
-        return self.status_service.collect_recent_mineflayer_context()
+        return self._perception.collect_recent_mineflayer_context()
 
     def _build_perception_snapshot(
         self, extra: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """ステータスサービス経由で perception スナップショットを生成する互換ラッパー。"""
 
-        return self.status_service.build_perception_snapshot(extra)
+        return self._perception.build_perception_snapshot(extra)
 
     def _ingest_perception_snapshot(self, snapshot: Dict[str, Any], *, source: str) -> None:
         """従来のエントリポイントを保ちながら perception ingestion をサービスへ委譲する。"""
 
-        self.status_service.ingest_perception_snapshot(snapshot, source=source)
+        self._perception.ingest_perception_snapshot(snapshot, source=source)
 
     async def _collect_block_evaluations(self) -> None:
         """Bridge から近傍ブロックの情報を収集し、危険度の概略をメモリへ保持する。"""
 
-        detail = self.memory.get("player_pos_detail") or {}
-        try:
-            x = int(detail.get("x"))
-            y = int(detail.get("y"))
-            z = int(detail.get("z"))
-        except Exception:
-            self.logger.info(
-                "skip block evaluation because player position detail is unavailable"
-            )
-            return
-
-        world = str(detail.get("dimension") or detail.get("world") or "world")
-        positions: List[Dict[str, int]] = []
-        for dx in range(-BLOCK_EVAL_RADIUS, BLOCK_EVAL_RADIUS + 1):
-            for dy in range(-BLOCK_EVAL_HEIGHT_DELTA, BLOCK_EVAL_HEIGHT_DELTA + 1):
-                for dz in range(-BLOCK_EVAL_RADIUS, BLOCK_EVAL_RADIUS + 1):
-                    positions.append({"x": x + dx, "y": y + dy, "z": z + dz})
-
-        loop = asyncio.get_running_loop()
-        try:
-            evaluations = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, lambda: self._bridge_client.bulk_eval(world, positions)
-                ),
-                timeout=BLOCK_EVAL_TIMEOUT_SECONDS,
-            )
-        except (asyncio.TimeoutError, BridgeError) as exc:
-            self.logger.warning(
-                "block evaluation failed world=%s error=%s", world, exc
-            )
-            return
-        except Exception as exc:  # pragma: no cover - 例外経路はログ検証を優先
-            self.logger.exception("unexpected error during block evaluation", exc_info=exc)
-            return
-
-        summary = self._summarize_block_evaluations(evaluations)
-        self.memory.set("block_evaluation", summary)
+        await self._perception.collect_block_evaluations()
 
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
-        failures = await self.status_service.prime_status_for_planning()
-        if failures:
-            await self._report_execution_barrier(
-                "状態取得",
-                f"{', '.join(failures)} の取得に失敗しました。Mineflayer への接続状況を確認してください。",
-            )
-        await self._collect_block_evaluations()
-        context = self.status_service.build_context_snapshot(
-            current_role_id=self._current_role_id
-        )
-        self.logger.info(
-            "creating plan for username=%s message='%s' context=%s",
-            task.username,
-            task.message,
-            context,
-        )
-
-        # 元チャットに含まれる座標を先に解析し、LLM の計画が座標を省略しても
-        # 直ちに移動へ移れるようヒントとして保持する。
-        user_hint_coords = self._extract_coordinates(task.message)
-        if user_hint_coords:
-            self.logger.info(
-                "user message provided coordinates=%s", user_hint_coords
-            )
-
-        plan_out = await plan(task.message, context)
-        self.logger.info(
-            "plan generated steps=%d plan=%s resp=%s",
-            len(plan_out.plan),
-            plan_out.plan,
-            plan_out.resp,
-        )
-        self._record_plan_summary(plan_out)
-
-        if await self.minedojo_handler.maybe_trigger_autorecovery(plan_out):
-            self.memory.set("last_chat", {"username": task.username, "message": task.message})
-            return
-
-        structured_coords = self._extract_argument_coordinates(plan_out.arguments)
-        if structured_coords:
-            self.logger.info(
-                "plan arguments provided coordinates=%s", structured_coords
-            )
-        initial_target = structured_coords or user_hint_coords
-
-        # LLM の丁寧な応答をそのままプレイヤーへ relay する。
-        if plan_out.resp:
-            self.logger.info(
-                "relaying llm response to player username=%s resp='%s'",
-                task.username,
-                plan_out.resp,
-            )
-            await self.actions.say(plan_out.resp)
-
-        await self._execute_plan(plan_out, initial_target=initial_target)
-        self.memory.set("last_chat", {"username": task.username, "message": task.message})
+        await self._chat_pipeline.run_chat_task(task)
 
     def _format_position_payload(self, payload: Dict[str, Any]) -> Optional[str]:
         """位置イベントからコンテキスト表示用の文字列を生成する。"""
@@ -1141,7 +922,7 @@ class AgentOrchestrator:
         bridge_reports = self.memory.get("bridge_event_reports", [])
         if isinstance(bridge_reports, list) and bridge_reports:
             merged_detection_reports.extend(bridge_reports[-5:])
-            failure_reason = self._augment_failure_reason_with_events(
+            failure_reason = self._bridge_roles.augment_failure_reason_with_events(
                 failure_reason, bridge_reports
             )
 
@@ -1217,7 +998,7 @@ class AgentOrchestrator:
             return
 
         context = self.status_service.build_context_snapshot(
-            current_role_id=self._current_role_id
+            current_role_id=self._bridge_roles.current_role
         )
         inventory_detail = self.memory.get("inventory_detail")
         # 所持品詳細を replan コンテキストへ含めることで、直前の装備失敗で
@@ -1440,34 +1221,6 @@ class AgentOrchestrator:
         self.logger.warning("unknown detection category encountered category=%s", category)
         return None
 
-    def _summarize_block_evaluations(
-        self, evaluations: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Bridge の評価結果を LLM へ渡しやすいフラグに変換する。"""
-
-        hazards: List[Dict[str, Any]] = []
-        liquids: List[Dict[str, Any]] = []
-        functional: List[Dict[str, Any]] = []
-        for entry in evaluations or []:
-            block_id = str(entry.get("block_id") or "").lower()
-            pos = entry.get("pos") or entry.get("position") or {}
-            marker = {"block": block_id or "unknown", "pos": pos}
-            if entry.get("is_liquid"):
-                liquids.append(marker)
-            if entry.get("near_functional"):
-                functional.append(marker)
-            if any(keyword in block_id for keyword in self._HAZARD_BLOCK_KEYWORDS):
-                hazards.append(marker)
-
-        return {
-            "has_liquid_nearby": bool(liquids),
-            "has_functional_nearby": bool(functional),
-            "has_hazard_nearby": bool(hazards),
-            "hazard_samples": hazards[:5],
-            "liquid_samples": liquids[:5],
-            "functional_samples": functional[:5],
-        }
-
     def _summarize_position_status(self, data: Dict[str, Any]) -> str:
         """Node 側から受け取った位置情報をプレイヤー向けの要約文へ整形する。"""
 
@@ -1662,123 +1415,20 @@ class AgentOrchestrator:
     ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
         """行動タスクを処理し、失敗時は理由を添えて返す。"""
 
-        rule = ACTION_TASK_RULES.get(category)
-        if not rule:
-            backlog.append({"category": category, "step": step, "label": category})
-            self.logger.warning(
-                "action category=%s missing rule so queued to backlog step='%s'",
-                category,
-                step,
-            )
-            return False, last_target_coords, None
-
-        structured_event_history, perception_history = self._collect_recent_mineflayer_context()
-        self.logger.info(
-            "delegating action category=%s step='%s' to langgraph module=%s",
+        return await self._chat_pipeline.handle_action_task(
             category,
             step,
-            rule.label or category,
-        )
-        await self.minedojo_handler.attach_context(category, step)
-        handled, updated_target, failure_detail = await self._action_graph.run(
-            category=category,
-            step=step,
             last_target_coords=last_target_coords,
             backlog=backlog,
-            rule=rule,
             explicit_coords=explicit_coords,
-            structured_event_history=structured_event_history,
-            perception_history=perception_history,
         )
-        return handled, updated_target, failure_detail
 
     def _select_pickaxe_for_targets(
         self, ore_names: Iterable[str]
     ) -> Optional[Dict[str, Any]]:
         """要求鉱石に適したツルハシが記憶済みインベントリにあるかを調べる。"""
 
-        inventory_detail = self.memory.get("inventory_detail")
-        if not isinstance(inventory_detail, dict):
-            return None
-
-        pickaxes = inventory_detail.get("pickaxes")
-        if not isinstance(pickaxes, list):
-            return None
-
-        # 対象鉱石の中でもっとも高い要求ランクを算出する。
-        required_tier = 1
-        for ore in ore_names:
-            tier = ORE_PICKAXE_REQUIREMENTS.get(ore, 1)
-            required_tier = max(required_tier, tier)
-
-        best_candidate: Optional[Dict[str, Any]] = None
-        best_tier = 0
-        for item in pickaxes:
-            if not isinstance(item, dict):
-                continue
-
-            name = item.get("name")
-            if not isinstance(name, str):
-                continue
-
-            tier = PICKAXE_TIER_BY_NAME.get(name)
-            if tier is None or tier < required_tier:
-                continue
-
-            if not self._has_sufficient_pickaxe_durability(item):
-                continue
-
-            if tier > best_tier:
-                best_candidate = item
-                best_tier = tier
-
-        return best_candidate
-
-    def _has_sufficient_pickaxe_durability(self, item: Dict[str, Any]) -> bool:
-        """ツルハシの耐久値が残っているかを柔軟に判断する。"""
-
-        remaining = self._extract_pickaxe_remaining_durability(item)
-        if remaining is None:
-            # Mineflayer から耐久値が渡されないケースでは残量不明だが、
-            # 所持している限り利用可能と判断する。
-            return True
-
-        return remaining > 0
-
-    def _extract_pickaxe_remaining_durability(
-        self, item: Dict[str, Any]
-    ) -> Optional[float]:
-        """所持ツルハシ情報から残耐久を推定して数値として返す。"""
-
-        # Node 側で直接算出された耐久値があれば最優先で利用し、
-        # 欠損時のみ古いキーへフォールバックする。
-        direct_value = item.get("durability")
-        if isinstance(direct_value, (int, float)):
-            return float(direct_value)
-
-        max_durability = item.get("maxDurability")
-        durability_used = item.get("durabilityUsed")
-        if isinstance(max_durability, (int, float)) and isinstance(
-            durability_used, (int, float)
-        ):
-            return float(max_durability) - float(durability_used)
-
-        for key in ("durabilityRemaining", "remainingDurability"):
-            value = item.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-
-        for key in ("durabilityRatio", "durability_ratio"):
-            value = item.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-
-        for key in ("durabilityPercent", "durability_percent"):
-            value = item.get(key)
-            if isinstance(value, (int, float)):
-                return float(value) / 100.0
-
-        return None
+        return self._chat_pipeline.select_pickaxe_for_targets(ore_names)
 
     async def _handle_action_backlog(
         self,
@@ -1788,31 +1438,9 @@ class AgentOrchestrator:
     ) -> None:
         """未実装アクションの backlog をメモリとチャットへ整理する。"""
 
-        backlog_list = list(backlog)
-        if not backlog_list:
-            return
-
-        self.memory.set("last_pending_actions", backlog_list)
-
-        unique_labels: List[str] = []
-        for item in backlog_list:
-            label = item.get("label") or item.get("category") or "未分類の行動"
-            if label not in unique_labels:
-                unique_labels.append(label)
-
-        if already_responded:
-            self.logger.info(
-                "skip action backlog follow-up because initial response already sent backlog=%s",
-                backlog_list,
-            )
-            return
-
-        summary = "、".join(unique_labels)
-        await self.actions.say(
-            (
-                f"{summary}の行動リクエストを検知しましたが、Mineflayer 側の下位アクションが未実装のため待機中です。"
-                "追加の指示や優先順位があればお知らせください。"
-            )
+        await self._chat_pipeline.handle_action_backlog(
+            backlog,
+            already_responded=already_responded,
         )
 
     async def _handle_detection_reports(
@@ -1823,130 +1451,10 @@ class AgentOrchestrator:
     ) -> None:
         """検出報告タスクをメモリへ整理し、必要に応じて丁寧な補足メッセージを送る。"""
 
-        report_list = list(reports)
-        if not report_list:
-            return
-
-        self.memory.set("last_detection_reports", report_list)
-        if already_responded:
-            # LLM からプレイヤー向け応答が既に提示されている場合は追加送信を控え、
-            # ログとメモリへの整理だけでフローを終える。重複応答による冗長さを防ぐため。
-            self.logger.info(
-                "skip detection follow-up because initial response already sent reports=%s",
-                report_list,
-            )
-            return
-
-        # 未返信の場合は取得した内容そのものを共有し、プレイヤーが追加指示を出しやすくする。
-        segments: List[str] = []
-        for item in report_list:
-            summary_text = str(item.get("summary") or "").strip()
-            if summary_text:
-                segments.append(summary_text.rstrip("。"))
-
-        if not segments:
-            labels = []
-            for item in report_list:
-                category = item.get("category", "")
-                label = self._DETECTION_LABELS.get(category)
-                if label and label not in labels:
-                    labels.append(label)
-            if not labels:
-                labels.append("状況確認")
-            message = f"{'、'.join(labels)}の確認結果を取得しました。"
-        else:
-            message = "。".join(segments) + "。"
-
-        await self.actions.say(message)
-
-    async def _handle_bridge_event(self, payload: Dict[str, Any]) -> None:
-        """Bridge 側の SSE イベントを検出レポートとして整形する。"""
-
-        if not isinstance(payload, dict):
-            return
-
-        event_level = str(payload.get("event_level") or "info")
-        message = str(payload.get("message") or payload.get("type") or "event")
-        region = str(payload.get("region") or "").strip()
-        coords_text = self._format_block_pos(payload.get("block_pos"))
-        attributes = payload.get("attributes")
-
-        summary_parts = [f"[{event_level}] {message}"]
-        if region:
-            summary_parts.append(f"region={region}")
-        if coords_text:
-            summary_parts.append(f"pos={coords_text}")
-        if isinstance(attributes, dict) and attributes:
-            preview = ", ".join(
-                f"{key}={attributes[key]}" for key in list(attributes)[:3]
-            )
-            if preview:
-                summary_parts.append(f"attrs={preview}")
-        summary = " / ".join(summary_parts)
-
-        report: Dict[str, Any] = {
-            "summary": summary,
-            "category": str(payload.get("type") or "bridge_event"),
-            "event_level": event_level,
-        }
-        if region:
-            report["region"] = region
-        if isinstance(payload.get("block_pos"), dict):
-            report["block_pos"] = payload["block_pos"]
-        if isinstance(attributes, dict) and attributes:
-            report["attributes"] = attributes
-
-        history = self.memory.get("bridge_event_reports", [])
-        if not isinstance(history, list):
-            history = []
-        history.append(report)
-        self.memory.set("bridge_event_reports", history[-10:])
-
-        log_structured_event(
-            self.logger,
-            "bridge event received",
-            level=logging.INFO,
-            event_level=event_level,
-            langgraph_node_id="agent.bridge_events",
-            context={
-                "region": region or "unknown",
-                "summary": summary,
-            },
+        await self._chat_pipeline.handle_detection_reports(
+            reports,
+            already_responded=already_responded,
         )
-
-    def _format_block_pos(self, block_pos: Any) -> str:
-        """Block 座標辞書を人間可読な文字列に整形する。"""
-
-        if isinstance(block_pos, dict):
-            try:
-                x = int(block_pos.get("x"))
-                y = int(block_pos.get("y"))
-                z = int(block_pos.get("z"))
-                return f"X={x} Y={y} Z={z}"
-            except Exception:
-                return ""
-        return ""
-
-    def _augment_failure_reason_with_events(
-        self, failure_reason: str, reports: Sequence[Dict[str, Any]]
-    ) -> str:
-        """最新の保護領域イベント情報を失敗理由へ添える。"""
-
-        if not reports:
-            return failure_reason
-
-        latest = reports[-1]
-        region = str(latest.get("region") or "").strip()
-        coords = self._format_block_pos(latest.get("block_pos"))
-        segments: List[str] = []
-        if region:
-            segments.append(f"保護領域: {region}")
-        if coords:
-            segments.append(f"座標: {coords}")
-        if not segments:
-            return failure_reason
-
-        return f"{failure_reason} (最近の検知: {' / '.join(segments)})"
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
         """ステップ文字列から XYZ 座標らしき数値を抽出する。"""
@@ -1997,56 +1505,6 @@ class AgentOrchestrator:
     async def _report_execution_barrier(self, step: str, reason: str) -> None:
         """処理を継続できない障壁を検知した際にチャットとログで即時共有する。"""
 
-        self.logger.warning(
-            "execution barrier detected step='%s' reason='%s'",
-            step,
-            reason,
-        )
-        message = await self._compose_barrier_message(step, reason)
-        await self.actions.say(message)
-
-    async def _compose_barrier_message(self, step: str, reason: str) -> str:
-        """障壁内容を LLM に渡して、プレイヤー向けの確認メッセージを生成する。"""
-
-        try:
-            context = self.status_service.build_context_snapshot(
-                current_role_id=self._current_role_id
-            )
-            context.update({"queue_backlog": self.chat_queue.backlog_size})
-            llm_message = await compose_barrier_notification(step, reason, context)
-            if llm_message:
-                self.logger.info(
-                    "barrier message composed via LLM step='%s' message='%s'",
-                    step,
-                    llm_message,
-                )
-                return llm_message
-        except BarrierNotificationTimeout as exc:
-            self.logger.warning(
-                "barrier message generation timed out step='%s': %s",
-                step,
-                exc,
-            )
-        except BarrierNotificationError as exc:
-            self.logger.warning(
-                "barrier message generation failed step='%s': %s",
-                step,
-                exc,
-            )
-        except Exception:
-            self.logger.exception("failed to compose barrier message via LLM")
-
-        # LLM 連携が利用できない場合は、プレイヤーが状況を素早く把握できるよう
-        # 既存の短縮メッセージロジックで即時応答を組み立てる。
-        short_step = self._shorten_text(step, limit=40)
-        short_reason = self._shorten_text(reason, limit=60)
-        return f"手順「{short_step}」で問題が発生しました: {short_reason}"
-
-    @staticmethod
-    def _shorten_text(text: str, *, limit: int) -> str:
-        """チャット送信用にテキストを安全な長さへ丸めるユーティリティ。"""
-
-        text = text.strip()
-        return text if len(text) <= limit else f"{text[:limit]}…"
+        await self._perception.report_execution_barrier(step, reason)
 
 
