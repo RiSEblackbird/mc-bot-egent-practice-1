@@ -19,12 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from config import AgentConfig, load_agent_config
-from services.minedojo_client import (
-    MineDojoClient,
-    MineDojoDemoMetadata,
-    MineDojoDemonstration,
-    MineDojoMission,
-)
+from services.minedojo_client import MineDojoClient
 from services.skill_repository import SkillRepository
 from actions import Actions
 from bridge_client import BridgeClient, BridgeError
@@ -46,7 +41,6 @@ from runtime.action_graph import ActionGraph, ActionTaskRule, ChatTask
 from runtime.chat_queue import ChatQueue
 from runtime.inventory_sync import InventorySynchronizer, summarize_inventory_status
 from runtime.reflection_prompt import build_reflection_prompt
-from runtime.minedojo import MineDojoSelfDialogueExecutor
 from runtime.hybrid_directive import HybridDirectiveHandler, HybridDirectivePayload
 from runtime.bridge_events import BridgeEventHooks, BridgeEventListener
 from runtime.rules import (
@@ -58,6 +52,7 @@ from runtime.rules import (
     PICKAXE_TIER_BY_NAME,
 )
 from runtime.status_service import StatusService
+from runtime.minedojo_handler import MineDojoHandler
 
 logger = setup_logger("agent")
 
@@ -102,13 +97,6 @@ class AgentOrchestrator:
 
     # 座標抽出パターンは runtime.rules.COORD_PATTERNS で一元管理する。
     # 行動カテゴリのルールセットは runtime.rules.ACTION_TASK_RULES として共有する。
-    # MineDojo のミッション ID へ分類カテゴリをマッピングする。カテゴリ追加時に
-    # 参照することで、デモ取得の影響範囲を明示できるようにしている。
-    _MINEDOJO_MISSION_BINDINGS: Dict[str, str] = {
-        "mine": "obtain_diamond",
-        "farm": "harvest_wheat",
-        "build": "build_simple_house",
-    }
     # 検出系タスクのキーワード分類は runtime.rules.DETECTION_TASK_KEYWORDS を参照する。
     _DETECTION_LABELS = {
         "player_position": "現在位置の報告",
@@ -162,7 +150,7 @@ class AgentOrchestrator:
         # チャットキューを専用クラスへ委譲し、プラン実行やチャット応答用コールバックを依存注入する。
         self.chat_queue = ChatQueue(
             process_task=self._process_chat,
-            say=self.actions.say,
+            say=self._safe_say,
             queue_max_size=self.config.queue_max_size,
             task_timeout_seconds=self.config.worker_task_timeout_seconds,
             timeout_retry_limit=self._MAX_TASK_TIMEOUT_RETRY,
@@ -193,12 +181,17 @@ class AgentOrchestrator:
         self._current_role_id: str = "generalist"
         self._pending_role: Optional[Tuple[str, Optional[str]]] = None
         self._shared_agents: Dict[str, Dict[str, Any]] = {}
-        # MineDojo クライアントを初期化し、テスト時にはスタブを差し込めるようにする。
+        # MineDojo クライアントとハンドラーを初期化し、ミッション取得や自己対話を委譲する。
         self.minedojo_client = minedojo_client or MineDojoClient(self.config.minedojo)
-        self._active_minedojo_mission: Optional[MineDojoMission] = None
-        self._active_minedojo_demos: List[MineDojoDemonstration] = []
-        self._active_minedojo_mission_id: Optional[str] = None
-        self._active_minedojo_demo_metadata: Optional[MineDojoDemoMetadata] = None
+        self.minedojo_handler = MineDojoHandler(
+            actions=self.actions,
+            memory=self.memory,
+            skill_repository=self.skill_repository,
+            minedojo_client=self.minedojo_client,
+            tracer=self._tracer,
+            config=self.config,
+            logger=self.logger,
+        )
         # 周辺環境の安全性を評価するため、Bridge HTTP クライアントを初期化しておく。
         self._bridge_client = BridgeClient()
         # Bridge イベント購読は専用リスナーへ委譲し、メモリ更新やロール切替のみを
@@ -216,17 +209,6 @@ class AgentOrchestrator:
             shared_agents=self._shared_agents,
             logger=self.logger,
         )
-        self._self_dialogue_executor = MineDojoSelfDialogueExecutor(
-            actions=self.actions,
-            client=self.minedojo_client,
-            skill_repository=self.skill_repository,
-            tracer=self._tracer,
-            env_params={
-                "sim_env": self.config.minedojo.sim_env,
-                "sim_seed": self.config.minedojo.sim_seed,
-                "sim_max_steps": self.config.minedojo.sim_max_steps,
-            },
-        )
         # hybrid 指示の解析・実行を専用クラスへ委譲して、オーケストレーターの責務を明確化する。
         self._hybrid_handler = HybridDirectiveHandler(self)
 
@@ -234,6 +216,18 @@ class AgentOrchestrator:
         """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""
 
         await self.chat_queue.enqueue_chat(username, message)
+
+    async def _safe_say(self, message: str) -> None:
+        """Actions.say が未提供でも安全に呼び出せるようラップする。"""
+
+        if hasattr(self.actions, "say"):
+            await self.actions.say(message)
+            return
+
+        # スタブ環境でも計画生成を継続できるよう、ログだけ残して処理を進める。
+        self.logger.info(
+            "skip chat dispatch because Actions.say is unavailable message=%s", message
+        )
 
     async def worker(self) -> None:
         """チャットキューを逐次処理するバックグラウンドタスクの委譲。"""
@@ -414,7 +408,7 @@ class AgentOrchestrator:
         )
         self._record_plan_summary(plan_out)
 
-        if await self._maybe_trigger_minedojo_autorecovery(plan_out):
+        if await self.minedojo_handler.maybe_trigger_autorecovery(plan_out):
             self.memory.set("last_chat", {"username": task.username, "message": task.message})
             return
 
@@ -481,114 +475,6 @@ class AgentOrchestrator:
             langgraph_node_id="planner.plan_summary",
             context=payload,
         )
-
-    async def _handle_minedojo_directive(self, directive: ActionDirective, plan_out: PlanOut, step_index: int) -> bool:
-        executor = getattr(self, "_self_dialogue_executor", None)
-        if executor is None:
-            return False
-
-        args = directive.args if isinstance(directive.args, dict) else {}
-        mission_id = ""
-        mission_candidate = args.get("mission_id")
-        if isinstance(mission_candidate, str) and mission_candidate.strip():
-            mission_id = mission_candidate.strip()
-        if not mission_id:
-            mission_id = self._MINEDOJO_MISSION_BINDINGS.get(directive.category, "")
-        if not mission_id:
-            return False
-
-        skill_id = args.get("skill_id")
-        if not isinstance(skill_id, str) or not skill_id.strip():
-            skill_id = f"minedojo::{mission_id}::{int(time.time())}"
-        title = directive.label or directive.step or f"MineDojo {mission_id}"
-        success_flag = args.get("simulate_success")
-        success = bool(success_flag) if isinstance(success_flag, bool) else True
-
-        try:
-            await executor.run_self_dialogue(
-                mission_id,
-                plan_out.react_trace or [],
-                skill_id=skill_id,
-                title=title,
-                success=success,
-            )
-        except Exception:
-            self.logger.exception(
-                "MineDojo directive failed mission=%s step_index=%d", mission_id, step_index
-            )
-            return False
-
-        self.logger.info(
-            "MineDojo directive executed mission=%s skill_id=%s step_index=%d",
-            mission_id,
-            skill_id,
-            step_index,
-        )
-        return True
-
-    async def _maybe_trigger_minedojo_autorecovery(self, plan_out: PlanOut) -> bool:
-        executor = getattr(self, "_self_dialogue_executor", None)
-        if executor is None or not isinstance(plan_out, PlanOut):
-            return False
-
-        intent = (plan_out.intent or "").strip()
-        react_trace: List[ReActStep] = list(getattr(plan_out, "react_trace", []) or [])
-        has_steps = bool(plan_out.plan)
-        trigger_for_empty_plan = not has_steps
-        trigger_for_minedojo_intent = bool(intent and intent in self._MINEDOJO_MISSION_BINDINGS and react_trace)
-        if not (trigger_for_empty_plan or trigger_for_minedojo_intent):
-            return False
-
-        mission_id = self._resolve_mission_id_from_plan(plan_out)
-        if not mission_id:
-            return False
-
-        if not react_trace:
-            react_trace = [
-                ReActStep(
-                    thought="LLM が手順を返さなかったため、自己対話ログで補完する",
-                    action="self_dialogue",
-                    observation="",
-                )
-            ]
-
-        skill_id = f"autorecover::{mission_id}::{int(time.time())}"
-        try:
-            await executor.run_self_dialogue(
-                mission_id,
-                react_trace,
-                skill_id=skill_id,
-                title=f"Auto recovery for {mission_id}",
-                success=False,
-            )
-        except Exception:
-            self.logger.exception("MineDojo autorecovery failed mission=%s", mission_id)
-            return False
-
-        await self.actions.say(
-            "十分な手順を生成できなかったため、記録済みの自己対話ログを参照して計画を立て直します。"
-        )
-        log_structured_event(
-            self.logger,
-            "minedojo_autorecovery_triggered",
-            event_level="recovery",
-            context={
-                "mission_id": mission_id,
-                "intent": intent or "(unknown)",
-                "reason": "empty_plan" if trigger_for_empty_plan else "intent_directive",
-            },
-        )
-        return True
-
-    def _resolve_mission_id_from_plan(self, plan_out: PlanOut) -> Optional[str]:
-        intent = (plan_out.intent or "").strip()
-        if intent and intent in self._MINEDOJO_MISSION_BINDINGS:
-            return self._MINEDOJO_MISSION_BINDINGS[intent]
-        if plan_out.goal_profile and plan_out.goal_profile.category:
-            category = plan_out.goal_profile.category
-            if category in self._MINEDOJO_MISSION_BINDINGS:
-                return self._MINEDOJO_MISSION_BINDINGS[category]
-        return None
 
     def _resolve_directive_for_step(
         self,
@@ -808,7 +694,9 @@ class AgentOrchestrator:
                 continue
 
             if directive and directive_executor == "minedojo":
-                handled = await self._handle_minedojo_directive(directive, plan_out, index)
+                handled = await self.minedojo_handler.handle_directive(
+                    directive, plan_out, index
+                )
                 if handled:
                     observation_text = "MineDojo の自己対話タスクを実行しました。"
                     status = "completed"
@@ -1697,28 +1585,9 @@ class AgentOrchestrator:
         category: str,
         step: str,
     ) -> Optional[SkillMatch]:
-        """ステップ文から再利用可能なスキルを検索する。"""
+        """MineDojo 文脈を含めたスキル探索をハンドラーへ委譲する。"""
 
-        try:
-            mission_id = self._active_minedojo_mission_id
-            context_tags: List[str] = []
-            if self._active_minedojo_demo_metadata:
-                context_tags.extend(list(self._active_minedojo_demo_metadata.tags))
-                context_tags.append("minedojo")
-                context_tags.append(self._active_minedojo_demo_metadata.mission_id)
-            if self._active_minedojo_mission:
-                context_tags.extend(list(self._active_minedojo_mission.tags))
-            normalized_tags = tuple(dict.fromkeys(tag for tag in context_tags if str(tag).strip()))
-
-            return await self.skill_repository.match_skill(
-                step,
-                category=category,
-                tags=normalized_tags,
-                mission_id=mission_id,
-            )
-        except Exception:
-            self.logger.exception("skill matching failed category=%s step='%s'", category, step)
-            return None
+        return await self.minedojo_handler.find_skill_for_step(category, step)
 
     async def _execute_skill_match(
         self,
@@ -1782,195 +1651,6 @@ class AgentOrchestrator:
         error_detail = resp.get("error") or "探索モードへの切り替えが Mineflayer 側で拒否されました"
         return False, error_detail
 
-    async def _attach_minedojo_context(self, category: str, step: str) -> None:
-        """分類カテゴリに応じて MineDojo のミッション/デモを準備する。"""
-
-        mission_id = self._MINEDOJO_MISSION_BINDINGS.get(category)
-        if not mission_id:
-            return
-
-        if not self.minedojo_client:
-            self.logger.info(
-                "MineDojo client is unavailable; skip context binding category=%s step='%s'",
-                category,
-                step,
-            )
-            return
-
-        if mission_id == self._active_minedojo_mission_id and self._active_minedojo_demos:
-            return
-
-        try:
-            mission = await self.minedojo_client.fetch_mission(mission_id)
-            demos = await self.minedojo_client.fetch_demonstrations(mission_id, limit=1)
-        except Exception:
-            self.logger.exception("failed to fetch MineDojo resources mission=%s", mission_id)
-            return
-
-        self._active_minedojo_mission = mission
-        self._active_minedojo_demos = demos
-        self._active_minedojo_mission_id = mission_id if (mission or demos) else None
-        metadata_list: List[MineDojoDemoMetadata] = []
-        if demos:
-            mission_tags = mission.tags if mission else ()
-            metadata_list = [demo.to_metadata(mission_tags=mission_tags) for demo in demos]
-            self._active_minedojo_demo_metadata = metadata_list[0]
-        else:
-            self._active_minedojo_demo_metadata = None
-
-        context_payload = self._build_minedojo_context_payload(mission, demos, metadata_list)
-        if context_payload:
-            self.memory.set("minedojo_context", context_payload)
-
-        if demos and self._active_minedojo_demo_metadata:
-            await self._prime_actions_with_demo(demos[0], self._active_minedojo_demo_metadata)
-            await self._register_minedojo_demo_skill(
-                mission,
-                self._active_minedojo_demo_metadata,
-                demos[0],
-            )
-
-    def _build_minedojo_context_payload(
-        self,
-        mission: Optional[MineDojoMission],
-        demos: List[MineDojoDemonstration],
-        metadata_list: List[MineDojoDemoMetadata],
-    ) -> Optional[Dict[str, Any]]:
-        """LLM プロンプトへ差し込む MineDojo 情報を整形する。"""
-
-        if not mission and not demos:
-            return None
-
-        payload: Dict[str, Any] = {}
-        if mission:
-            payload["mission"] = mission.to_prompt_payload()
-        if demos:
-            payload["demonstrations"] = [
-                self._format_minedojo_demo_for_context(demo, metadata_list[index])
-                for index, demo in enumerate(demos)
-                if demo and index < len(metadata_list)
-            ]
-        return payload
-
-    def _format_minedojo_demo_for_context(
-        self, demo: MineDojoDemonstration, metadata: MineDojoDemoMetadata
-    ) -> Dict[str, Any]:
-        """デモを LLM 用に要約し、過剰なデータ転送を避ける。"""
-
-        action_types: List[str] = []
-        for action in list(demo.actions)[:3]:
-            if isinstance(action, dict):
-                label = str(action.get("type") or action.get("name") or "unknown")
-                action_types.append(label)
-        return {
-            "demo_id": demo.demo_id,
-            "summary": demo.summary,
-            "mission_id": metadata.mission_id,
-            "tags": list(metadata.tags),
-            "action_types": action_types,
-            "action_count": len(demo.actions),
-        }
-
-    async def _prime_actions_with_demo(
-        self, demo: MineDojoDemonstration, metadata: MineDojoDemoMetadata
-    ) -> None:
-        """取得したデモを Actions へ送信し、Mineflayer 側で事前ロードする。"""
-
-        if not hasattr(self.actions, "play_vpt_actions"):
-            return
-
-        if not demo.actions:
-            return
-
-        actions_payload = [dict(item) for item in demo.actions if isinstance(item, dict)]
-        if not actions_payload:
-            return
-
-        metadata_dict = metadata.to_dict()
-        try:
-            resp = await self.actions.play_vpt_actions(actions_payload, metadata=metadata_dict)
-        except Exception:
-            self.logger.exception(
-                "MineDojo demo preload failed mission=%s demo=%s",
-                metadata.mission_id,
-                demo.demo_id,
-            )
-            return
-
-        if resp.get("ok"):
-            self.memory.set(
-                "minedojo_last_demo_metadata",
-                {"mission_id": metadata.mission_id, "demo_id": demo.demo_id, "metadata": metadata_dict},
-            )
-        else:
-            self.logger.warning(
-                "MineDojo demo preload command failed mission=%s demo=%s resp=%s",
-                metadata.mission_id,
-                demo.demo_id,
-                resp,
-            )
-
-    async def _register_minedojo_demo_skill(
-        self,
-        mission: Optional[MineDojoMission],
-        metadata: MineDojoDemoMetadata,
-        demo: MineDojoDemonstration,
-    ) -> None:
-        """MineDojo デモをスキルライブラリへ登録し、Mineflayer 側にも伝搬する。"""
-
-        # ミッション単位でスキル ID を固定し、NDJSON ログと照合しやすいタグを束ねる。
-        skill_id = f"minedojo::{metadata.mission_id}::{metadata.demo_id}"
-        tree = await self.skill_repository.get_tree()
-        already_exists = skill_id in tree.nodes
-
-        tags: List[str] = [
-            "minedojo",
-            metadata.mission_id,
-            f"mission:{metadata.mission_id}",
-            *list(metadata.tags),
-        ]
-        if mission:
-            tags.extend(list(mission.tags))
-        normalized_tags = tuple(dict.fromkeys(tag for tag in tags if str(tag).strip()))
-
-        description_parts: List[str] = []
-        if mission:
-            description_parts.append(mission.objective)
-        description_parts.append(f"demo={metadata.summary}")
-
-        keywords: List[str] = []
-        if mission:
-            keywords.extend([mission.title, mission.objective])
-        keywords.append(metadata.summary)
-
-        node = SkillNode(
-            identifier=skill_id,
-            title=mission.title if mission else f"MineDojo {metadata.mission_id}",
-            description=" / ".join(part for part in description_parts if part) or metadata.summary,
-            categories=tuple(mission.tags) if mission else (),
-            tags=normalized_tags,
-            keywords=tuple(keyword for keyword in keywords if keyword),
-            examples=(metadata.summary,),
-        )
-        await self.skill_repository.register_skill(node)
-
-        if not hasattr(self.actions, "register_skill"):
-            return
-        if already_exists:
-            # Mineflayer 側に重複登録してもログが汚れるだけなので回避する。
-            return
-
-        try:
-            await self.actions.register_skill(  # type: ignore[attr-defined]
-                skill_id=skill_id,
-                title=node.title,
-                description=node.description,
-                steps=[demo.summary or metadata.summary],
-                tags=list(normalized_tags),
-            )
-        except Exception:
-            self.logger.warning("register_skill dispatch failed for %s", skill_id)
-
     async def _handle_action_task(
         self,
         category: str,
@@ -1999,7 +1679,7 @@ class AgentOrchestrator:
             step,
             rule.label or category,
         )
-        await self._attach_minedojo_context(category, step)
+        await self.minedojo_handler.attach_context(category, step)
         handled, updated_target, failure_detail = await self._action_graph.run(
             category=category,
             step=step,
