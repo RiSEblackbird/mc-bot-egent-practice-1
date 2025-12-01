@@ -118,6 +118,12 @@ Python 側で LLM プランニングとアクション実行が行われます�
 「移動」系のステップで座標が指定されなかった場合のフォールバック座標を調整できます。なお Python エージェント
 は、直前に検出した座標付きステップを記憶し、直後に続く「移動」「向かう」などの抽象ステップでは同じ目的地を
 再利用するため、計画途中で座標の記述が省略されても同じ地点へ向かい続けます。
+2025/12 のモジュール分割では `python/orchestrator/plan_executor.py`・`action_analyzer.py`・`skill_detection.py`
+を追加し、`AgentOrchestrator` 本体は依存注入とハンドオフに専念するようになりました。
+`PlanExecutor` が LangGraph からの ActionDirective 実行と再計画フローを一手に担い、
+`ActionAnalyzer` が自然言語ステップからカテゴリ・座標・装備/採掘パラメータを抽出します。
+検出レポートや MineDojo スキル処理は `SkillDetectionCoordinator` にまとめられたため、
+`python/agent.py` の責務はチャットキューとメモリ更新に絞られ、1 ファイルのコンテクスト量を大幅に削減しています。
 ランタイムは `python/runtime` 配下へ分割しており、`bootstrap.py` が設定読込と依存組み立て、`websocket_server.py` が WebSocket 受信ループ、`minedojo.py` が自己対話やスキル登録ヘルパーを担います。`python/__main__.py` からはこれらを束ねて `python -m python` で起動できます。
 設定値の読み込みは `python/config.py` に統合しており、ポート番号やデフォルト座標のバリデーションを一括で処理します。
 ユニットテスト `tests/test_agent_config.py` で挙動を確認できるため、環境変数を追加した場合も回帰チェックが容易です。
