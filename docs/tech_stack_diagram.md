@@ -215,7 +215,7 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 - **ActionDirective**: `directives[n]` は plan ステップと 1:1 で紐づき、`category`・`executor`・`args.coordinates` を明示します。Python 側は directive が指定された場合にヒューリスティックを飛ばし、Mineflayer / MineDojo / チャットのいずれかへ直行します。
 - **Recovery Hints**: `recovery_hints` は `langgraph_state.record_recovery_hints()` でステートに残り、再計画プロンプトと `memory.recovery_hints` の双方に同期されます。障壁が多発するステップを directive レベルで切り分けられるため、次のチャットに答える前に再計画ポリシーを切り替えられます。
 
-新しい DSL を参照する際は README の「3.2.5 自然言語→ActionDirective DSL」と `python/planner.py` の JSON 例を合わせて確認してください。
+新しい DSL を参照する際は README の「3.2.5 自然言語→ActionDirective DSL」と `python/planner/graph.py` の JSON 例を合わせて確認してください。
 ### 4.2 LangGraph 逆通知の再設計
 
 - `LangGraphRetryHook`（`bridge-plugin/src/main/java/com/example/bridge/langgraph/LangGraphRetryHook.java`）を `LangGraphEventGateway` に拡張し、`triggerRetry` に加えて `pushEvent(LangGraphEvent event)` を提供する。`LangGraphRetryClient` も push 用エンドポイント（例: `/callbacks/agentbridge/events`）を持つクライアントへ差し替える。
@@ -240,7 +240,7 @@ LangGraph / Mineflayer / MineDojo / AgentBridge（Paper）/ OpenAI / blazity CLI
 
 ### 6.2 計画レイヤー（LangGraph × OpenAI）
 
-- `PlanPriorityManager` が `evaluate_confidence_gate` を持ち、`pre_action_review` ノードで確信度が低いプランを自動確認に回すようになりました。Responses API を使ってソクラテス式のフォローアップ文を生成し、`plan_out.next_action="chat"` へ切り替えます。```557:592:python/planner.py // pre_action_review``` ```67:108:python/planner.py```
+- `PlanPriorityManager` が `evaluate_confidence_gate` を持ち、`pre_action_review` ノードで確信度が低いプランを自動確認に回すようになりました。Responses API を使ってソクラテス式のフォローアップ文を生成し、`plan_out.next_action="chat"` へ切り替えます。```557:592:python/planner/graph.py // pre_action_review``` ```67:108:python/planner/graph.py```
 - それでも `PlanOut.goal_profile.blockers` や `execution_hints` を確認プロンプトへ十分活かし切れておらず、`gatherStatus(kind="environment")` などの追加観測はまだ自動挿入されていません。
 
 ### 6.3 実行レイヤー（Mineflayer × VPT × LangGraph）

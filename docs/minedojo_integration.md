@@ -67,7 +67,7 @@ Python エージェントから MineDojo のミッション/デモを参照す�
 
 ## 6. ActionDirective と executor の連携
 
-- `python/planner.py` が出力する `PlanOut.directives[].executor` に `"minedojo"` を指定すると、`agent.AgentOrchestrator` は `_handle_minedojo_directive()` を介して `MineDojoSelfDialogueExecutor` を直接呼び出し、ReAct トレースとスキル登録を自動的に更新します。
+- `python/planner/graph.py` が出力する `PlanOut.directives[].executor` に `"minedojo"` を指定すると、`agent.AgentOrchestrator` は `_handle_minedojo_directive()` を介して `MineDojoSelfDialogueExecutor` を直接呼び出し、ReAct トレースとスキル登録を自動的に更新します。
 - directive の `args.mission_id` を省略した場合でも `_MINEDOJO_MISSION_BINDINGS` に登録されたカテゴリ（例: `mine` → `obtain_diamond`）からミッション ID を解決します。個別のデモを指定したい場合は `args.skill_id` / `args.demo_id` を埋め、MineDojo API 側の ID 体系と合わせてください。
 - `executor="mineflayer"` の directive は従来どおり `Actions` へ meta 付きで送信されます。`node-bot/runtime/telemetry.ts` が `command.meta.directive_id` を OpenTelemetry に記録するため、MineDojo と Mineflayer のどちらが処理したステップかをダッシュボードで即座に判別できます。
 - `executor="chat"` を指定すると Python エージェントが `actions.say()` でフォローアップを送信し、`args.message` が指定されていない場合は `directive.label` をそのままプレイヤーへ relay します。MineDojo の状況説明や確認待ちフローを構造化ステップとして扱えるのが利点です。

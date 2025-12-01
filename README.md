@@ -98,7 +98,7 @@ python agent.py
 1. **クリーン環境での検証**: `.venv` を作り直し、`pip install -r ../requirements.txt` を実行して新しい制約でも解決できるか確認する。
 2. **自動テスト**: 依存追加・更新後は少なくとも `pytest tests/test_agent_config.py tests/test_structured_logging.py` を走らせ、設定読み込みと構造化ログの互換性を確認する。LangGraph/LLM 周辺を触った場合は `pytest tests/test_langgraph_scenarios.py` も追加で実行する。
 3. **手動起動チェック**: `cp ../env.example ../.env` の後に `python -m python` を実行し、WebSocket バインドまで到達すること、`openai.types.responses.Response` などの型解決が通ることを目視する。
-4. **破壊的変更のサイン検知**: `client.responses.create` 呼び出しシグネチャや `EasyInputMessageParam` のフィールドに差分が出ていないかを確認し、変更があれば `python/planner.py` のペイロード生成ロジックを追従させる。
+4. **破壊的変更のサイン検知**: `client.responses.create` 呼び出しシグネチャや `EasyInputMessageParam` のフィールドに差分が出ていないかを確認し、変更があれば `python/planner/__init__.py`・`python/llm/client.py`・`python/planner_config.py` で一元化したペイロード生成ロジックと設定読込を追従させる。
 
 Python エージェントは `AGENT_WS_HOST` / `AGENT_WS_PORT` で指定したポートに WebSocket サーバーを公開します。
 Mineflayer 側（Node.js）がチャットを受信すると、自動的にこのサーバーへ `type=chat` の JSON を送信し、
@@ -148,12 +148,12 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 
 #### 3.2.5 自然言語→ActionDirective DSL
 
-`python/planner.py` の LangGraph ノードは Responses API の JSON 応答を `PlanOut` の DSL へ正規化し、以下のフィールドを追加しました。
+`python/planner/graph.py` の LangGraph ノードは Responses API の JSON 応答を `PlanOut` の DSL へ正規化し、以下のフィールドを追加しました。
 
 - `goal_profile` … ゴール要約/カテゴリ/優先度を 1 つの構造体で共有。`success_criteria` にミッション完了条件、`blockers` に既知の障害を列挙します。
 - `constraints` / `execution_hints` … 「夜は敵対モブが湧く」「在庫: torch=0」といった制約と、Memory 由来のヒントを配列化。LangGraph → Mineflayer の判断材料になります。
 - `directives` … 各 plan ステップと 1:1 で結びつく `ActionDirective`。`executor`（`mineflayer` / `minedojo` / `chat`）と `args.coordinates` を指定すると、Python 側はヒューリスティックをスキップし、指示カテゴリ・座標をそのまま LangGraph へ渡します。
-- `recovery_hints` … 直近の障壁や Reflexion プロンプトから引き継いだ教訓。`langgraph_state.record_recovery_hints()` を通じて再計画ノードへも共有され、同じ失敗の再発を防ぎます。
+- `recovery_hints` … 直近の障壁や Reflexion プロンプトから引き継いだ教訓。`planner.graph.record_recovery_hints()`（既存の `langgraph_state` エイリアス経由でも可）を通じて再計画ノードへも共有され、同じ失敗の再発を防ぎます。
 
 Python エージェントは directive メタデータを `Actions.begin_directive_scope()` → `_dispatch()` を経由して WebSocket ペイロードの `meta` に添付します。`node-bot/runtime/telemetry.ts` は `command.meta.directive_id` / `command.meta.executor` を span 属性へ記録し、`mineflayer.directive.received` カウンターとしてメトリクス化するため、OpenTelemetry 上で「どの目的の指示がどの executor へ渡ったか」を直接観測できます。
 
@@ -196,8 +196,8 @@ LangGraph の責務が増えたため、`python/runtime` 配下に以下のモ�
 * `python/agent.py` の ReAct ループは、各ステップの Thought/Action/Observation を `react_step` イベントとして構造化ログに記録し、Mineflayer から得られた実行結果を Observation フィールドへ即座に反映します。
 2025 年 2 月時点では `python/runtime/action_graph.py` に LangGraph ベースのステートマシンを導入し、採掘・建築・防衛の
 モジュールをノード単位で独立させました。これにより再計画時の分岐が視覚化され、`mine` → `equip` のような連鎖的な
-処理もグラフ上で明示されます。同様に `python/planner.py` の LLM 呼び出しも LangGraph の条件分岐ノードに置き換え、
-失敗時は優先度を `high` へ自動昇格、成功時は `normal` へ戻す優先度マネージャーと同期しています。新しいシナリオテスト
+処理もグラフ上で明示されます。同様に `python/planner/graph.py` へ移動した LLM 呼び出しも LangGraph の条件分岐ノードに置き換え、
+失敗時は優先度を `high` へ自動昇格、成功時は `normal` へ戻す優先度マネージャーと同期しています。閾値やモデル設定は `python/planner_config.py` に集約したため、環境変数を差し替えるだけでテスト環境でも一貫した挙動を再現できます。
 `tests/test_langgraph_scenarios.py` では障害検知・並列進行・優先度遷移を網羅し、グラフ内で再計画が完結することを検証できます。さらに `tests/e2e/test_multi_agent_roles.py` では敵襲来時の防衛介入と補給合流のロール切替を E2E で確認し、共有メモリと役割ステートが期待通り同期されることを保証しています。
 
 #### Reflexion ログの確認手順
@@ -411,7 +411,7 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 
 - **温度変更が許可されているモデルに切り替える**: `OPENAI_MODEL` を温度可変モデルに変更すると、`OPENAI_TEMPERATURE` の値が 0.0～2.0 の範囲で反映されます。
 - **無効な温度指定をした場合**: 数値以外や範囲外の値を設定すると、INFO/ WARNING ログにフォールバックの旨が表示され、既定値 `0.3` が自動的に利用されます。
-- **デバッグ方法**: `python/planner.py` のログに `OPENAI_TEMPERATURE` を無視した理由や、フォールバックが発生した詳細が記録されるため、再発防止に活用してください。
+- **デバッグ方法**: `python/planner/__init__.py` / `python/llm/client.py` のログに `OPENAI_TEMPERATURE` を無視した理由や、フォールバックが発生した詳細が記録されるため、再発防止に活用してください。
 
 温度変更に失敗する場合は、まずログに出力される警告メッセージを確認し、`OPENAI_MODEL` と `OPENAI_TEMPERATURE` の組み合わせがサポート対象か見直してください。
 
@@ -447,8 +447,8 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 
 | 理論/手法 | 主な狙い | 主な適用モジュール/ドキュメント | 現状適用度 |
 | --- | --- | --- | --- |
-| Voyager | LLM 主導での自律探索・ツール発見 | `python/planner.py` / `python/memory.py` / `docs/building_state_machine.md` | 部分対応 |
-| ReAct | 推論 (Reason) と行動 (Act) の往復で環境を制御 | `python/agent.py` / `python/planner.py` / `python/actions.py` | 実装済み |
+| Voyager | LLM 主導での自律探索・ツール発見 | `python/planner/graph.py` / `python/planner_config.py` / `python/memory.py` / `docs/building_state_machine.md` | 部分対応 |
+| ReAct | 推論 (Reason) と行動 (Act) の往復で環境を制御 | `python/agent.py` / `python/planner/graph.py` / `python/actions.py` | 実装済み |
 | Reflexion | 失敗経験を自己評価して行動計画へ反映 | `python/utils/logging.py` / `python/runtime/reflection_prompt.py` / `python/runtime/action_graph.py` / `tests/test_langgraph_scenarios.py` | 部分対応 |
 | VPT | 操作シーケンスの模倣学習による政策獲得 | `node-bot/bot.ts` / `node-bot/runtime/roles.ts` | 未対応 |
 | MineDojo | Minecraft タスクの大規模データセット化 | `docs/tunnel_mode_design.md` / `tests/e2e/test_multi_agent_roles.py` | 部分対応 |
@@ -456,7 +456,7 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 #### 研究適用フロー（社内 Wiki と共通の参照順）
 
 1. **プレイヤーチャット受付**（`node-bot/bot.ts`）: ReAct の「Act」フェーズとして、Mineflayer がチャットを検知し環境観測を添えて Python へ転送します。
-2. **LLM プランニング**（`python/planner.py`）: Voyager の探索指針と MineDojo のタスク分類をもとに LangGraph 内でステップを組み立て、Reason フェーズの思考をログ化します。
+2. **LLM プランニング**（`python/planner/__init__.py` / `python/planner/graph.py`）: Voyager の探索指針と MineDojo のタスク分類をもとに LangGraph 内でステップを組み立て、Reason フェーズの思考をログ化します。
 3. **アクション合成・実行**（`python/actions.py` → `node-bot/runtime/roles.ts`）: ReAct の決定結果を具体的な Mineflayer コマンドへ落とし込み、VPT で想定する操作トレースに近い粒度で命令を分解します。
 4. **自己評価と再計画**（`python/runtime/reflection_prompt.py` / `python/runtime/action_graph.py`）: Reflexion の考え方で失敗ログを振り返り、必要に応じて Voyager 流の探索プランを再生成します。
 
@@ -464,14 +464,14 @@ Mineflayer は周囲 12 ブロック（指示文に「広範囲」等が含ま�
 
 Voyager は Minecraft のようなオープンワールドで LLM に継続的な技能学習を促すため、行動履歴のライブラリ化と自律的なタスク発見を組み合わせた枠組みを提案しています。本プロジェクトでは LangGraph を通じてタスク分解とチェックポイントを管理し、建築ジョブや採掘ジョブを再利用できる形で蓄積することで、Voyager が示した「技能カタログ化」の利点を部分的に取り込んでいます。
 
-- 関連モジュール: [`python/planner.py`](python/planner.py), [`python/memory.py`](python/memory.py), [`docs/building_state_machine.md`](docs/building_state_machine.md)
+- 関連モジュール: [`python/planner/__init__.py`](python/planner/__init__.py), [`python/planner/graph.py`](python/planner/graph.py), [`python/planner_config.py`](python/planner_config.py), [`python/memory.py`](python/memory.py), [`docs/building_state_machine.md`](docs/building_state_machine.md)
 - 今後の改善ポイント: スキルライブラリの自動タグ付けと成功条件の定量評価を導入し、未達タスクの再挑戦優先度を自動算出できるようにする。
 
 #### ReAct — [https://arxiv.org/abs/2210.03629](https://arxiv.org/abs/2210.03629)
 
 ReAct は言語モデルに推論（Reason）と行動（Act）の交互実行をさせることで、環境に応じた柔軟な意思決定を実現する手法です。本プロジェクトのチャット解析は ReAct を前提に、LLM が状況説明と行動コマンドを交互に生成し、その結果を Python エージェントが構造化ログとして保持して次の判断に反映する設計になっています。
 
-- 関連モジュール: [`python/agent.py`](python/agent.py), [`python/planner.py`](python/planner.py), [`python/actions.py`](python/actions.py)
+- 関連モジュール: [`python/agent.py`](python/agent.py), [`python/planner/graph.py`](python/planner/graph.py), [`python/actions.py`](python/actions.py)
 - 今後の改善ポイント: Reason フェーズで取り扱う観測情報を Node 側のバイタルデータと統合し、Act の出力に安全制約を事前付与する仕組みを整える。
 
 #### Reflexion — [https://arxiv.org/abs/2303.11366](https://arxiv.org/abs/2303.11366)
@@ -539,9 +539,11 @@ VPT_MAX_SEQUENCE_LENGTH=240
         │
         ▼
    Python(LLM) ──WS(JSON)──▶ Node(Mineflayer) ──▶ Paper Server
-     ├─ planner.py（gpt-5-mini でタスク分解）
-     ├─ actions.py（高レベル→低レベルコマンド）
-     └─ memory.py（座標/在庫/履歴）
+    ├─ planner/（LangGraph へのエントリポイント）
+    ├─ planner/graph.py（gpt-5 系モデルでタスク分解）
+    ├─ planner_config.py（Responses API 用設定と閾値）
+    ├─ actions.py（高レベル→低レベルコマンド）
+    └─ memory.py（座標/在庫/履歴）
 ```
 
 ## 8. 注意
