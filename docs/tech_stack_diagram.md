@@ -28,7 +28,7 @@ graph TD
 
     %% Python LLM エージェント層
     subgraph PythonLayer["Python LLM エージェント"]
-        PyAgent["python/agent.py ほか<br/>Python 3.12 / openai / websockets / httpx / pydantic / LangGraph"]
+        PyAgent["python/runtime/bootstrap.py ほか<br/>Python 3.12 / openai / websockets / httpx / pydantic / LangGraph"]
         MineDojo["MineDojo クライアント<br/>データセット / API（任意利用）"]
         VPT["VPT コントローラ<br/>PyTorch / HuggingFace Hub（任意利用）"]
         Reflexion["Reflexion / スキルライブラリ<br/>構造化ログ / skills ライブラリ"]
@@ -245,12 +245,12 @@ LangGraph / Mineflayer / MineDojo / AgentBridge（Paper）/ OpenAI / blazity CLI
 
 ### 6.3 実行レイヤー（Mineflayer × VPT × LangGraph）
 
-- `ActionDirective.executor == "hybrid"` は `python/agent.py` の `_parse_hybrid_directive_args` 経由で `args.vpt_actions` / `args.fallback_command` を検証し、`Actions.execute_hybrid_action` によって VPT → コマンドの順で安全にフェイルオーバーする実装へ更新済みです。```1286:1388:python/agent.py```
+- `ActionDirective.executor == "hybrid"` は `python/runtime/hybrid_directive.py` のパーサー経由で `args.vpt_actions` / `args.fallback_command` を検証し、`Actions.execute_hybrid_action` によって VPT → コマンドの順で安全にフェイルオーバーする実装へ更新済みです。```python/runtime/hybrid_directive.py```
 - Mineflayer 側では `CONTROL_MODE` に `hybrid` を追加し、通常は `command` モードで行動しつつ `playVptActions` を受け取ったときだけ VPT 再生を許可します。これにより LangGraph が指示単位で VPT を挿入できるようになりました。```44:52:node-bot/bot.ts``` ```1868:1874:node-bot/bot.ts```
 
 ### 6.4 スキル / 可観測性レイヤー（MineDojo × Paper × blazity CLI）
 
-- `MineDojoSelfDialogueExecutor` を `pre_action_review` や空プラン時に自律呼び出す `_maybe_trigger_minedojo_autorecovery` を追加し、LLM が手順を返せなかった場合でも自己対話ログを使ったスキル登録とチャット通知を自動化しました。```1229:1291:python/agent.py```
+- `MineDojoSelfDialogueExecutor` を `pre_action_review` や空プラン時に自律呼び出す `_maybe_trigger_minedojo_autorecovery` を追加し、LLM が手順を返せなかった場合でも自己対話ログを使ったスキル登録とチャット通知を自動化しました。自己対話エグゼキューターは `python/runtime/minedojo.py` へ移動しています。
 - AgentBridge の SSE を CLI でも購読できるよう `agentbridge jobs watch` を追加したため、チャットが不在でも `warning`/`fault` レベルのイベントを即座に確認できます。次の課題はイベント内容を LangGraph の `detection_reports` と照合し、危険度分析を共通化することです。
 
 
