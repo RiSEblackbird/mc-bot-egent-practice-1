@@ -191,7 +191,7 @@ graph LR
 
 ## 4. 能動的世界文脈配信ロードマップ
 
-Paper 側でプロアクティブに危険通知やジョブ状況を配信し、LangGraph 側の `detection_reports`（`python/agent_orchestrator.py::build_reflection_prompt`）へ自動で取り込むための計画をまとめる。
+Paper 側でプロアクティブに危険通知やジョブ状況を配信し、LangGraph 側の `detection_reports`（`python/runtime/reflection_prompt.py::build_reflection_prompt`）へ自動で取り込むための計画をまとめる。
 
 ### 4.1 Paper → LangGraph Push
 

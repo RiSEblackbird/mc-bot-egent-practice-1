@@ -59,7 +59,7 @@ survey --(資材要求確定)--> procurement --(不足なし)--> placement --(�
      巻き戻してから再度 `advance_building_state` を呼び出します。これにより、
      途中まで進んだ配置でも安全にやり直せます。
 6. **チェックポイント ID と構造化ログの一貫性を保つ**
-   - `python/agent_orchestrator.py::handle_building` は `building_checkpoint_base_id` を
+   - `python/runtime/action_graph.py::handle_building` は `building_checkpoint_base_id` を
      `building:{plan_step}` 形式で生成し、`phase` と `placed_blocks` を付与した
      `checkpoint_id` を構造化ログ (`log_structured_event`) に記録します。復旧時は
      `event_level=recovery` を付けるため、ログ検索や OpenTelemetry でフェーズ毎の
@@ -72,7 +72,7 @@ survey --(資材要求確定)--> procurement --(不足なし)--> placement --(�
 
 ## 3. 実装メモ
 
-- `python/agent_orchestrator.py` の `handle_building` ノードは、Memory に保存された
+- `python/runtime/action_graph.py` の `handle_building` ノードは、Memory に保存された
   `building_checkpoint` / `building_material_requirements` / `building_layout`
   / `inventory_summary` を `advance_building_state` に渡して計画を再構築します。
 - backlog へは現在フェーズ、資材不足、配置予定バッチを文字列で追記し、未実装の

@@ -30,7 +30,7 @@ from planner import (  # type: ignore  # noqa: E402
     plan,
     reset_plan_priority,
 )
-from agent_orchestrator import UnifiedAgentGraph  # type: ignore  # noqa: E402
+from runtime.action_graph import UnifiedAgentGraph  # type: ignore  # noqa: E402
 from langgraph_state import UnifiedPlanState  # type: ignore  # noqa: E402
 
 
@@ -332,7 +332,7 @@ def test_unified_graph_success(monkeypatch: pytest.MonkeyPatch, orchestrator_noo
         return PlanOut(plan=["南へ移動"], resp="了解しました。", intent="move")
 
     monkeypatch.setattr(sys.modules["planner"], "plan", stub_plan)
-    monkeypatch.setattr(sys.modules["agent_orchestrator"], "plan", stub_plan)
+    monkeypatch.setattr(sys.modules["runtime.action_graph"], "plan", stub_plan)
 
     graph = UnifiedAgentGraph(orchestrator_noop)
 
@@ -351,7 +351,7 @@ def test_unified_graph_plan_failure(monkeypatch: pytest.MonkeyPatch, orchestrato
         raise ValueError("bad json")
 
     monkeypatch.setattr(sys.modules["planner"], "plan", failing_plan)
-    monkeypatch.setattr(sys.modules["agent_orchestrator"], "plan", failing_plan)
+    monkeypatch.setattr(sys.modules["runtime.action_graph"], "plan", failing_plan)
 
     graph = UnifiedAgentGraph(orchestrator_noop)
 
