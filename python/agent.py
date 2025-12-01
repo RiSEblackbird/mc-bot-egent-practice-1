@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1479,6 +1480,7 @@ class AgentOrchestrator:
             directive_meta = self._build_directive_meta(directive, plan_out, index, total_steps)
             directive_executor = directive.executor if isinstance(directive, ActionDirective) else ""
             directive_coords = self._extract_directive_coordinates(directive) if directive else None
+            target_category = directive.category if isinstance(directive, ActionDirective) else ""
 
             if not normalized:
                 observation_text = "ステップ文字列が空だったためスキップしました。"
@@ -1615,14 +1617,16 @@ class AgentOrchestrator:
 
             coords = directive_coords or argument_coords or self._extract_coordinates(normalized)
             if coords:
+                action_category = target_category or "move"
                 self.logger.info(
-                    "plan_step index=%d classified as coordinate_move coords=%s",
+                    "plan_step index=%d classified as %s coords=%s",
                     index,
+                    action_category,
                     coords,
                 )
                 with self._directive_scope(directive_meta):
                     handled, last_target_coords, failure_detail = await self._handle_action_task(
-                        "move",
+                        action_category,
                         normalized,
                         last_target_coords=coords,
                         backlog=action_backlog,

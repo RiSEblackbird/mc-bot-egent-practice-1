@@ -91,7 +91,7 @@ class ActionGraph:
             "structured_events": [],
             "structured_event_history": list(structured_event_history or []),
             "perception_history": list(perception_history or []),
-            "perception_summary": orchestrator.memory.get("perception_summary"),
+            "perception_summary": self._orchestrator.memory.get("perception_summary"),
             "minedojo_demo_metadata": None,
         }
         metadata = getattr(self._orchestrator, "_active_minedojo_demo_metadata", None)
