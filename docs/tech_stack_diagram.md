@@ -208,7 +208,7 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 | 段階 | 役割 | 生成データ |
 | --- | --- | --- |
 | `planner.plan()` | Responses API → LangGraph | `PlanOut.goal_profile` / `constraints` / `execution_hints` / `directives` / `recovery_hints` |
-| `agent.AgentOrchestrator._execute_plan()` | LangGraph → Mineflayer | directive ごとに `executor`（`mineflayer` / `minedojo` / `chat`）を参照し、`Actions` へ meta 付きでディスパッチ |
+| `orchestrator.plan_executor.PlanExecutor` | LangGraph → Mineflayer | directive ごとに `executor`（`mineflayer` / `minedojo` / `chat`）を参照し、`Actions` へ meta 付きでディスパッチ |
 | Node Telemetry | `node-bot/runtime/telemetry.ts` | `command.meta.directive_id` / `directive.executor` を span 属性とメトリクス（`mineflayer.directive.received`）に記録 |
 
 - **Goal Profile**: gpt-5-mini から返された `goal_profile` は「誰のための作業か」「成功条件は何か」「優先度は？」を LangGraph 側で可視化するために用います。`docs/minedojo_integration.md` と同じ `mission_id` / `tags` がここにも含まれます。
