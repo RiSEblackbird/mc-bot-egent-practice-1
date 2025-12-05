@@ -15,14 +15,22 @@ from planner import (
 
 if TYPE_CHECKING:  # pragma: no cover - 型チェック専用
     from agent import AgentOrchestrator
+    from bridge_role_handler import BridgeRoleHandler
 
 
 class PerceptionCoordinator:
     """AgentOrchestrator から抽出した認識系の補助ロジック。"""
 
-    def __init__(self, agent: "AgentOrchestrator") -> None:
+    def __init__(
+        self,
+        agent: "AgentOrchestrator",
+        *,
+        bridge_roles: "BridgeRoleHandler | None" = None,
+    ) -> None:
+        # AgentOrchestrator からの副作用を明示し、テスト注入も容易にする。
         self._agent = agent
         self._logger = agent.logger
+        self._bridge_roles = bridge_roles or getattr(agent, "_bridge_roles", None)
 
     def collect_recent_mineflayer_context(
         self,
@@ -57,13 +65,19 @@ class PerceptionCoordinator:
                 for dz in range(-radius, radius + 1):
                     positions.append({"x": x + dx, "y": y + dy, "z": z + dz})
 
+        if not self._bridge_roles:
+            agent.logger.warning(
+                "skip block evaluation because bridge role handler is unavailable"
+            )
+            return
+
         loop = asyncio.get_running_loop()
         try:
             evaluations = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: agent._bridge_roles.bridge_client.bulk_eval(world, positions),
-                ),
+                    lambda: self._bridge_roles.bridge_client.bulk_eval(world, positions)
+                    ),
                 timeout=agent.settings.block_eval_timeout_seconds,
             )
         except (asyncio.TimeoutError, BridgeError) as exc:
@@ -120,8 +134,9 @@ class PerceptionCoordinator:
     async def _compose_barrier_message(self, step: str, reason: str) -> str:
         agent = self._agent
         try:
+            current_role = self._bridge_roles.current_role if self._bridge_roles else "generalist"
             context = agent.status_service.build_context_snapshot(
-                current_role_id=agent._bridge_roles.current_role
+                current_role_id=current_role
             )
             context.update({"queue_backlog": agent.chat_queue.backlog_size})
             llm_message = await compose_barrier_notification(step, reason, context)
