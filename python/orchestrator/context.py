@@ -20,6 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover - 型チェック専用
     from services.skill_repository import SkillRepository
     from utils import ThoughtActionObservationTracer
     from memory import Memory
+    from orchestrator.task_router import TaskRouter
 
 
 @dataclass(frozen=True)
@@ -49,4 +50,5 @@ class OrchestratorDependencies:
     tracer: "ThoughtActionObservationTracer"
     runtime_settings: "AgentRuntimeSettings"
     skill_repository: Optional["SkillRepository"] = None
+    task_router: Optional["TaskRouter"] = None
 

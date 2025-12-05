@@ -47,6 +47,9 @@ class PlanExecutor:
         self.memory: "Memory" = dependencies.memory
         self.status_service: "StatusService" = dependencies.status_service
         self._hybrid_handler: "HybridDirectiveHandler" = dependencies.hybrid_handler
+        self.task_router = dependencies.task_router or getattr(agent, "task_router", None)
+        if self.task_router is None:
+            raise ValueError("TaskRouter dependency is required for PlanExecutor")
         self.logger = agent.logger
         self.default_move_target = runtime.default_move_target
 
@@ -219,7 +222,9 @@ class PlanExecutor:
             if directive and directive.category in DETECTION_TASK_KEYWORDS:
                 detection_category = directive.category
             if not detection_category:
-                detection_category = self._classify_detection_task(normalized)
+                detection_category = self.task_router.classify_detection_task(
+                    normalized
+                )
             if not detection_category and plan_out.intent.strip().lower().startswith("report"):
                 detection_category = "general_status"
             if detection_category:
@@ -229,7 +234,7 @@ class PlanExecutor:
                     detection_category,
                 )
                 with directive_scope(self.actions, directive_meta):
-                    detection_result = await self._perform_detection_task(
+                    detection_result = await self.task_router.perform_detection_task(
                         detection_category
                     )
                 if detection_result:
@@ -383,7 +388,7 @@ class PlanExecutor:
             if directive and directive.category in ACTION_TASK_RULES:
                 action_category = directive.category
             if not action_category:
-                action_category = self._classify_action_task(normalized)
+                action_category = self.task_router.classify_action_task(normalized)
             if action_category:
                 self.logger.info(
                     "plan_step index=%d classified as action_task category=%s",
@@ -391,7 +396,11 @@ class PlanExecutor:
                     action_category,
                 )
                 with directive_scope(self.actions, directive_meta):
-                    handled, last_target_coords, failure_detail = await self._handle_action_task(
+                    (
+                        handled,
+                        last_target_coords,
+                        failure_detail,
+                    ) = await self.task_router.handle_action_task(
                         action_category,
                         normalized,
                         last_target_coords=last_target_coords,
@@ -508,13 +517,13 @@ class PlanExecutor:
             continue
 
         if detection_reports:
-            await self._handle_detection_reports(
+            await self.task_router.handle_detection_reports(
                 detection_reports,
                 already_responded=bool(plan_out.resp.strip()),
             )
 
         if action_backlog:
-            await self._handle_action_backlog(
+            await self.task_router.handle_action_backlog(
                 action_backlog,
                 already_responded=bool(plan_out.resp.strip()),
             )
@@ -637,13 +646,13 @@ class PlanExecutor:
         )
 
         if merged_detection_reports:
-            await self._handle_detection_reports(
+            await self.task_router.handle_detection_reports(
                 merged_detection_reports,
                 already_responded=True,
             )
 
         if action_backlog:
-            await self._handle_action_backlog(
+            await self.task_router.handle_action_backlog(
                 action_backlog,
                 already_responded=True,
             )

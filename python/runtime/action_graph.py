@@ -152,7 +152,7 @@ class ActionGraph:
                     inputs={"step": step},
                     outputs={"skill_status": "none"},
                 )
-            match = await orchestrator._find_skill_for_step(category, step)  # type: ignore[attr-defined]
+            match = await orchestrator.task_router.find_skill_for_step(category, step)  # type: ignore[attr-defined]
             if match is None:
                 return with_metadata(
                     state,
@@ -173,7 +173,7 @@ class ActionGraph:
                         inputs={"category": category, "step": step},
                         outputs={"skill_status": "none"},
                     )
-                handled, failure_detail = await orchestrator._execute_skill_match(match, step)  # type: ignore[attr-defined]
+                handled, failure_detail = await orchestrator.task_router.execute_skill_match(match, step)  # type: ignore[attr-defined]
                 status = "handled" if handled else "failed"
                 if not handled and failure_detail is None:
                     # Mineflayer 側で未登録スキルだった場合は skill_status を none に戻し、
@@ -279,7 +279,7 @@ class ActionGraph:
                     outputs={"skill_status": "failed"},
                     error="missing_skill_candidate",
                 )
-            handled, failure_detail = await orchestrator._begin_skill_exploration(match, state["step"])  # type: ignore[attr-defined]
+            handled, failure_detail = await orchestrator.task_router.begin_skill_exploration(match, state["step"])  # type: ignore[attr-defined]
             status = "exploration" if handled else "failed"
             base = {
                 "handled": handled,
@@ -300,7 +300,7 @@ class ActionGraph:
             return await handle_move(state, orchestrator)
         async def handle_equip(state: _ActionState) -> Dict[str, Any]:
             step = state["step"]
-            equip_args = orchestrator._infer_equip_arguments(step)  # type: ignore[attr-defined]
+            equip_args = orchestrator.task_router.infer_equip_arguments(step)  # type: ignore[attr-defined]
             if not equip_args:
                 await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
                     step,
@@ -435,8 +435,8 @@ class ActionGraph:
             # グラフ内で完結させる。既存のヒューリスティックを呼び出して装備推論と
             # リトライ分岐を確保するため、必要に応じて equip ノードへ再帰委譲する。
             step = state["step"]
-            mining_request = orchestrator._infer_mining_request(step)  # type: ignore[attr-defined]
-            candidate_pickaxe = orchestrator._select_pickaxe_for_targets(  # type: ignore[attr-defined]
+            mining_request = orchestrator.task_router.infer_mining_request(step)  # type: ignore[attr-defined]
+            candidate_pickaxe = orchestrator.task_router.select_pickaxe_for_targets(  # type: ignore[attr-defined]
                 mining_request["targets"]
             )
             if candidate_pickaxe:

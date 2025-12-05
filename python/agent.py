@@ -26,6 +26,7 @@ from orchestrator.directive_utils import (
     resolve_directive_for_step,
 )
 from orchestrator.skill_detection import SkillDetectionCoordinator
+from orchestrator.task_router import TaskRouter
 from orchestrator.plan_executor import PlanExecutor
 from orchestrator.role_perception_adapter import RolePerceptionAdapter
 from agent_settings import (
@@ -44,7 +45,6 @@ from planner import (
     ReActStep,
     plan,
 )
-from skills import SkillMatch, SkillNode
 from utils import log_structured_event, setup_logger
 from runtime.action_graph import ChatTask
 from runtime.inventory_sync import InventorySynchronizer
@@ -139,6 +139,22 @@ class AgentOrchestrator:
             structured_event_history_limit=self.structured_event_history_limit,
             perception_history_limit=self.perception_history_limit,
         )
+        self._action_analyzer = ActionAnalyzer()
+        self._skill_detection = SkillDetectionCoordinator(
+            actions=self.actions,
+            memory=self.memory,
+            status_service=self.status_service,
+            inventory_sync=self.inventory_sync,
+            skill_repository=self.skill_repository,
+        )
+        self.task_router = TaskRouter(
+            action_analyzer=self._action_analyzer,
+            chat_pipeline=self._chat_pipeline,
+            skill_detection=self._skill_detection,
+            minedojo_handler=self.minedojo_handler,
+            report_execution_barrier=self._report_execution_barrier,
+            logger=self.logger,
+        )
         self._dependencies = OrchestratorDependencies(
             actions=self.actions,
             memory=self.memory,
@@ -153,19 +169,12 @@ class AgentOrchestrator:
             tracer=self._tracer,
             runtime_settings=self.settings,
             skill_repository=self.skill_repository,
+            task_router=self.task_router,
         )
         self._plan_executor = PlanExecutor(
             agent=self,
             dependencies=self._dependencies,
             runtime=self._plan_runtime,
-        )
-        self._action_analyzer = ActionAnalyzer()
-        self._skill_detection = SkillDetectionCoordinator(
-            actions=self.actions,
-            memory=self.memory,
-            status_service=self.status_service,
-            inventory_sync=self.inventory_sync,
-            skill_repository=self.skill_repository,
         )
 
     async def enqueue_chat(self, username: str, message: str) -> None:
@@ -389,127 +398,6 @@ class AgentOrchestrator:
             plan_out,
             initial_target=initial_target,
             replan_depth=replan_depth,
-        )
-
-    def _classify_detection_task(self, text: str) -> Optional[str]:
-        return self._action_analyzer.classify_detection_task(text)
-
-    def _infer_equip_arguments(self, text: str) -> Optional[Dict[str, str]]:
-        return self._action_analyzer.infer_equip_arguments(text)
-
-    def _infer_mining_request(self, text: str) -> Dict[str, Any]:
-        return self._action_analyzer.infer_mining_request(text)
-
-
-    async def _perform_detection_task(self, category: str) -> Optional[Dict[str, Any]]:
-        """Mineflayer 側のステータス取得コマンドを実行し、メモリと報告用要約を更新する。"""
-
-        result, error_detail = await self._skill_detection.perform_detection_task(category)
-        if result:
-            return result
-
-        if error_detail:
-            label_map = {
-                "player_position": "現在位置の確認",
-                "inventory_status": "所持品の確認",
-                "general_status": "状態の共有",
-            }
-            await self._report_execution_barrier(
-                label_map.get(category, "ステータス確認"),
-                f"ステータス取得に失敗しました（{error_detail}）。",
-            )
-        else:
-            self.logger.warning("unknown detection category encountered category=%s", category)
-        return None
-
-    def _summarize_position_status(self, data: Dict[str, Any]) -> str:
-        return self._skill_detection.summarize_position_status(data)
-
-    def _summarize_general_status(self, data: Dict[str, Any]) -> str:
-        return self._skill_detection.summarize_general_status(data)
-
-    def _classify_action_task(self, text: str) -> Optional[str]:
-        return self._action_analyzer.classify_action_task(text)
-
-    async def _find_skill_for_step(
-        self,
-        category: str,
-        step: str,
-    ) -> Optional[SkillMatch]:
-        """MineDojo 文脈を含めたスキル探索をハンドラーへ委譲する。"""
-
-        return await self._skill_detection.find_skill_for_step(
-            self.minedojo_handler, category, step
-        )
-
-    async def _execute_skill_match(
-        self,
-        match: SkillMatch,
-        step: str,
-    ) -> Tuple[bool, Optional[str]]:
-        """既存スキルを Mineflayer 側へ再生指示し、結果を戻す。"""
-
-        return await self._skill_detection.execute_skill_match(match, step)
-
-    async def _begin_skill_exploration(
-        self,
-        match: SkillMatch,
-        step: str,
-    ) -> Tuple[bool, Optional[str]]:
-        """未習得スキルのため探索モードへ切り替える。"""
-
-        return await self._skill_detection.begin_skill_exploration(match, step)
-
-    async def _handle_action_task(
-        self,
-        category: str,
-        step: str,
-        *,
-        last_target_coords: Optional[Tuple[int, int, int]],
-        backlog: List[Dict[str, str]],
-        explicit_coords: Optional[Tuple[int, int, int]] = None,
-    ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
-        """行動タスクを処理し、失敗時は理由を添えて返す。"""
-
-        return await self._chat_pipeline.handle_action_task(
-            category,
-            step,
-            last_target_coords=last_target_coords,
-            backlog=backlog,
-            explicit_coords=explicit_coords,
-        )
-
-    def _select_pickaxe_for_targets(
-        self, ore_names: Iterable[str]
-    ) -> Optional[Dict[str, Any]]:
-        """要求鉱石に適したツルハシが記憶済みインベントリにあるかを調べる。"""
-
-        return self._chat_pipeline.select_pickaxe_for_targets(ore_names)
-
-    async def _handle_action_backlog(
-        self,
-        backlog: Iterable[Dict[str, str]],
-        *,
-        already_responded: bool,
-    ) -> None:
-        """未実装アクションの backlog をメモリとチャットへ整理する。"""
-
-        await self._chat_pipeline.handle_action_backlog(
-            backlog,
-            already_responded=already_responded,
-        )
-
-    async def _handle_detection_reports(
-        self,
-        reports: Iterable[Dict[str, Any]],
-        *,
-        already_responded: bool,
-    ) -> None:
-        """検出報告タスクをメモリへ整理し、必要に応じて丁寧な補足メッセージを送る。"""
-
-        await self._chat_pipeline.handle_detection_reports(
-            reports,
-            already_responded=already_responded,
         )
 
     def _extract_coordinates(self, text: str) -> Optional[Tuple[int, int, int]]:
