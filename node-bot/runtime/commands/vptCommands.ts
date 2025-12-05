@@ -9,6 +9,7 @@ import type {
   VptObservationSnapshot,
 } from '../snapshots.js';
 import type { CommandResponse } from '../types.js';
+import { radToDeg } from '../perception/perceptionUtils.js';
 
 export interface VptCommandContext {
   getActiveBot: () => Bot | null;
@@ -312,10 +313,6 @@ function clampPitch(radians: number): number {
 
 function degToRad(value: number): number {
   return (value * Math.PI) / 180;
-}
-
-function radToDeg(value: number): number {
-  return (value * 180) / Math.PI;
 }
 
 function delay(ms: number): Promise<void> {
