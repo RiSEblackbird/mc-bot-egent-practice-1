@@ -186,8 +186,9 @@ def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None
             resp="代替プランで進めます。",
         )
 
-    monkeypatch.setattr("agent.compose_barrier_notification", fake_barrier)
-    monkeypatch.setattr("agent.plan", fake_plan)
+    monkeypatch.setattr("perception_service.compose_barrier_notification", fake_barrier)
+    monkeypatch.setattr("orchestrator.plan_executor.plan", fake_plan)
+    monkeypatch.setattr("planner.plan", fake_plan)
 
     plan_out = PlanOut(
         plan=["近くのダイヤモンド鉱石を採掘する", "チェストに鉱石を収納する"],
@@ -260,8 +261,9 @@ def test_equip_failure_refreshes_inventory_and_requests_replan(
             resp="在庫不足を確認しました。",
         )
 
-    monkeypatch.setattr("agent.compose_barrier_notification", fake_barrier)
-    monkeypatch.setattr("agent.plan", fake_plan)
+    monkeypatch.setattr("perception_service.compose_barrier_notification", fake_barrier)
+    monkeypatch.setattr("orchestrator.plan_executor.plan", fake_plan)
+    monkeypatch.setattr("planner.plan", fake_plan)
 
     plan_out = PlanOut(
         plan=["採掘用のツルハシを装備して", "近くのダイヤモンド鉱石を採掘する"],
@@ -341,7 +343,7 @@ def test_barrier_timeout_uses_short_message(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     async def runner() -> None:
-        await orchestrator._report_execution_barrier(step, reason)
+        await orchestrator.movement_service.report_execution_barrier(step, reason)
 
     asyncio.run(runner())
 
@@ -365,7 +367,7 @@ def test_minedojo_autorecovery_runs_for_empty_plan(monkeypatch: pytest.MonkeyPat
     memory = Memory()
     orchestrator = AgentOrchestrator(actions, memory)
     dummy_executor = DummySelfDialogueExecutor()
-    orchestrator._self_dialogue_executor = dummy_executor  # type: ignore[attr-defined]
+    orchestrator.minedojo_handler._self_dialogue_executor = dummy_executor  # type: ignore[attr-defined]
 
     plan_out = PlanOut(
         plan=[],
@@ -375,7 +377,9 @@ def test_minedojo_autorecovery_runs_for_empty_plan(monkeypatch: pytest.MonkeyPat
     )
 
     async def runner() -> bool:
-        return await orchestrator._maybe_trigger_minedojo_autorecovery(plan_out)
+        return await orchestrator.minedojo_handler.maybe_trigger_autorecovery(
+            plan_out
+        )
 
     triggered = asyncio.run(runner())
 
@@ -390,7 +394,7 @@ def test_minedojo_autorecovery_skips_without_mapping(monkeypatch: pytest.MonkeyP
     memory = Memory()
     orchestrator = AgentOrchestrator(actions, memory)
     dummy_executor = DummySelfDialogueExecutor()
-    orchestrator._self_dialogue_executor = dummy_executor  # type: ignore[attr-defined]
+    orchestrator.minedojo_handler._self_dialogue_executor = dummy_executor  # type: ignore[attr-defined]
 
     plan_out = PlanOut(
         plan=[],
@@ -400,7 +404,9 @@ def test_minedojo_autorecovery_skips_without_mapping(monkeypatch: pytest.MonkeyP
     )
 
     async def runner() -> bool:
-        return await orchestrator._maybe_trigger_minedojo_autorecovery(plan_out)
+        return await orchestrator.minedojo_handler.maybe_trigger_autorecovery(
+            plan_out
+        )
 
     triggered = asyncio.run(runner())
     assert triggered is False

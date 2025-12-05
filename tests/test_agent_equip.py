@@ -153,7 +153,7 @@ def test_handle_equip_reports_barrier_when_pickaxe_missing(
     async def fake_barrier(step: str, reason: str, context: Dict[str, Any]) -> str:
         return f"障壁: {step} / {reason}"
 
-    monkeypatch.setattr("agent.compose_barrier_notification", fake_barrier)
+    monkeypatch.setattr("perception_service.compose_barrier_notification", fake_barrier)
 
     backlog: List[Dict[str, str]] = []
 

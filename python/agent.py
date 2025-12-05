@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent_bootstrap import build_agent_dependencies
 from chat_pipeline import ChatPipeline
@@ -50,6 +50,7 @@ from runtime.action_graph import ChatTask
 from runtime.inventory_sync import InventorySynchronizer
 from runtime.reflection_prompt import build_reflection_prompt
 from runtime.hybrid_directive import HybridDirectivePayload
+from services.movement_service import MovementService
 logger = setup_logger("agent")
 
 # --- 設定の読み込み --------------------------------------------------------
@@ -133,6 +134,12 @@ class AgentOrchestrator:
         self._role_perception = RolePerceptionAdapter(self)
         self._bridge_roles = self._role_perception.bridge_roles
         self._perception = self._role_perception.perception
+        self.movement_service = MovementService(
+            actions=self.actions,
+            memory=self.memory,
+            perception=self._perception,
+            logger=self.logger,
+        )
         self._plan_runtime = PlanRuntimeContext(
             default_move_target=self.default_move_target,
             low_food_threshold=self.low_food_threshold,
@@ -152,7 +159,7 @@ class AgentOrchestrator:
             chat_pipeline=self._chat_pipeline,
             skill_detection=self._skill_detection,
             minedojo_handler=self.minedojo_handler,
-            report_execution_barrier=self._report_execution_barrier,
+            report_execution_barrier=self.movement_service.report_execution_barrier,
             logger=self.logger,
         )
         self._dependencies = OrchestratorDependencies(
@@ -168,6 +175,7 @@ class AgentOrchestrator:
             minedojo_handler=self.minedojo_handler,
             tracer=self._tracer,
             runtime_settings=self.settings,
+            movement_service=self.movement_service,
             skill_repository=self.skill_repository,
             task_router=self.task_router,
         )
@@ -407,28 +415,4 @@ class AgentOrchestrator:
         self, arguments: PlanArguments | Dict[str, Any] | None
     ) -> Optional[Tuple[int, int, int]]:
         return self._action_analyzer.extract_argument_coordinates(arguments)
-
-    async def _move_to_coordinates(
-        self, coords: Iterable[int]
-    ) -> Tuple[bool, Optional[str]]:
-        """Mineflayer の移動アクションを発行し、結果をログへ残すユーティリティ。"""
-
-        x, y, z = coords
-        self.logger.info("requesting moveTo to (%d, %d, %d)", x, y, z)
-        resp = await self.actions.move_to(x, y, z)
-        self.logger.info("moveTo response=%s", resp)
-        if resp.get("ok"):
-            self.memory.set("last_destination", {"x": x, "y": y, "z": z})
-            return True, None
-
-        # ここまで来た場合は Mineflayer からエラー応答が返却されたことを意味する。
-        self.logger.error("moveTo command rejected resp=%s", resp)
-        error_detail = resp.get("error") or "Mineflayer 側の理由不明な拒否"
-        return False, error_detail
-
-    async def _report_execution_barrier(self, step: str, reason: str) -> None:
-        """処理を継続できない障壁を検知した際にチャットとログで即時共有する。"""
-
-        await self._perception.report_execution_barrier(step, reason)
-
 

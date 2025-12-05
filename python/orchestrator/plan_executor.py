@@ -27,6 +27,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from memory import Memory
     from runtime.hybrid_directive import HybridDirectiveHandler
     from runtime.status_service import StatusService
+    from services.movement_service import MovementService
 
 
 class PlanExecutor:
@@ -47,6 +48,7 @@ class PlanExecutor:
         self.memory: "Memory" = dependencies.memory
         self.status_service: "StatusService" = dependencies.status_service
         self._hybrid_handler: "HybridDirectiveHandler" = dependencies.hybrid_handler
+        self.movement_service: "MovementService" = dependencies.movement_service
         self.task_router = dependencies.task_router or getattr(agent, "task_router", None)
         if self.task_router is None:
             raise ValueError("TaskRouter dependency is required for PlanExecutor")
@@ -96,7 +98,7 @@ class PlanExecutor:
         # プラン生成が空配列で戻るケースでは行動開始前から停滞するため、
         # 直ちに障壁として報告してプレイヤーへ状況を伝える。
         if total_steps == 0:
-            await self._report_execution_barrier(
+            await self.movement_service.report_execution_barrier(
                 "LLM が生成した計画",
                 "手順が 1 件も返されず、行動に移れません。プロンプトや状況を確認してください。",
             )
@@ -200,7 +202,7 @@ class PlanExecutor:
                 try:
                     hybrid_payload = parse_hybrid_directive_args(self._hybrid_handler, directive)
                 except ValueError as exc:
-                    await self._report_execution_barrier(
+                    await self.movement_service.report_execution_barrier(
                         directive.label or directive.step or "hybrid",
                         f"ハイブリッド指示の解析に失敗しました: {exc}",
                     )
@@ -510,7 +512,7 @@ class PlanExecutor:
                 event_level=event_level,
                 log_level=log_level,
             )
-            await self._report_execution_barrier(
+            await self.movement_service.report_execution_barrier(
                 normalized,
                 "対応可能なアクションが見つからず停滞しています。計画ステップの表現を見直してください。",
             )
@@ -591,7 +593,9 @@ class PlanExecutor:
     ) -> None:
         """Mineflayer 側の失敗で計画を続行できない場合の回復処理をまとめる。"""
 
-        await self._report_execution_barrier(failed_step, failure_reason)
+        await self.movement_service.report_execution_barrier(
+            failed_step, failure_reason
+        )
 
         # 直前の再試行が完了していない状態で失敗が再発した場合は、結果を明示的に記録する。
         previous_pending = self.memory.finalize_pending_reflection(
@@ -813,13 +817,15 @@ class PlanExecutor:
                 step,
                 last_target_coords,
             )
-            move_ok, move_error = await self._move_to_coordinates(last_target_coords)
-            if not move_ok and move_error:
-                await self._report_execution_barrier(
+            move_result = await self.movement_service.move_to_coordinates(
+                last_target_coords
+            )
+            if not move_result.ok and move_result.error_detail:
+                await self.movement_service.report_execution_barrier(
                     step,
-                    f"継続移動に失敗しました（{move_error}）。",
+                    f"継続移動に失敗しました（{move_result.error_detail}）。",
                 )
-            return move_ok
+            return move_result.ok
 
         return False
 
