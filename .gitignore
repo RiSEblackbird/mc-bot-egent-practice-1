@@ -66,17 +66,17 @@ python/.python_history
 .yarnrc
 .pypirc
 .python-version
- python/.env
- python/.env.*
- python/.envrc
- # runtime 配下で個別検証する際のローカル秘密設定を誤コミットしないための除外ルール
- python/runtime/.env*
- python/runtime/.secrets/
- *.pem
- *.key
- *.p12
- # runtime/services 配下に個別検証用のローカル設定を置く際に秘匿情報を含めないように除外
- node-bot/runtime/services/*.local.*
+python/.env
+python/.env.*
+python/.envrc
+# runtime 配下で個別検証する際のローカル秘密設定を誤コミットしないための除外ルール
+python/runtime/.env*
+python/runtime/.secrets/
+*.pem
+*.key
+*.p12
+# runtime/services 配下に個別検証用のローカル設定を置く際に秘匿情報を含めないように除外
+node-bot/runtime/services/*.local.*
 # OpenTelemetry コレクターの設定ファイル（エンドポイントや認証情報が含まれる可能性があるため除外）
 otel-collector*.yaml
 otel-collector*.yml

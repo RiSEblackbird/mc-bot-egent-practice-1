@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from agent_bootstrap import build_agent_dependencies
+from agent_bootstrap import AgentInitialization, initialize_agent_runtime
 from chat_pipeline import ChatPipeline
 from orchestrator import OrchestratorDependencies, PlanRuntimeContext
 from orchestrator.action_analyzer import ActionAnalyzer
@@ -101,26 +101,27 @@ class AgentOrchestrator:
     ) -> None:
         self.actions = actions
         self.memory = memory
-        self.settings = runtime_settings or RUNTIME_SETTINGS
-        self.config = config or self.settings.config
+        # 初期化手順を専用ファクトリへ集約し、設定値と依存注入の経路を明示する。
+        bootstrap: AgentInitialization = initialize_agent_runtime(
+            owner=self,
+            actions=actions,
+            memory=memory,
+            skill_repository=skill_repository,
+            config=config,
+            runtime_settings=runtime_settings,
+            minedojo_client=minedojo_client,
+            inventory_sync=inventory_sync,
+        )
+        self.settings = bootstrap.settings
+        self.config = bootstrap.config
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
-        self.default_move_target = self.config.default_move_target
-        self.logger = setup_logger("agent.orchestrator")
+        self.default_move_target = bootstrap.default_move_target
+        self.logger = bootstrap.logger
         # LangGraph 側での意思決定に活用する閾値や履歴上限をまとめて保持する。
         self.low_food_threshold = self.settings.low_food_threshold
         self.structured_event_history_limit = self.settings.structured_event_history_limit
         self.perception_history_limit = self.settings.perception_history_limit
-        dependencies = build_agent_dependencies(
-            owner=self,
-            actions=self.actions,
-            memory=self.memory,
-            config=self.config,
-            settings=self.settings,
-            logger=self.logger,
-            skill_repository=skill_repository,
-            inventory_sync=inventory_sync,
-            minedojo_client=minedojo_client,
-        )
+        dependencies = bootstrap.dependencies
         self.skill_repository = dependencies.skill_repository
         self._tracer = dependencies.tracer
         self.inventory_sync = dependencies.inventory_sync
@@ -130,60 +131,17 @@ class AgentOrchestrator:
         self.minedojo_client = dependencies.minedojo_client
         self.minedojo_handler = dependencies.minedojo_handler
         self._hybrid_handler = dependencies.hybrid_handler
-        self._chat_pipeline = ChatPipeline(self)
-        self._role_perception = RolePerceptionAdapter(self)
+        self._chat_pipeline = bootstrap.chat_pipeline
+        self._role_perception = bootstrap.role_perception
         self._bridge_roles = self._role_perception.bridge_roles
         self._perception = self._role_perception.perception
-        self.movement_service = MovementService(
-            actions=self.actions,
-            memory=self.memory,
-            perception=self._perception,
-            logger=self.logger,
-        )
-        self._plan_runtime = PlanRuntimeContext(
-            default_move_target=self.default_move_target,
-            low_food_threshold=self.low_food_threshold,
-            structured_event_history_limit=self.structured_event_history_limit,
-            perception_history_limit=self.perception_history_limit,
-        )
-        self._action_analyzer = ActionAnalyzer()
-        self._skill_detection = SkillDetectionCoordinator(
-            actions=self.actions,
-            memory=self.memory,
-            status_service=self.status_service,
-            inventory_sync=self.inventory_sync,
-            skill_repository=self.skill_repository,
-        )
-        self.task_router = TaskRouter(
-            action_analyzer=self._action_analyzer,
-            chat_pipeline=self._chat_pipeline,
-            skill_detection=self._skill_detection,
-            minedojo_handler=self.minedojo_handler,
-            report_execution_barrier=self.movement_service.report_execution_barrier,
-            logger=self.logger,
-        )
-        self._dependencies = OrchestratorDependencies(
-            actions=self.actions,
-            memory=self.memory,
-            chat_pipeline=self._chat_pipeline,
-            role_perception=self._role_perception,
-            bridge_roles=self._bridge_roles,
-            perception=self._perception,
-            status_service=self.status_service,
-            inventory_sync=self.inventory_sync,
-            hybrid_handler=self._hybrid_handler,
-            minedojo_handler=self.minedojo_handler,
-            tracer=self._tracer,
-            runtime_settings=self.settings,
-            movement_service=self.movement_service,
-            skill_repository=self.skill_repository,
-            task_router=self.task_router,
-        )
-        self._plan_executor = PlanExecutor(
-            agent=self,
-            dependencies=self._dependencies,
-            runtime=self._plan_runtime,
-        )
+        self.movement_service = bootstrap.movement_service
+        self._plan_runtime = bootstrap.plan_runtime
+        self._action_analyzer = bootstrap.action_analyzer
+        self._skill_detection = bootstrap.skill_detection
+        self.task_router = bootstrap.task_router
+        self._dependencies = bootstrap.orchestrator_dependencies
+        self._plan_executor = bootstrap.plan_executor
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""
