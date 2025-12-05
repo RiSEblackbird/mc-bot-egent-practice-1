@@ -14,7 +14,7 @@ import { constants as fsConstants } from 'node:fs';
 import { access, appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { WebSocket } from 'ws';
-import { loadBotRuntimeConfig } from './runtime/config.js';
+import { loadConfigValues } from './runtime/configValues.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 import {
   AgentRoleDescriptor,
@@ -65,40 +65,31 @@ const CURRENT_POSITION_KEYWORDS = ['現在値', '現在地', '現在位置', '�
 // 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
 // ---- 環境変数・定数設定 ----
-const { config: runtimeConfig, warnings: runtimeWarnings } = loadBotRuntimeConfig(process.env);
-for (const warning of runtimeWarnings) {
-  console.warn(`[Config] ${warning}`);
-}
-
-// Mineflayer 制御ループの設定値はログ出力より前に初期化し、未定義参照によるクラッシュを防ぐ。
-const CONTROL_MODE = runtimeConfig.control.mode;
-const VPT_COMMANDS_ENABLED = CONTROL_MODE === 'vpt' || CONTROL_MODE === 'hybrid';
-const VPT_TICK_INTERVAL_MS = runtimeConfig.control.vpt.tickIntervalMs;
-const VPT_MAX_SEQUENCE_LENGTH = runtimeConfig.control.vpt.maxSequenceLength;
-
-console.log(
-  `[Control] mode=${CONTROL_MODE} vptEnabled=${VPT_COMMANDS_ENABLED} tick=${VPT_TICK_INTERVAL_MS}ms maxSeq=${VPT_MAX_SEQUENCE_LENGTH}`,
-);
-
-const MC_VERSION = runtimeConfig.minecraft.version;
-const MC_HOST = runtimeConfig.minecraft.host;
-const MC_PORT = runtimeConfig.minecraft.port;
-const BOT_USERNAME = runtimeConfig.minecraft.username;
-const AUTH_MODE = runtimeConfig.minecraft.authMode;
-const MC_RECONNECT_DELAY_MS = runtimeConfig.minecraft.reconnectDelayMs;
-const WS_HOST = runtimeConfig.websocket.host;
-const WS_PORT = runtimeConfig.websocket.port;
-const AGENT_CONTROL_WS_URL = runtimeConfig.agentBridge.url;
-const MOVE_GOAL_TOLERANCE = runtimeConfig.moveGoalTolerance.tolerance;
+const configValues = loadConfigValues(process.env);
+const {
+  control,
+  minecraft,
+  websocket,
+  agentBridge: agentBridgeConfig,
+  moveGoalTolerance,
+  skills,
+  telemetry: telemetryConfig,
+  perception,
+} = configValues;
+const vptCommandsEnabled = control.vptCommandsEnabled;
+const vptTickIntervalMs = control.tickIntervalMs;
+const vptMaxSequenceLength = control.maxSequenceLength;
+const skillHistoryPath = skills.historyPath;
+const perceptionEntityRadius = perception.entityRadius;
+const perceptionBlockRadius = perception.blockRadius;
+const perceptionBlockHeight = perception.blockHeight;
+const perceptionBroadcastIntervalMs = perception.broadcastIntervalMs;
+const moveGoalToleranceMeters = moveGoalTolerance.tolerance;
+const agentControlWebsocketUrl = agentBridgeConfig.url;
 const MINING_APPROACH_TOLERANCE = 1;
-const SKILL_HISTORY_PATH = runtimeConfig.skills.historyPath;
-const PERCEPTION_ENTITY_RADIUS = runtimeConfig.perception.entityRadius;
-const PERCEPTION_BLOCK_RADIUS = runtimeConfig.perception.blockRadius;
-const PERCEPTION_BLOCK_HEIGHT = runtimeConfig.perception.blockHeight;
-const PERCEPTION_BROADCAST_INTERVAL_MS = runtimeConfig.perception.broadcastIntervalMs;
 
 // ---- OpenTelemetry 初期化 ----
-const telemetry = initializeTelemetry(runtimeConfig.telemetry);
+const telemetry = initializeTelemetry(telemetryConfig);
 const tracer = telemetry.tracer;
 const commandDurationHistogram = telemetry.commandDurationMs;
 const agentBridgeEventCounter = telemetry.agentBridgeEventCounter;
@@ -107,19 +98,19 @@ const directiveCounter = telemetry.directiveCounter;
 const perceptionSnapshotHistogram = telemetry.perceptionSnapshotDurationMs;
 const perceptionErrorCounter = telemetry.perceptionErrorCounter;
 
-// AgentBridge との疎結合な連携を保つための専用サービスを初期化する。
-const agentBridge = new AgentBridge(
-  {
-    url: runtimeConfig.agentBridge.url,
-    connectTimeoutMs: runtimeConfig.agentBridge.connectTimeoutMs,
-    sendTimeoutMs: runtimeConfig.agentBridge.sendTimeoutMs,
-    healthcheckIntervalMs: runtimeConfig.agentBridge.healthcheckIntervalMs,
-    reconnectDelayMs: runtimeConfig.agentBridge.reconnectDelayMs,
-    maxRetries: runtimeConfig.agentBridge.maxRetries,
-    batchFlushIntervalMs: runtimeConfig.agentBridge.batchFlushIntervalMs,
-    batchMaxSize: runtimeConfig.agentBridge.batchMaxSize,
-    queueMaxSize: runtimeConfig.agentBridge.queueMaxSize,
-  },
+  // AgentBridge との疎結合な連携を保つための専用サービスを初期化する。
+  const agentBridge = new AgentBridge(
+    {
+      url: agentBridgeConfig.url,
+      connectTimeoutMs: agentBridgeConfig.connectTimeoutMs,
+      sendTimeoutMs: agentBridgeConfig.sendTimeoutMs,
+      healthcheckIntervalMs: agentBridgeConfig.healthcheckIntervalMs,
+      reconnectDelayMs: agentBridgeConfig.reconnectDelayMs,
+      maxRetries: agentBridgeConfig.maxRetries,
+      batchFlushIntervalMs: agentBridgeConfig.batchFlushIntervalMs,
+      batchMaxSize: agentBridgeConfig.batchMaxSize,
+      queueMaxSize: agentBridgeConfig.queueMaxSize,
+    },
   {
     tracer,
     eventCounter: agentBridgeEventCounter,
@@ -186,24 +177,24 @@ function startBotLifecycle(): void {
     'mineflayer.lifecycle.start',
     {
       attributes: {
-        'minecraft.host': MC_HOST,
-        'minecraft.port': MC_PORT,
-        'minecraft.protocol': MC_VERSION ?? 'auto',
-        'minecraft.username': BOT_USERNAME,
+        'minecraft.host': minecraft.host,
+        'minecraft.port': minecraft.port,
+        'minecraft.protocol': minecraft.version ?? 'auto',
+        'minecraft.username': minecraft.username,
       },
     },
     (span) => {
       try {
-        const protocolLabel = MC_VERSION ?? 'auto-detect (mineflayer default)';
-        console.log(`[Bot] connecting to ${MC_HOST}:${MC_PORT} with protocol ${protocolLabel} ...`);
+        const protocolLabel = minecraft.version ?? 'auto-detect (mineflayer default)';
+        console.log(`[Bot] connecting to ${minecraft.host}:${minecraft.port} with protocol ${protocolLabel} ...`);
         const nextBot = createBot({
-          host: MC_HOST,
-          port: MC_PORT,
-          username: BOT_USERNAME,
-          auth: AUTH_MODE,
+          host: minecraft.host,
+          port: minecraft.port,
+          username: minecraft.username,
+          auth: minecraft.authMode,
           // 1.21.4+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
           customPackets: CUSTOM_SLOT_PATCH,
-          ...(MC_VERSION ? { version: MC_VERSION } : {}),
+          ...(minecraft.version ? { version: minecraft.version } : {}),
         });
 
         bot = nextBot;
@@ -229,24 +220,24 @@ function getActiveAgentRole(): AgentRoleDescriptor {
   return agentRoleState.activeRole;
 }
 
-async function ensureSkillHistorySink(): Promise<void> {
-  if (!SKILL_HISTORY_PATH || skillHistoryInitialized) {
-    return;
-  }
-  try {
-    await access(SKILL_HISTORY_PATH, fsConstants.F_OK);
-    skillHistoryInitialized = true;
-    return;
-  } catch {
+  async function ensureSkillHistorySink(): Promise<void> {
+    if (!skillHistoryPath || skillHistoryInitialized) {
+      return;
+    }
     try {
-      await mkdir(dirname(SKILL_HISTORY_PATH), { recursive: true });
-      await appendFile(SKILL_HISTORY_PATH, '');
+      await access(skillHistoryPath, fsConstants.F_OK);
       skillHistoryInitialized = true;
-    } catch (error) {
-      console.error('[SkillLog] failed to prepare history sink', error);
+      return;
+    } catch {
+      try {
+        await mkdir(dirname(skillHistoryPath), { recursive: true });
+        await appendFile(skillHistoryPath, '');
+        skillHistoryInitialized = true;
+      } catch (error) {
+        console.error('[SkillLog] failed to prepare history sink', error);
+      }
     }
   }
-}
 
 function logSkillEvent(level: 'info' | 'warn' | 'error', event: string, context: Record<string, unknown>): void {
   const payload = {
@@ -256,13 +247,13 @@ function logSkillEvent(level: 'info' | 'warn' | 'error', event: string, context:
     context,
   };
   console.log(JSON.stringify(payload));
-  if (!SKILL_HISTORY_PATH) {
-    return;
+    if (!skillHistoryPath) {
+      return;
+    }
+    ensureSkillHistorySink()
+      .then(() => appendFile(skillHistoryPath, `${JSON.stringify(payload)}\n`))
+      .catch((error) => console.error('[SkillLog] failed to append event', error));
   }
-  ensureSkillHistorySink()
-    .then(() => appendFile(SKILL_HISTORY_PATH, `${JSON.stringify(payload)}\n`))
-    .catch((error) => console.error('[SkillLog] failed to append event', error));
-}
 
 /**
  * 役割変更要求を適用し、共有イベント向けにメタ情報を更新する。
@@ -342,9 +333,9 @@ async function broadcastAgentStatus(targetBot: Bot, extraPayload: Record<string,
 }
 
 async function broadcastAgentPerception(targetBot: Bot, options: { force?: boolean } = {}): Promise<void> {
-  if (!options.force && Date.now() - lastPerceptionBroadcastAt < PERCEPTION_BROADCAST_INTERVAL_MS) {
-    return;
-  }
+    if (!options.force && Date.now() - lastPerceptionBroadcastAt < perceptionBroadcastIntervalMs) {
+      return;
+    }
   const snapshot = buildPerceptionSnapshotSafe(targetBot, 'agent-event');
   if (!snapshot) {
     return;
@@ -457,13 +448,13 @@ function registerBotEventHandlers(targetBot: Bot): void {
   });
 
   targetBot.once('kicked', (reason) => {
-    console.warn(`[Bot] kicked from server: ${reason}. Retrying in ${MC_RECONNECT_DELAY_MS}ms.`);
+    console.warn(`[Bot] kicked from server: ${reason}. Retrying in ${minecraft.reconnectDelayMs}ms.`);
     bot = null;
     scheduleReconnect('kicked');
   });
 
   targetBot.once('end', (reason) => {
-    console.warn(`[Bot] disconnected (${String(reason ?? 'unknown reason')}). Retrying in ${MC_RECONNECT_DELAY_MS}ms.`);
+    console.warn(`[Bot] disconnected (${String(reason ?? 'unknown reason')}). Retrying in ${minecraft.reconnectDelayMs}ms.`);
     bot = null;
     scheduleReconnect('ended');
   });
@@ -481,12 +472,12 @@ function scheduleReconnect(reason: string = 'unknown'): void {
 
   tracer.startActiveSpan(
     'mineflayer.reconnect.schedule',
-    { attributes: { 'reconnect.delay_ms': MC_RECONNECT_DELAY_MS, 'reconnect.reason': reason } },
+    { attributes: { 'reconnect.delay_ms': minecraft.reconnectDelayMs, 'reconnect.reason': reason } },
     (span) => {
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         startBotLifecycle();
-      }, MC_RECONNECT_DELAY_MS);
+      }, minecraft.reconnectDelayMs);
       span.end();
     },
   );
@@ -498,7 +489,7 @@ startBotLifecycle();
 // LangGraph 共有イベント用の WebSocket セッションを先に確立し、初回イベント配送の待ち時間を抑える。
 agentBridge.ensureSession('startup');
 
-if (SKILL_HISTORY_PATH) {
+if (skillHistoryPath) {
   void ensureSkillHistorySink();
 }
 
@@ -520,7 +511,7 @@ function getActiveBot(): Bot | null {
   return bot;
 }
 
-startCommandServer({ host: WS_HOST, port: WS_PORT }, { tracer, executeCommand });
+startCommandServer({ host: websocket.host, port: websocket.port }, { tracer, executeCommand });
 
 // ---- コマンド実行関数 ----
 // 将来的にコマンド種別が増えても見通しよく拡張できるよう、switch 文で分岐させる。
@@ -807,22 +798,22 @@ function configureMovementProfile(movements: MovementsClass, allowDigging: boole
  * bot が入力を解除して落下してしまう。そのため縦方向の移動量が大きい場合は
  * 許容範囲を 1 ブロックへ絞り、登り切るまで入力を維持させる。
  */
-function resolveGoalNearTolerance(targetBot: Bot, target: { x: number; y: number; z: number }): number {
-  const entity = targetBot.entity;
+  function resolveGoalNearTolerance(targetBot: Bot, target: { x: number; y: number; z: number }): number {
+    const entity = targetBot.entity;
 
-  if (!entity) {
-    return MOVE_GOAL_TOLERANCE;
+    if (!entity) {
+      return moveGoalToleranceMeters;
+    }
+
+    const verticalGap = Math.abs(target.y - entity.position.y);
+
+    if (verticalGap >= 2) {
+      const tightenedTolerance = Math.min(moveGoalToleranceMeters, 1);
+      return Math.max(1, tightenedTolerance);
+    }
+
+    return moveGoalToleranceMeters;
   }
-
-  const verticalGap = Math.abs(target.y - entity.position.y);
-
-  if (verticalGap >= 2) {
-    const tightenedTolerance = Math.min(MOVE_GOAL_TOLERANCE, 1);
-    return Math.max(1, tightenedTolerance);
-  }
-
-  return MOVE_GOAL_TOLERANCE;
-}
 
 /**
  * forcedMove 発生直後に GoalChanged 例外が出た場合は再試行可能と判断するヘルパー。
@@ -1295,9 +1286,9 @@ function handleGatherVptObservationCommand(args: Record<string, unknown>): Comma
 }
 
 async function handlePlayVptActionsCommand(args: Record<string, unknown>): Promise<CommandResponse> {
-  if (!VPT_COMMANDS_ENABLED) {
-    return { ok: false, error: 'CONTROL_MODE=command のため VPT 再生は無効化されています。' };
-  }
+    if (!vptCommandsEnabled) {
+      return { ok: false, error: 'CONTROL_MODE=command のため VPT 再生は無効化されています。' };
+    }
 
   const rawActions = args.actions;
   let sanitized: VptAction[];
@@ -1314,12 +1305,12 @@ async function handlePlayVptActionsCommand(args: Record<string, unknown>): Promi
     return { ok: true, data: { executed: 0 } };
   }
 
-  if (sanitized.length > VPT_MAX_SEQUENCE_LENGTH) {
-    return {
-      ok: false,
-      error: `actions length exceeds limit (${sanitized.length} > ${VPT_MAX_SEQUENCE_LENGTH})`,
-    };
-  }
+    if (sanitized.length > vptMaxSequenceLength) {
+      return {
+        ok: false,
+        error: `actions length exceeds limit (${sanitized.length} > ${vptMaxSequenceLength})`,
+      };
+    }
 
   const activeBot = getActiveBot();
   if (!activeBot) {
@@ -1491,8 +1482,8 @@ function waitTicks(ticks: number): Promise<void> {
   if (clamped <= 0) {
     return Promise.resolve();
   }
-  return delay(clamped * VPT_TICK_INTERVAL_MS);
-}
+    return delay(clamped * vptTickIntervalMs);
+  }
 
 const ENCHANT_NAME_MAP: Record<string, string> = {
   efficiency: '効率強化',
@@ -1806,7 +1797,7 @@ function scanNearbyEntities(targetBot: Bot, origin: Vec3Type): PerceptionSnapsho
       continue;
     }
     const distance = entity.position.distanceTo(originVec);
-    if (!Number.isFinite(distance) || distance > PERCEPTION_ENTITY_RADIUS) {
+    if (!Number.isFinite(distance) || distance > perceptionEntityRadius) {
       continue;
     }
     const dx = entity.position.x - originVec.x;
@@ -1856,8 +1847,8 @@ function classifyEntityKind(entity: any): string {
 }
 
 function scanHazardsAround(targetBot: Bot, center: Vec3Type): HazardSummary {
-  const radius = PERCEPTION_BLOCK_RADIUS;
-  const height = PERCEPTION_BLOCK_HEIGHT;
+  const radius = perceptionBlockRadius;
+  const height = perceptionBlockHeight;
   let liquids = 0;
   let lava = 0;
   let magma = 0;
@@ -2145,7 +2136,7 @@ async function forwardChatToAgent(username: string, message: string): Promise<vo
       args: { username, message },
     } satisfies CommandPayload;
 
-    const ws = new WebSocket(AGENT_CONTROL_WS_URL);
+    const ws = new WebSocket(agentControlWebsocketUrl);
     const timeout = setTimeout(() => {
       console.warn('[ChatBridge] agent did not respond within 10s');
       ws.terminate();
