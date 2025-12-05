@@ -26,7 +26,7 @@ class ChatPipeline:
         agent = self._agent
         failures = await agent.status_service.prime_status_for_planning()
         if failures:
-            await agent._report_execution_barrier(
+            await agent.movement_service.report_execution_barrier(
                 "状態取得",
                 f"{', '.join(failures)} の取得に失敗しました。Mineflayer への接続状況を確認してください。",
             )

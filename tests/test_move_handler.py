@@ -12,6 +12,7 @@ PYTHON_DIR = PROJECT_ROOT / "python"
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
+from services.movement_service import MovementResult
 from runtime.move_handler import handle_move
 
 
@@ -25,16 +26,32 @@ class DummyOrchestrator:
         self.default_move_target: Optional[Tuple[int, int, int]] = None
         self._extracted: Optional[Tuple[int, int, int]] = None
         self._move_response: Tuple[bool, Optional[str]] = (True, None)
+        self.movement_service = self._build_movement_service()
 
     def _extract_coordinates(self, step: str):
         return self._extracted
 
-    async def _report_execution_barrier(self, step: str, reason: str) -> None:
-        self._reported[step] = reason
+    def _build_movement_service(self) -> Any:
+        orchestrator = self
 
-    async def _move_to_coordinates(self, target: Tuple[int, int, int]):
-        self._move_requests += (target,)
-        return self._move_response
+        class _StubMovementService:
+            def __init__(self) -> None:
+                self._stub_orchestrator = orchestrator
+
+            async def report_execution_barrier(self, step: str, reason: str) -> None:
+                orchestrator._reported[step] = reason
+
+            async def move_to_coordinates(self, target: Tuple[int, int, int]) -> MovementResult:
+                orchestrator._move_requests += (target,)
+                ok, error = orchestrator._move_response
+                return MovementResult(
+                    ok=ok,
+                    destination=target,
+                    error_detail=error,
+                    raw_response={"ok": ok, "error": error},
+                )
+
+        return _StubMovementService()
 
 
 def test_handle_move_uses_explicit_coordinates():

@@ -12,6 +12,7 @@ from .building_service import (
     restore_checkpoint,
     rollback_building_state,
 )
+from .movement_service import MovementResult, MovementService
 from .vpt_controller import VPTController, VPTModelSpec
 from .minedojo_client import MineDojoClient, MineDojoDemonstration, MineDojoMission
 
@@ -25,6 +26,8 @@ __all__ = [
     "plan_material_procurement",
     "restore_checkpoint",
     "rollback_building_state",
+    "MovementService",
+    "MovementResult",
     "VPTController",
     "VPTModelSpec",
     "MineDojoClient",

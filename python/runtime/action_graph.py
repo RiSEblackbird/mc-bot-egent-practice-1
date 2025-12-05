@@ -302,7 +302,7 @@ class ActionGraph:
             step = state["step"]
             equip_args = orchestrator.task_router.infer_equip_arguments(step)  # type: ignore[attr-defined]
             if not equip_args:
-                await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
+                await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
                     step,
                     "装備するアイテムを推測できませんでした。ツール名や用途をもう少し具体的に指示してください。",
                 )
@@ -319,7 +319,7 @@ class ActionGraph:
                 reason = (
                     f"装備前に所持品を確認できず装備手順を中断しました（{refresh_error}）。"
                 )
-                await orchestrator._report_execution_barrier(step, reason)  # type: ignore[attr-defined]
+                await orchestrator.movement_service.report_execution_barrier(step, reason)  # type: ignore[attr-defined]
                 return {
                     "handled": False,
                     "updated_target": state.get("last_target_coords"),
@@ -361,7 +361,9 @@ class ActionGraph:
             if not item_found:
                 label = item_name or tool_type or "指定装備"
                 reason = f"インベントリに {label} が見つからず装備できませんでした。"
-                await orchestrator._report_execution_barrier(step, reason)  # type: ignore[attr-defined]
+                await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
+                    step, reason
+                )
                 return {
                     "handled": False,
                     "updated_target": state.get("last_target_coords"),
@@ -414,7 +416,7 @@ class ActionGraph:
                         f"失敗しました（{detail}）。"
                     )
 
-                await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
+                await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
                     step,
                     reason,
                 )

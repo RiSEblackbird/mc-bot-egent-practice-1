@@ -136,6 +136,12 @@ Python 側で LLM プランニングとアクション実行が行われます�
 未実装アクション backlog の整理を単一のファサードで扱います。ActionAnalyzer の
 キーワード設定を拡張したい場合は TaskRouter に差し替えるだけで plan 実行系へ影響
 を伝播でき、MineDojo 側の探索/再生ハンドリングもここに集約されています。
+移動および障壁通知については `services/movement_service.py` に委譲し、`AgentOrchestrator`
+のプライベートメソッドを廃止しました。`MovementService` は Actions 依存を明示的に
+受け取り、移動成功時の `Memory.last_destination` 更新と構造化ログ出力をセットで実施
+します。LangGraph ノード側では `await orchestrator.movement_service.move_to_coordinates((x,
+y, z))` のように呼び出すだけでログ/メモリ/失敗通知を統一フォーマットで処理できる
+ため、新規メンバーでも副作用の流れを追いやすくなりました。
 ランタイムは `python/runtime` 配下へ分割しており、`bootstrap.py` が設定読込と依存組み立て、`websocket_server.py` が WebSocket 受信ループ、`minedojo.py` が自己対話やスキル登録ヘルパーを担います。`python/__main__.py` からはこれらを束ねて `python -m python` で起動できます。
 設定値の読み込みは `python/config.py` に統合しており、ポート番号やデフォルト座標のバリデーションを一括で処理します。
 ユニットテスト `tests/test_agent_config.py` で挙動を確認できるため、環境変数を追加した場合も回帰チェックが容易です。

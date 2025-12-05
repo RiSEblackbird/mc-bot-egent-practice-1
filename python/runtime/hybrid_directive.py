@@ -86,14 +86,14 @@ class HybridDirectiveHandler:
                 )
         except ActionValidationError as exc:
             self._logger.warning("hybrid directive validation failed: %s", exc)
-            await orchestrator._report_execution_barrier(
+            await orchestrator.movement_service.report_execution_barrier(
                 directive.label or directive.step or "hybrid",
                 f"ハイブリッド指示の検証に失敗しました: {exc}",
             )
             return False
         except Exception:
             self._logger.exception("hybrid directive execution failed")
-            await orchestrator._report_execution_barrier(
+            await orchestrator.movement_service.report_execution_barrier(
                 directive.label or directive.step or "hybrid",
                 "hybrid 指示の実行中に例外が発生しました。",
             )

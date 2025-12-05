@@ -18,6 +18,7 @@ if TYPE_CHECKING:  # pragma: no cover - 型チェック専用
     from runtime.minedojo_handler import MineDojoHandler
     from runtime.status_service import StatusService
     from services.skill_repository import SkillRepository
+    from services.movement_service import MovementService
     from utils import ThoughtActionObservationTracer
     from memory import Memory
     from orchestrator.task_router import TaskRouter
@@ -49,6 +50,7 @@ class OrchestratorDependencies:
     minedojo_handler: "MineDojoHandler"
     tracer: "ThoughtActionObservationTracer"
     runtime_settings: "AgentRuntimeSettings"
+    movement_service: "MovementService"
     skill_repository: Optional["SkillRepository"] = None
     task_router: Optional["TaskRouter"] = None
 

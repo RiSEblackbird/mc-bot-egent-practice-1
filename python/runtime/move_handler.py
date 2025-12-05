@@ -29,7 +29,7 @@ async def handle_move(
         target = orchestrator.default_move_target  # type: ignore[attr-defined]
         used_default = True
     if target is None:
-        await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
+        await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
             step,
             "指示文から移動先の座標を特定できず、実行を継続できませんでした。文章に XYZ 形式の座標を含めてください。",
         )
@@ -39,14 +39,14 @@ async def handle_move(
             "failure_detail": "移動先の座標が不明です。",
         }
 
-    move_ok, move_error = await orchestrator._move_to_coordinates(target)  # type: ignore[attr-defined]
+    move_result = await orchestrator.movement_service.move_to_coordinates(target)  # type: ignore[attr-defined]
     if used_default:
-        await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
+        await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
             step,
             "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
         )
-    if not move_ok:
-        error_detail = move_error or "Mineflayer 側で移動が拒否されました"
+    if not move_result.ok:
+        error_detail = move_result.error_detail or "Mineflayer 側で移動が拒否されました"
         return {
             "handled": False,
             "updated_target": last_target,

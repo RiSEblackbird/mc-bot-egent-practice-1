@@ -292,3 +292,20 @@ LangGraph / Mineflayer / MineDojo / AgentBridge（Paper）/ OpenAI / blazity CLI
 
 これらの提案は README のロードマップとリンクさせ、新規メンバーが自然言語インタラクション改善の方向性をすぐに理解できるようにします。
 
+### 7.5 Movement Service（移動ログ/障壁通知の分離）
+
+- **目的**: 移動要求の可観測性とメモリ更新をサービス層へ隔離し、`AgentOrchestrator` の肥大化を防ぐ。
+- **実装**:
+  - `services/movement_service.py` の `MovementService` が `Actions.move_to` の結果を `MovementResult` として返し、成功/失敗ログを統一。
+  - `report_execution_barrier()` は `event=movement.execution_barrier` を含む構造化ログとチャット通知を同時に発行する。
+  - 移動成功時は自動で `Memory.last_destination` を更新するため、LangGraph ノードは副作用を意識せずに呼び出せる。
+- **使用例**:
+
+```python
+result = await orchestrator.movement_service.move_to_coordinates((12, 65, -4))
+if not result.ok and result.error_detail:
+    await orchestrator.movement_service.report_execution_barrier(
+        "採掘地点への移動", f"移動に失敗しました: {result.error_detail}",
+    )
+```
+
