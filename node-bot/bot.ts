@@ -1,6 +1,6 @@
 // 日本語コメント：Mineflayer ボット（WSコマンド受信）
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
-import { createBot, Bot } from 'mineflayer';
+import type { Bot } from 'mineflayer';
 import type { Item } from 'prismarine-item';
 import Vec3, { Vec3 as Vec3Type } from 'vec3';
 import { SpanStatusCode } from '@opentelemetry/api';
@@ -9,15 +9,11 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
-import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { bootstrapRuntime } from './runtime/bootstrap.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 import {
   AgentRoleDescriptor,
-  AgentRoleState,
-  createInitialAgentRoleState,
-  resolveAgentRole,
 } from './runtime/roles.js';
 import { startCommandServer } from './runtime/server.js';
 import { runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
@@ -30,6 +26,7 @@ import {
   createPerceptionBroadcastState,
   type PerceptionBroadcastState,
 } from './runtime/services/telemetryBroadcast.js';
+import { BotLifecycleService } from './runtime/services/lifecycleService.js';
 import type {
   EnvironmentSnapshot,
   FoodDictionary,
@@ -117,13 +114,9 @@ const SUPPORTED_VPT_CONTROLS: readonly VptControlName[] = [
 const SUPPORTED_VPT_CONTROLS_SET = new Set<string>(SUPPORTED_VPT_CONTROLS);
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
-// 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
-let bot: Bot | null = null;
-let reconnectTimer: NodeJS.Timeout | null = null;
 let cachedFoodsByName: FoodDictionary = {};
 let isConsumingFood = false;
 let lastHungerWarningAt = 0;
-const agentRoleState: AgentRoleState = createInitialAgentRoleState();
 const PRIMARY_AGENT_ID = 'primary';
 let isVptPlaybackActive = false;
 // 知覚ブロードキャストのキャッシュを保持し、サービス間で共有する。
@@ -151,83 +144,30 @@ const navigationController = new NavigationController({
   },
 });
 
+// Mineflayer のライフサイクルや役割ステートをまとめて扱うサービス。
+// bot.ts 側ではインスタンス生成とイベント組み立てだけに集中する。
+const lifecycleService = new BotLifecycleService({
+  tracer,
+  reconnectCounter,
+  minecraft,
+  customSlotPatch: CUSTOM_SLOT_PATCH,
+  pathfinderPlugin: pathfinder,
+  agentBridge,
+});
+
 const STARVATION_FOOD_LEVEL = 0;
 const HUNGER_WARNING_COOLDOWN_MS = 30_000;
 
-/**
- * Minecraft サーバーへの接続を確立し、Mineflayer Bot を初期化する。
- * 失敗した場合でも再試行を継続して開発者の手戻りを防ぐ。
- */
-function startBotLifecycle(): void {
-  tracer.startActiveSpan(
-    'mineflayer.lifecycle.start',
-    {
-      attributes: {
-        'minecraft.host': minecraft.host,
-        'minecraft.port': minecraft.port,
-        'minecraft.protocol': minecraft.version ?? 'auto',
-        'minecraft.username': minecraft.username,
-      },
-    },
-    (span) => {
-      try {
-        const protocolLabel = minecraft.version ?? 'auto-detect (mineflayer default)';
-        console.log(`[Bot] connecting to ${minecraft.host}:${minecraft.port} with protocol ${protocolLabel} ...`);
-        const nextBot = createBot({
-          host: minecraft.host,
-          port: minecraft.port,
-          username: minecraft.username,
-          auth: minecraft.authMode,
-          // 1.21.4+ の ItemStack 追加フィールドに対応するためのカスタムパケット定義。
-          customPackets: CUSTOM_SLOT_PATCH,
-          ...(minecraft.version ? { version: minecraft.version } : {}),
-        });
+const getActiveAgentRole = (): AgentRoleDescriptor => lifecycleService.getActiveAgentRole();
 
-        bot = nextBot;
-        nextBot.loadPlugin(pathfinder);
-        registerBotEventHandlers(nextBot);
-      } catch (error) {
-        span.setStatus({
-          code: SpanStatusCode.ERROR,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        console.error('[Bot] failed to start lifecycle', error);
-      } finally {
-        span.end();
-      }
-    },
-  );
-}
-
-/**
- * 現在の役割ステートを読み出すヘルパー。
- */
-function getActiveAgentRole(): AgentRoleDescriptor {
-  return agentRoleState.activeRole;
-}
-
-/**
- * 役割変更要求を適用し、共有イベント向けにメタ情報を更新する。
- */
-function applyAgentRoleUpdate(roleId: string, source: string, reason?: string): AgentRoleDescriptor {
-  const descriptor = resolveAgentRole(roleId);
-  agentRoleState.activeRole = descriptor;
-  agentRoleState.lastEventId = randomUUID();
-  agentRoleState.lastUpdatedAt = Date.now();
-  console.log('[Role] switched agent role', {
-    roleId: descriptor.id,
-    label: descriptor.label,
-    source,
-    reason: reason ?? 'unspecified',
-  });
-  return descriptor;
-}
+const applyAgentRoleUpdate = (roleId: string, source: string, reason?: string): AgentRoleDescriptor =>
+  lifecycleService.applyAgentRoleUpdate(roleId, source, reason);
 
 /**
  * Python 側の LangGraph 共有メモリへイベントを伝搬する補助ユーティリティ。
  */
 async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
-  await agentBridge.emit(event);
+  await lifecycleService.emitAgentEvent(event);
 }
 
 /**
@@ -236,11 +176,11 @@ async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
 async function broadcastAgentPosition(targetBot: Bot): Promise<void> {
   const { x, y, z } = targetBot.entity.position;
   const rounded = { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) };
-  const previous = agentRoleState.lastBroadcastPosition;
+  const previous = lifecycleService.getLastBroadcastPosition();
   if (previous && previous.x === rounded.x && previous.y === rounded.y && previous.z === rounded.z) {
     return;
   }
-  agentRoleState.lastBroadcastPosition = rounded;
+  lifecycleService.setLastBroadcastPosition(rounded);
 
   await emitAgentEvent({
     channel: 'multi-agent',
@@ -372,50 +312,24 @@ function registerBotEventHandlers(targetBot: Bot): void {
     const isConnectionFailure = error.code === 'ECONNREFUSED' || !targetBot.entity;
 
     if (isConnectionFailure) {
-      bot = null;
       // Mineflayer は接続失敗時に error->end の順でイベントが発生するため、早期にリトライを予約する。
-      scheduleReconnect('connection_error');
+      lifecycleService.handleConnectionLoss('connection_error');
     }
   });
 
   targetBot.once('kicked', (reason) => {
     console.warn(`[Bot] kicked from server: ${reason}. Retrying in ${minecraft.reconnectDelayMs}ms.`);
-    bot = null;
-    scheduleReconnect('kicked');
+    lifecycleService.handleConnectionLoss('kicked');
   });
 
   targetBot.once('end', (reason) => {
     console.warn(`[Bot] disconnected (${String(reason ?? 'unknown reason')}). Retrying in ${minecraft.reconnectDelayMs}ms.`);
-    bot = null;
-    scheduleReconnect('ended');
+    lifecycleService.handleConnectionLoss('ended');
   });
 }
 
-/**
- * Bot が切断された場合に再接続を予約する。重複予約を防ぐため、既存タイマーを考慮する。
- */
-function scheduleReconnect(reason: string = 'unknown'): void {
-  if (reconnectTimer) {
-    return;
-  }
-
-  reconnectCounter.add(1, { reason });
-
-  tracer.startActiveSpan(
-    'mineflayer.reconnect.schedule',
-    { attributes: { 'reconnect.delay_ms': minecraft.reconnectDelayMs, 'reconnect.reason': reason } },
-    (span) => {
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        startBotLifecycle();
-      }, minecraft.reconnectDelayMs);
-      span.end();
-    },
-  );
-}
-
 // 初回接続を起動
-startBotLifecycle();
+lifecycleService.startBotLifecycle((nextBot) => registerBotEventHandlers(nextBot));
 
 // LangGraph 共有イベント用の WebSocket セッションを先に確立し、初回イベント配送の待ち時間を抑える。
 agentBridge.ensureSession('startup');
@@ -424,18 +338,7 @@ agentBridge.ensureSession('startup');
  * コマンド実行時に利用可能な Bot インスタンスを取得する。未接続の場合は null を返す。
  */
 function getActiveBot(): Bot | null {
-  if (!bot) {
-    console.warn('[Bot] command requested but bot instance is not ready yet.');
-    return null;
-  }
-
-  // entity が未定義の間はまだスポーン完了前なので、チャットや移動を実行しない。
-  if (!bot.entity) {
-    console.warn('[Bot] command requested but spawn sequence has not completed.');
-    return null;
-  }
-
-  return bot;
+  return lifecycleService.getActiveBot();
 }
 
 // ---- コマンドハンドラの組み立て ----
