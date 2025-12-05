@@ -24,6 +24,33 @@ import {
 } from './runtime/roles.js';
 import { startCommandServer } from './runtime/server.js';
 import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
+import type {
+  EnvironmentSnapshot,
+  FoodDictionary,
+  FoodInfo,
+  GatherStatusKind,
+  GeneralStatusSnapshot,
+  DigPermissionSnapshot,
+  HazardSummary,
+  InventoryItemSnapshot,
+  InventorySnapshot,
+  LightingSummary,
+  NullableDurabilityValue,
+  NearbyEntitySummary,
+  PerceptionSnapshot,
+  PositionReference,
+  PositionSnapshot,
+  RegisteredSkill,
+  VptAction,
+  VptControlAction,
+  VptControlName,
+  VptLookAction,
+  VptNavigationHint,
+  VptObservationHotbarSlot,
+  VptObservationSnapshot,
+  VptWaitAction,
+  WeatherSummary,
+} from './runtime/snapshots.js';
 import type { AgentBridgeSessionState, AgentEventEnvelope, CommandPayload, CommandResponse, MultiAgentEventPayload } from './runtime/types.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
@@ -87,138 +114,6 @@ const directiveCounter = telemetry.directiveCounter;
 const perceptionSnapshotHistogram = telemetry.perceptionSnapshotDurationMs;
 const perceptionErrorCounter = telemetry.perceptionErrorCounter;
 
-type GatherStatusKind = 'position' | 'inventory' | 'general' | 'environment';
-
-interface PositionSnapshot {
-  kind: 'position';
-  position: { x: number; y: number; z: number };
-  dimension: string;
-  formatted: string;
-}
-
-type NullableDurabilityValue = number | null;
-
-interface InventoryItemSnapshot {
-  slot: number;
-  name: string;
-  displayName: string;
-  count: number;
-  enchantments: string[];
-  maxDurability: NullableDurabilityValue;
-  durabilityUsed: NullableDurabilityValue;
-  durability: NullableDurabilityValue;
-}
-
-interface InventorySnapshot {
-  kind: 'inventory';
-  occupiedSlots: number;
-  totalSlots: number;
-  items: InventoryItemSnapshot[];
-  pickaxes: InventoryItemSnapshot[];
-  formatted: string;
-}
-
-interface DigPermissionSnapshot {
-  allowed: boolean;
-  gameMode: string;
-  fallbackMovementInitialized: boolean;
-  reason: string;
-}
-
-interface GeneralStatusSnapshot {
-  kind: 'general';
-  health: number;
-  maxHealth: number;
-  food: number;
-  saturation: number;
-  oxygenLevel: number;
-  digPermission: DigPermissionSnapshot;
-  agentRole: AgentRoleDescriptor;
-  formatted: string;
-  perception?: PerceptionSnapshot | null;
-}
-
-interface PositionReference {
-  x: number;
-  y: number;
-  z: number;
-  distance: number;
-  bearing: string;
-}
-
-interface NearbyEntitySummary {
-  name: string;
-  kind: string;
-  distance: number;
-  bearing: string;
-  position: { x: number; y: number; z: number };
-}
-
-interface HazardSummary {
-  liquids: number;
-  lava: number;
-  magma: number;
-  voids: number;
-  warnings: string[];
-  closestLiquid: PositionReference | null;
-  closestVoid: PositionReference | null;
-}
-
-interface LightingSummary {
-  sky: number | null;
-  block: number | null;
-}
-
-interface WeatherSummary {
-  isRaining: boolean;
-  rainLevel: number;
-  thunderLevel: number;
-  label: string;
-}
-
-interface PerceptionSnapshot {
-  kind: 'perception';
-  timestamp: number;
-  position: { x: number; y: number; z: number; dimension: string };
-  health?: number;
-  food_level?: number;
-  weather: WeatherSummary;
-  time: {
-    age: number;
-    day: number;
-    timeOfDay: number;
-    isDay: boolean;
-  };
-  lighting: LightingSummary;
-  hazards: HazardSummary;
-  nearby_entities: {
-    total: number;
-    hostiles: number;
-    players: number;
-    details: NearbyEntitySummary[];
-  };
-  warnings: string[];
-  summary?: string;
-}
-
-interface EnvironmentSnapshot {
-  kind: 'environment';
-  perception: PerceptionSnapshot | null;
-  role: AgentRoleDescriptor;
-  eventQueueSize: number;
-}
-
-type VptControlName =
-  | 'forward'
-  | 'back'
-  | 'left'
-  | 'right'
-  | 'jump'
-  | 'sprint'
-  | 'sneak'
-  | 'attack'
-  | 'use';
-
 const SUPPORTED_VPT_CONTROLS: readonly VptControlName[] = [
   'forward',
   'back',
@@ -231,73 +126,6 @@ const SUPPORTED_VPT_CONTROLS: readonly VptControlName[] = [
   'use',
 ] as const;
 const SUPPORTED_VPT_CONTROLS_SET = new Set<string>(SUPPORTED_VPT_CONTROLS);
-
-interface VptControlAction {
-  kind: 'control';
-  control: VptControlName;
-  state: boolean;
-  durationTicks: number;
-}
-
-interface VptLookAction {
-  kind: 'look';
-  yaw: number;
-  pitch: number;
-  relative?: boolean;
-  durationTicks?: number;
-}
-
-interface VptWaitAction {
-  kind: 'wait';
-  durationTicks: number;
-}
-
-type VptAction = VptControlAction | VptLookAction | VptWaitAction;
-
-interface VptNavigationHint {
-  targetYawDegrees: number;
-  horizontalDistance: number;
-  verticalOffset: number;
-}
-
-interface VptObservationHotbarSlot {
-  slot: number;
-  name: string;
-  displayName: string;
-  count: number;
-}
-
-interface VptObservationSnapshot {
-  position: { x: number; y: number; z: number };
-  velocity: { x: number; y: number; z: number };
-  orientation: { yawDegrees: number; pitchDegrees: number };
-  status: { health: number; food: number; saturation: number };
-  onGround: boolean;
-  hotbar: VptObservationHotbarSlot[];
-  heldItem: string | null;
-  navigationHint: VptNavigationHint | null;
-  timestamp: number;
-  tickAge: number;
-  dimension: string;
-}
-
-interface RegisteredSkill {
-  id: string;
-  title: string;
-  description: string;
-  steps: string[];
-  tags: string[];
-  createdAt: number;
-}
-
-interface FoodInfo {
-  // minecraft-data 側の構造体では foodPoints / saturation 等が格納されている。
-  // 本エージェントでは存在確認のみ行うため、詳細なフィールド定義は必須ではない。
-  foodPoints?: number;
-  saturation?: number;
-}
-
-type FoodDictionary = Record<string, FoodInfo>;
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
 // 接続失敗時にリトライするため、Bot インスタンスは都度生成し直す。
