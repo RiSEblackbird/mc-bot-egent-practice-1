@@ -25,6 +25,12 @@ import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telem
 import { NavigationController } from './runtime/navigationController.js';
 import { createEquipItemCommandHandler, EQUIP_TOOL_MATCHERS } from './runtime/commands/equipItemCommand.js';
 import { createSkillCommandHandlers } from './runtime/commands/skillCommands.js';
+import {
+  broadcastAgentPerception,
+  broadcastAgentStatus,
+  createPerceptionBroadcastState,
+  type PerceptionBroadcastState,
+} from './runtime/services/telemetryBroadcast.js';
 import type {
   EnvironmentSnapshot,
   FoodDictionary,
@@ -139,8 +145,8 @@ let lastHungerWarningAt = 0;
 const agentRoleState: AgentRoleState = createInitialAgentRoleState();
 const PRIMARY_AGENT_ID = 'primary';
 let isVptPlaybackActive = false;
-let lastPerceptionSnapshot: PerceptionSnapshot | null = null;
-let lastPerceptionBroadcastAt = 0;
+// 知覚ブロードキャストのキャッシュを保持し、サービス間で共有する。
+const perceptionBroadcastState: PerceptionBroadcastState = createPerceptionBroadcastState();
 
 // forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
 const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
@@ -269,49 +275,32 @@ async function broadcastAgentPosition(targetBot: Bot): Promise<void> {
 }
 
 /**
- * 体力や満腹度の更新を LangGraph 側へ通知する。
+ * 体力や満腹度の更新を LangGraph 側へ通知するためのラッパー。
+ * 実際の送信ロジックは runtime/services/telemetryBroadcast.ts へ集約し、
+ * Bot ファイル側では依存注入の組み立てに専念する。
  */
-async function broadcastAgentStatus(targetBot: Bot, extraPayload: Record<string, unknown> = {}): Promise<void> {
-  const health = Math.round(targetBot.health);
-  const rawMaxHealth = Number((targetBot as Record<string, unknown>).maxHealth ?? 20);
-  const maxHealth = Number.isFinite(rawMaxHealth) ? rawMaxHealth : 20;
-  const food = Math.round(targetBot.food);
-  const saturation = Number.isFinite(targetBot.foodSaturation)
-    ? Math.round((targetBot.foodSaturation ?? 0) * 10) / 10
-    : 0;
-
-  await emitAgentEvent({
-    channel: 'multi-agent',
-    event: 'status',
-    agentId: PRIMARY_AGENT_ID,
-    timestamp: Date.now(),
-    payload: {
-      health,
-      maxHealth,
-      food,
-      saturation,
-      roleId: getActiveAgentRole().id,
-      ...extraPayload,
-    },
+async function broadcastAgentStatusEvent(
+  targetBot: Bot,
+  extraPayload: Record<string, unknown> = {},
+): Promise<void> {
+  await broadcastAgentStatus({
+    targetBot,
+    agentBridge,
+    primaryAgentId: PRIMARY_AGENT_ID,
+    getActiveAgentRole,
+    extraPayload,
   });
 }
 
-async function broadcastAgentPerception(targetBot: Bot, options: { force?: boolean } = {}): Promise<void> {
-    if (!options.force && Date.now() - lastPerceptionBroadcastAt < perceptionBroadcastIntervalMs) {
-      return;
-    }
-  const snapshot = buildPerceptionSnapshotSafe(targetBot, 'agent-event');
-  if (!snapshot) {
-    return;
-  }
-  lastPerceptionBroadcastAt = Date.now();
-  lastPerceptionSnapshot = snapshot;
-  await emitAgentEvent({
-    channel: 'multi-agent',
-    event: 'perception',
-    agentId: PRIMARY_AGENT_ID,
-    timestamp: Date.now(),
-    payload: snapshot,
+async function broadcastAgentPerceptionEvent(targetBot: Bot, options: { force?: boolean } = {}): Promise<void> {
+  await broadcastAgentPerception({
+    targetBot,
+    agentBridge,
+    primaryAgentId: PRIMARY_AGENT_ID,
+    buildPerceptionSnapshotSafe,
+    state: perceptionBroadcastState,
+    perceptionBroadcastIntervalMs,
+    force: options.force,
   });
 }
 
@@ -366,20 +355,20 @@ function registerBotEventHandlers(targetBot: Bot): void {
     targetBot.pathfinder.setMovements(cautiousMovementProfile);
     console.log('[Bot] movement profiles initialized (cautious default / digging fallback).');
     targetBot.chat('起動しました。（Mineflayer）');
-    void broadcastAgentStatus(targetBot, { lifecycle: 'spawn' });
+    void broadcastAgentStatusEvent(targetBot, { lifecycle: 'spawn' });
     void broadcastAgentPosition(targetBot);
-    void broadcastAgentPerception(targetBot, { force: true });
+    void broadcastAgentPerceptionEvent(targetBot, { force: true });
   });
 
   targetBot.on('health', () => {
     void monitorCriticalHunger(targetBot);
-    void broadcastAgentStatus(targetBot);
-    void broadcastAgentPerception(targetBot);
+    void broadcastAgentStatusEvent(targetBot);
+    void broadcastAgentPerceptionEvent(targetBot);
   });
 
   targetBot.on('move', () => {
     void broadcastAgentPosition(targetBot);
-    void broadcastAgentPerception(targetBot);
+    void broadcastAgentPerceptionEvent(targetBot);
   });
 
   // サーバーから強制移動が通知された場合はタイムスタンプを更新し、
@@ -1236,10 +1225,10 @@ function clonePerceptionSnapshot(snapshot: PerceptionSnapshot | null): Perceptio
 function samplePerceptionSnapshot(targetBot: Bot, reason: string = 'general-status'): PerceptionSnapshot | null {
   const snapshot = buildPerceptionSnapshotSafe(targetBot, reason);
   if (snapshot) {
-    lastPerceptionSnapshot = snapshot;
+    perceptionBroadcastState.lastSnapshot = snapshot;
     return clonePerceptionSnapshot(snapshot);
   }
-  return clonePerceptionSnapshot(lastPerceptionSnapshot);
+  return clonePerceptionSnapshot(perceptionBroadcastState.lastSnapshot);
 }
 
 function buildPerceptionSnapshotSafe(targetBot: Bot, reason: string): PerceptionSnapshot | null {
