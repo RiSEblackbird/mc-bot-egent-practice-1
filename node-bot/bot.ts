@@ -25,6 +25,7 @@ import {
 import { AgentBridge } from './runtime/agentBridge.js';
 import { startCommandServer } from './runtime/server.js';
 import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
+import { NavigationController } from './runtime/navigationController.js';
 import type {
   EnvironmentSnapshot,
   FoodDictionary,
@@ -137,11 +138,6 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 let cachedFoodsByName: FoodDictionary = {};
 let isConsumingFood = false;
 let lastHungerWarningAt = 0;
-let lastMoveTarget: { x: number; y: number; z: number } | null = null;
-let lastForcedMoveAt = 0;
-let lastForcedMoveLoggedAt = 0;
-let cautiousMovements: MovementsClass | null = null;
-let digPermissiveMovements: MovementsClass | null = null;
 const agentRoleState: AgentRoleState = createInitialAgentRoleState();
 const PRIMARY_AGENT_ID = 'primary';
 const skillRegistry = new Map<string, RegisteredSkill>();
@@ -164,6 +160,13 @@ type MutableMovements = MovementsClass & {
   canDig?: boolean;
   digCost?: number;
 };
+
+const navigationController = new NavigationController({
+  moveGoalToleranceMeters,
+  forcedMoveRetryWindowMs: FORCED_MOVE_RETRY_WINDOW_MS,
+  forcedMoveMaxRetries: FORCED_MOVE_MAX_RETRIES,
+  forcedMoveRetryDelayMs: FORCED_MOVE_RETRY_DELAY_MS,
+});
 
 const STARVATION_FOOD_LEVEL = 0;
 const HUNGER_WARNING_COOLDOWN_MS = 30_000;
@@ -385,12 +388,17 @@ function registerBotEventHandlers(targetBot: Bot): void {
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
     const digFriendlyMovements = new MovementsWithData(targetBot, mcData);
-    configureMovementProfile(digFriendlyMovements, true);
-    digPermissiveMovements = digFriendlyMovements;
+    navigationController.configureMovementProfile(digFriendlyMovements, true, {
+      enable: DIGGING_ENABLED_COST,
+      disable: DIGGING_DISABLED_COST,
+    });
 
     const cautiousMovementProfile = new MovementsWithData(targetBot, mcData);
-    configureMovementProfile(cautiousMovementProfile, false);
-    cautiousMovements = cautiousMovementProfile;
+    navigationController.configureMovementProfile(cautiousMovementProfile, false, {
+      enable: DIGGING_ENABLED_COST,
+      disable: DIGGING_DISABLED_COST,
+    });
+    navigationController.setMovementProfiles(cautiousMovementProfile, digFriendlyMovements);
 
     // Paper 1.21.x ではパルクールやダッシュを多用すると "moved wrongly" 警告が増えるが、
     // 危険地帯での生存性を優先して俊敏な動きを維持したいので、敢えて高機動モードを維持する。
@@ -417,11 +425,9 @@ function registerBotEventHandlers(targetBot: Bot): void {
   // moveTo コマンド側で直近発生の有無を基準にリトライを判断する。
   targetBot.on('forcedMove', () => {
     const now = Date.now();
-    lastForcedMoveAt = now;
-
-    if (now - lastForcedMoveLoggedAt >= 1_000) {
+    const shouldLog = navigationController.recordForcedMove(now);
+    if (shouldLog) {
       console.warn('[Bot] server corrected our position (forcedMove). Monitoring for retries.');
-      lastForcedMoveLoggedAt = now;
     }
   });
 
@@ -748,193 +754,8 @@ function handleChatCommand(args: Record<string, unknown>): CommandResponse {
 
 // ---- moveTo コマンド処理 ----
 // 指定座標へ pathfinder を使って移動する。
-
-/**
- * 指定時間だけ待機して非同期処理のタイミングを調整する汎用ユーティリティ。
- *
- * Mineflayer の pathfinder は連続した再探索を短時間で要求すると負荷が高くなるため、
- * リトライ前に短い休止を挟んでサーバーの位置補正完了を待つ目的で利用する。
- */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-/**
- * Mineflayer の経路探索に用いる Movements のパラメータを統一的に調整する。
- *
- * ここで掘削可否や移動コストを明示的に設定しておくことで、
- * 既存の pathfinder.goto 呼び出し側が余計な知識を持たずに済む。
- */
-function configureMovementProfile(movements: MovementsClass, allowDigging: boolean): void {
-  const mutable = movements as MutableMovements;
-  mutable.allowParkour = true;
-  mutable.allowSprinting = true;
-  mutable.canDig = allowDigging;
-
-  if (allowDigging) {
-    mutable.digCost = DIGGING_ENABLED_COST;
-    return;
-  }
-
-  // 掘削不可の状態では掘る場合のコストを大きく設定し、AI が安易に壁を壊す選択を避ける。
-  const currentCost = mutable.digCost ?? DIGGING_ENABLED_COST;
-  mutable.digCost = Math.max(currentCost, DIGGING_DISABLED_COST);
-}
-
-/**
- * moveTo コマンドで利用する到達許容距離（ブロック数）。
- *
- * Mineflayer の GoalBlock は指定ブロックへ完全一致しないと完了扱いにならず、
- * ブロックの段差や水流の影響で「目的地に着いたのに失敗扱い」になるケースが多い。
- * GoalNear を用いることで ±3 ブロックの範囲を許容し、柔軟に到着完了判定を行う。
- */
-
-/**
- * GoalNear の許容距離を状況に応じて補正する。
- *
- * 梯子やツタを上る際に y 軸方向の差が 2 以上残っている段階で完了扱いになると、
- * bot が入力を解除して落下してしまう。そのため縦方向の移動量が大きい場合は
- * 許容範囲を 1 ブロックへ絞り、登り切るまで入力を維持させる。
- */
-  function resolveGoalNearTolerance(targetBot: Bot, target: { x: number; y: number; z: number }): number {
-    const entity = targetBot.entity;
-
-    if (!entity) {
-      return moveGoalToleranceMeters;
-    }
-
-    const verticalGap = Math.abs(target.y - entity.position.y);
-
-    if (verticalGap >= 2) {
-      const tightenedTolerance = Math.min(moveGoalToleranceMeters, 1);
-      return Math.max(1, tightenedTolerance);
-    }
-
-    return moveGoalToleranceMeters;
-  }
-
-/**
- * forcedMove 発生直後に GoalChanged 例外が出た場合は再試行可能と判断するヘルパー。
- *
- * GoalChanged は pathfinder.goto 実行中に別のゴール設定が入ったときにも出るため、
- * 強制移動が直近で起きたかどうかをタイムスタンプで確認し誤検出を防ぐ。
- */
-function shouldRetryDueToForcedMove(error: unknown): boolean {
-  if (Date.now() - lastForcedMoveAt > FORCED_MOVE_RETRY_WINDOW_MS) {
-    return false;
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes('GoalChanged');
-}
-
-/**
- * mineflayer-pathfinder が到達経路を見つけられなかった際の例外かどうかを判別する。
- *
- * 表記ゆれ（"No path"・"No path to goal" 等）を包含するため、小文字化した部分一致で判定する。
- */
-function isNoPathError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.toLowerCase().includes('no path');
-}
-
-/**
- * 指定した Movements プロファイルを適用した状態で pathfinder.goto を実行し、
- * forcedMove に伴う GoalChanged エラーが発生した場合は所定回数リトライする。
- */
-async function gotoWithForcedMoveRetry(
-  targetBot: Bot,
-  goal: InstanceType<typeof goals.GoalNear>,
-  movements: MovementsClass,
-): Promise<void> {
-  const { pathfinder: activePathfinder } = targetBot;
-  const previousMovements = activePathfinder.movements;
-  const shouldRestoreMovements = previousMovements !== movements;
-
-  if (shouldRestoreMovements) {
-    activePathfinder.setMovements(movements);
-  }
-
-  try {
-    for (let attempt = 0; attempt <= FORCED_MOVE_MAX_RETRIES; attempt++) {
-      try {
-        await activePathfinder.goto(goal);
-        return;
-      } catch (error) {
-        if (shouldRetryDueToForcedMove(error) && attempt < FORCED_MOVE_MAX_RETRIES) {
-          console.warn(
-            `[MoveToCommand] retrying due to forcedMove correction (attempt ${attempt + 1}/${FORCED_MOVE_MAX_RETRIES})`,
-          );
-          await delay(FORCED_MOVE_RETRY_DELAY_MS);
-          continue;
-        }
-
-        throw error;
-      }
-    }
-  } finally {
-    if (shouldRestoreMovements) {
-      activePathfinder.setMovements(previousMovements);
-    }
-  }
-
-  throw new Error('Pathfinding failed after forcedMove retries');
-}
-
 async function handleMoveToCommand(args: Record<string, unknown>): Promise<CommandResponse> {
-  const x = Number(args.x);
-  const y = Number(args.y);
-  const z = Number(args.z);
-
-  if ([x, y, z].some((value) => Number.isNaN(value))) {
-    console.warn('[MoveToCommand] invalid coordinate(s) detected', { x, y, z });
-    return { ok: false, error: 'Invalid coordinates' };
-  }
-
-  const activeBot = getActiveBot();
-
-  if (!activeBot) {
-    console.warn('[MoveToCommand] rejected because bot is unavailable');
-    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
-  }
-
-  lastMoveTarget = { x, y, z };
-  const tolerance = resolveGoalNearTolerance(activeBot, { x, y, z });
-  const goal = new goals.GoalNear(x, y, z, tolerance);
-  const preferredMovements = cautiousMovements ?? activeBot.pathfinder.movements;
-  const fallbackMovements = digPermissiveMovements;
-
-  try {
-    await gotoWithForcedMoveRetry(activeBot, goal, preferredMovements);
-    const { position } = activeBot.entity;
-    console.log(
-      `[MoveToCommand] pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${tolerance} profile=cautious`,
-    );
-    return { ok: true };
-  } catch (primaryError) {
-    if (isNoPathError(primaryError) && fallbackMovements) {
-      console.warn(
-        '[MoveToCommand] no walkable route found without digging. Retrying with digging-enabled fallback profile.',
-      );
-
-      try {
-        await gotoWithForcedMoveRetry(activeBot, goal, fallbackMovements);
-        const { position } = activeBot.entity;
-        console.log(
-          `[MoveToCommand] fallback pathfinder completed near (${x}, ${y}, ${z}) actual=(${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}) tolerance=${tolerance} profile=dig-enabled`,
-        );
-        return { ok: true };
-      } catch (fallbackError) {
-        console.error('[Pathfinder] dig-enabled fallback also failed', fallbackError);
-        return { ok: false, error: 'Pathfinding failed' };
-      }
-    }
-
-    console.error('[Pathfinder] failed to move', primaryError);
-    return { ok: false, error: 'Pathfinding failed' };
-  }
+  return navigationController.handleMoveToCommand(args, { getActiveBot });
 }
 
 interface MineResultDetail {
@@ -1026,10 +847,10 @@ async function handleMineOreCommand(args: Record<string, unknown>): Promise<Comm
     }
 
     const goal = new goals.GoalNear(position.x, position.y, position.z, MINING_APPROACH_TOLERANCE);
-    const movements = digPermissiveMovements ?? activeBot.pathfinder.movements;
+    const movements = navigationController.getDigPermissiveMovements() ?? activeBot.pathfinder.movements;
 
     try {
-      await gotoWithForcedMoveRetry(activeBot, goal, movements);
+      await navigationController.gotoWithForcedMoveRetry(activeBot, goal, movements);
     } catch (moveError) {
       console.error('[MineOreCommand] failed to approach ore block', moveError);
       continue;
@@ -1043,7 +864,7 @@ async function handleMineOreCommand(args: Record<string, unknown>): Promise<Comm
 
     try {
       await activeBot.dig(refreshed, true);
-      lastMoveTarget = { x: position.x, y: position.y, z: position.z };
+      navigationController.recordMoveTarget({ x: position.x, y: position.y, z: position.z });
       results.push({
         x: position.x,
         y: position.y,
@@ -1943,7 +1764,7 @@ function resolveBearingLabel(dx: number, dz: number): string {
 }
 function evaluateDigPermission(targetBot: Bot): DigPermissionSnapshot {
   const gameMode = targetBot.game.gameMode ?? 'survival';
-  const fallbackMovements = digPermissiveMovements as MutableMovements | null;
+  const fallbackMovements = navigationController.getDigPermissiveMovements() as MutableMovements | null;
   const fallbackMovementInitialized = Boolean(fallbackMovements);
   const fallbackAllowsDig = Boolean(fallbackMovements?.canDig);
   const gameModeAllows = !['adventure', 'spectator'].includes(gameMode);
@@ -1967,6 +1788,7 @@ function evaluateDigPermission(targetBot: Bot): DigPermissionSnapshot {
 }
 
 function computeNavigationHint(targetBot: Bot): VptNavigationHint | null {
+  const lastMoveTarget = navigationController.getLastMoveTarget();
   if (!lastMoveTarget) {
     return null;
   }
