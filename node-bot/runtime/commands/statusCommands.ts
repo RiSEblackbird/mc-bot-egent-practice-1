@@ -1,6 +1,5 @@
 import type { Counter, Histogram } from '@opentelemetry/api';
 import type { Bot } from 'mineflayer';
-import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import type { Item } from 'prismarine-item';
 import Vec3, { Vec3 as Vec3Type } from 'vec3';
 
@@ -23,11 +22,18 @@ import type {
   PositionReference,
   PositionSnapshot,
   VptNavigationHint,
-  VptObservationHotbarSlot,
   WeatherSummary,
 } from '../snapshots.js';
 import type { CommandResponse } from '../types.js';
 import { EQUIP_TOOL_MATCHERS } from './equipItemCommand.js';
+import {
+  buildHotbarSnapshot,
+  buildPerceptionSummary,
+  computeNavigationHint as computeNavigationHintPure,
+  evaluateDigPermission as evaluateDigPermissionPure,
+  resolveEntityWarnings,
+  resolveLightingWarnings,
+} from '../perception/perceptionUtils.js';
 
 export interface StatusCommandContext {
   getActiveBot: () => Bot | null;
@@ -50,10 +56,6 @@ interface EnchantmentInfo {
   id: string;
   level: number;
 }
-
-type MutableMovements = NavigationController['getDigPermissiveMovements'] extends () => infer T
-  ? T & { canDig?: boolean; digCost?: number }
-  : MovementsClass & { canDig?: boolean; digCost?: number };
 
 const ENCHANT_NAME_MAP: Record<string, string> = {
   efficiency: '効率強化',
@@ -81,6 +83,17 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
   } = context;
   const { entityRadius, blockRadius, blockHeight } = perceptionConfig;
   const { perceptionSnapshotHistogram, perceptionErrorCounter } = telemetry;
+
+  // NavigationController から取得した最終移動先を注入し、純粋関数としてナビゲーションヒントを算出する。
+  const computeNavigationHint = (targetBot: Bot): VptNavigationHint | null =>
+    computeNavigationHintPure({ bot: targetBot, lastMoveTarget: navigationController.getLastMoveTarget() });
+
+  // Bot が保持するゲームモードと移動プロファイルの状態を引数化して、掘削可否の判定を共通化する。
+  const evaluateDigPermission = (targetBot: Bot): DigPermissionSnapshot =>
+    evaluateDigPermissionPure({
+      gameMode: String(targetBot.game?.gameMode ?? 'survival'),
+      fallbackMovements: navigationController.getDigPermissiveMovements(),
+    });
 
   /**
    * gatherStatus コマンドのエントリーポイント。Bot 未接続時の防御と入力正規化を一箇所にまとめる。
@@ -323,48 +336,6 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
     };
   }
 
-  function resolveLightingWarnings(lighting: LightingSummary): string[] {
-    const warnings: string[] = [];
-    if (typeof lighting.block === 'number' && lighting.block < 7) {
-      warnings.push(`周囲の明るさが低く敵対モブが湧きやすい状態です (block=${lighting.block})`);
-    }
-    return warnings;
-  }
-
-  function resolveEntityWarnings(nearbyEntities: PerceptionSnapshot['nearby_entities']): string[] {
-    if (nearbyEntities.hostiles <= 0) {
-      return [];
-    }
-    const labels = nearbyEntities.details
-      .filter((entity) => entity.kind === 'hostile')
-      .slice(0, 3)
-      .map((entity) => `${entity.name}(${entity.distance.toFixed(1)}m${entity.bearing})`);
-    return [`敵対モブを検知: ${labels.join('、')}`];
-  }
-
-  function buildPerceptionSummary(
-    nearbyEntities: PerceptionSnapshot['nearby_entities'],
-    hazards: HazardSummary,
-    weather: WeatherSummary,
-    lighting: LightingSummary,
-  ): string {
-    const parts: string[] = [];
-    if (nearbyEntities.hostiles > 0) {
-      parts.push(`敵対モブ${nearbyEntities.hostiles}体`);
-    }
-    if (hazards.liquids > 0) {
-      parts.push(`液体${hazards.liquids}`);
-    }
-    if (hazards.voids > 0) {
-      parts.push(`落下リスク${hazards.voids}`);
-    }
-    parts.push(`天候:${weather.label}`);
-    if (typeof lighting.block === 'number') {
-      parts.push(`明るさ:${lighting.block}`);
-    }
-    return parts.join(' / ');
-  }
-
   function scanNearbyEntities(targetBot: Bot, origin: Vec3Type): PerceptionSnapshot['nearby_entities'] {
     const hostiles: NearbyEntitySummary[] = [];
     const allDetails: NearbyEntitySummary[] = [];
@@ -521,31 +492,6 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
     return '北西';
   }
 
-  function evaluateDigPermission(targetBot: Bot): DigPermissionSnapshot {
-    const gameMode = targetBot.game.gameMode ?? 'survival';
-    const fallbackMovements = navigationController.getDigPermissiveMovements() as MutableMovements | null;
-    const fallbackMovementInitialized = Boolean(fallbackMovements);
-    const fallbackAllowsDig = Boolean(fallbackMovements?.canDig);
-    const gameModeAllows = !['adventure', 'spectator'].includes(gameMode);
-    const allowed = gameModeAllows && fallbackAllowsDig;
-
-    let reason = '掘削許可付きの移動プロファイルを利用可能です';
-    if (!gameModeAllows) {
-      reason = `ゲームモード ${gameMode} ではブロック破壊が制限されています`;
-    } else if (!fallbackMovementInitialized) {
-      reason = '掘削許可付きの移動プロファイルがまだ初期化されていません';
-    } else if (!fallbackAllowsDig) {
-      reason = '現在の移動プロファイルでは canDig が無効化されています';
-    }
-
-    return {
-      allowed,
-      gameMode,
-      fallbackMovementInitialized,
-      reason,
-    };
-  }
-
   function describeEnchantments(item: Item): string[] {
     return extractEnchantments(item).map((entry) => {
       const shortId = entry.id.replace(/^minecraft:/, '');
@@ -591,35 +537,6 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
     return `${item.displayName} x${item.count}（${item.enchantments.join('、')}）`;
   }
 
-  function computeNavigationHint(targetBot: Bot): VptNavigationHint | null {
-    const lastMoveTarget = navigationController.getLastMoveTarget();
-    if (!lastMoveTarget) {
-      return null;
-    }
-
-    const entity = targetBot.entity;
-    if (!entity) {
-      return null;
-    }
-
-    const dx = lastMoveTarget.x + 0.5 - entity.position.x;
-    const dz = lastMoveTarget.z + 0.5 - entity.position.z;
-    const horizontalDistance = Math.sqrt(dx * dx + dz * dz);
-    const verticalOffset = lastMoveTarget.y - entity.position.y;
-    const targetYawRadians = Math.atan2(-dx, dz);
-    const targetYawDegrees = radToDeg(targetYawRadians);
-
-    return {
-      targetYawDegrees,
-      horizontalDistance,
-      verticalOffset,
-    };
-  }
-
-  function radToDeg(value: number): number {
-    return (value * 180) / Math.PI;
-  }
-
   return {
     handleGatherStatusCommand,
     buildGeneralStatusSnapshot,
@@ -627,24 +544,4 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
     computeNavigationHint,
     buildPerceptionSnapshotSafe,
   };
-}
-
-function buildHotbarSnapshot(targetBot: Bot): VptObservationHotbarSlot[] {
-  const slots: VptObservationHotbarSlot[] = [];
-  for (let index = 0; index < 9; index++) {
-    const slotIndex = 36 + index;
-    const item = targetBot.inventory.slots[slotIndex] as Item | null;
-    if (item) {
-      slots.push({
-        slot: slotIndex,
-        name: item.name,
-        displayName: item.displayName ?? item.name,
-        count: item.count,
-      });
-      continue;
-    }
-
-    slots.push({ slot: slotIndex, name: '', displayName: '', count: 0 });
-  }
-  return slots;
 }
