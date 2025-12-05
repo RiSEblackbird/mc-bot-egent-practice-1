@@ -1,0 +1,124 @@
+# -*- coding: utf-8 -*-
+"""move_handler モジュールの単体テスト。"""
+import asyncio
+from pathlib import Path
+import sys
+from typing import Any, Dict, Optional, Tuple
+
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_DIR = PROJECT_ROOT / "python"
+if str(PYTHON_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTHON_DIR))
+
+from runtime.move_handler import handle_move
+
+
+class DummyOrchestrator:
+    """移動ハンドラが参照する orchestrator API を最小限で模倣するテスト用スタブ。"""
+
+    def __init__(self):
+        self._reported: Dict[str, str] = {}
+        self._move_requests: Tuple[Tuple[int, int, int], ...] = tuple()
+        self.low_food_threshold = 4
+        self.default_move_target: Optional[Tuple[int, int, int]] = None
+        self._extracted: Optional[Tuple[int, int, int]] = None
+        self._move_response: Tuple[bool, Optional[str]] = (True, None)
+
+    def _extract_coordinates(self, step: str):
+        return self._extracted
+
+    async def _report_execution_barrier(self, step: str, reason: str) -> None:
+        self._reported[step] = reason
+
+    async def _move_to_coordinates(self, target: Tuple[int, int, int]):
+        self._move_requests += (target,)
+        return self._move_response
+
+
+def test_handle_move_uses_explicit_coordinates():
+    orchestrator = DummyOrchestrator()
+    state: Dict[str, Any] = {
+        "step": "座標へ移動",
+        "explicit_coords": (1, 2, 3),
+        "last_target_coords": (9, 9, 9),
+        "backlog": [],
+        "role_transitioned": False,
+        "perception_history": [],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result == {"handled": True, "updated_target": (1, 2, 3), "failure_detail": None}
+    assert orchestrator._move_requests == ((1, 2, 3),)
+    assert orchestrator._reported == {}
+
+
+def test_handle_move_falls_back_to_default_and_reports_barrier():
+    orchestrator = DummyOrchestrator()
+    orchestrator.default_move_target = (5, 5, 5)
+    orchestrator._move_response = (True, None)
+    orchestrator._extracted = None
+    state: Dict[str, Any] = {
+        "step": "どこかへ移動",
+        "explicit_coords": None,
+        "last_target_coords": None,
+        "backlog": [],
+        "role_transitioned": False,
+        "perception_history": [],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result == {"handled": True, "updated_target": (5, 5, 5), "failure_detail": None}
+    assert orchestrator._move_requests == ((5, 5, 5),)
+    assert "どこかへ移動" in orchestrator._reported
+    assert "既定座標" in orchestrator._reported["どこかへ移動"]
+
+
+def test_handle_move_adds_backlog_when_hungry_and_role_changed():
+    orchestrator = DummyOrchestrator()
+    orchestrator._extracted = (2, 0, -1)
+    orchestrator._move_response = (True, None)
+    state: Dict[str, Any] = {
+        "step": "移動して食料確認",
+        "explicit_coords": None,
+        "last_target_coords": None,
+        "backlog": [],
+        "role_transitioned": True,
+        "active_role": "builder",
+        "role_transition_reason": "緊急対応",
+        "perception_history": [
+            {"food_level": 2, "weather": "rainy"},
+        ],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result["handled"] is True
+    assert len(state["backlog"]) == 2
+    hunger_entry = next(item for item in state["backlog"] if item["category"] == "status")
+    assert hunger_entry["food_level"] == 2
+    role_entry = next(item for item in state["backlog"] if item["category"] == "role")
+    assert role_entry["role"] == "builder"
+
+
+def test_handle_move_returns_failure_when_move_rejected():
+    orchestrator = DummyOrchestrator()
+    orchestrator._extracted = (0, 0, 0)
+    orchestrator._move_response = (False, "blocked")
+    state: Dict[str, Any] = {
+        "step": "失敗する移動",
+        "explicit_coords": None,
+        "last_target_coords": (7, 7, 7),
+        "backlog": [],
+        "role_transitioned": False,
+        "perception_history": [],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result["handled"] is False
+    assert result["updated_target"] == (7, 7, 7)
+    assert "blocked" in result["failure_detail"]
