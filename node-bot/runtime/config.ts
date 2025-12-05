@@ -9,6 +9,7 @@ import {
   MoveGoalToleranceResolution,
   PerceptionResolution,
   VptPlaybackResolution,
+  MovementResolution,
   detectDockerRuntime,
   parseEnvInt,
   resolveTelemetryConfig,
@@ -18,6 +19,7 @@ import {
   resolveMoveGoalTolerance,
   resolvePerceptionConfig,
   resolveVptPlaybackConfig,
+  resolveMovementConfig,
 } from './env.js';
 
 /**
@@ -112,6 +114,7 @@ export interface BotRuntimeConfig {
   skills: {
     historyPath: string;
   };
+  movement: MovementResolution;
   telemetry: {
     endpoint: string;
     serviceName: string;
@@ -178,6 +181,15 @@ export function loadBotRuntimeConfig(
     env.PERCEPTION_BLOCK_HEIGHT,
     env.PERCEPTION_BROADCAST_INTERVAL_MS,
   );
+  const movementResolution = resolveMovementConfig(
+    env.PATHFINDER_ALLOW_PARKOUR,
+    env.PATHFINDER_ALLOW_SPRINTING,
+    env.PATHFINDER_DIG_COST_ENABLED,
+    env.PATHFINDER_DIG_COST_DISABLED,
+    env.FORCED_MOVE_RETRY_WINDOW_MS,
+    env.FORCED_MOVE_MAX_RETRIES,
+    env.FORCED_MOVE_RETRY_DELAY_MS,
+  );
 
   const skillHistoryPathRaw = env.SKILL_HISTORY_PATH?.trim() ?? '';
   const skillHistoryPath =
@@ -204,6 +216,7 @@ export function loadBotRuntimeConfig(
     skills: {
       historyPath: skillHistoryPath,
     },
+    movement: movementResolution,
     telemetry: {
       endpoint: telemetryResolution.endpoint,
       serviceName: telemetryResolution.serviceName,
@@ -226,6 +239,7 @@ export function loadBotRuntimeConfig(
     ...vptPlaybackResolution.warnings,
     ...telemetryResolution.warnings,
     ...perceptionResolution.warnings,
+    ...movementResolution.warnings,
   ];
 
   if (hostResolution.usedDockerFallback && hostResolution.originalValue.length > 0) {

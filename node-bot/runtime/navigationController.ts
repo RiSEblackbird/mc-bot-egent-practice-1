@@ -23,6 +23,12 @@ export class NavigationController {
       forcedMoveRetryWindowMs: number;
       forcedMoveMaxRetries: number;
       forcedMoveRetryDelayMs: number;
+      // mineflayer-pathfinder の挙動を環境変数経由で注入し、bot.ts 側のハードコーディングを回避する。
+      pathfinder: {
+        allowParkour: boolean;
+        allowSprinting: boolean;
+        digCost: { enable: number; disable: number };
+      };
     },
   ) {}
 
@@ -59,23 +65,24 @@ export class NavigationController {
     return shouldLog;
   }
 
-  configureMovementProfile(
-    movements: MovementsClass,
-    allowDigging: boolean,
-    digPenalty: { enable: number; disable: number },
-  ): void {
-    const mutable = movements as MovementsClass & { canDig?: boolean; digCost?: number; allowParkour?: boolean; allowSprinting?: boolean };
-    mutable.allowParkour = true;
-    mutable.allowSprinting = true;
+  configureMovementProfile(movements: MovementsClass, allowDigging: boolean): void {
+    const mutable = movements as MovementsClass & {
+      canDig?: boolean;
+      digCost?: number;
+      allowParkour?: boolean;
+      allowSprinting?: boolean;
+    };
+    mutable.allowParkour = this.options.pathfinder.allowParkour;
+    mutable.allowSprinting = this.options.pathfinder.allowSprinting;
     mutable.canDig = allowDigging;
 
     if (allowDigging) {
-      mutable.digCost = digPenalty.enable;
+      mutable.digCost = this.options.pathfinder.digCost.enable;
       return;
     }
 
-    const currentCost = mutable.digCost ?? digPenalty.enable;
-    mutable.digCost = Math.max(currentCost, digPenalty.disable);
+    const currentCost = mutable.digCost ?? this.options.pathfinder.digCost.enable;
+    mutable.digCost = Math.max(currentCost, this.options.pathfinder.digCost.disable);
   }
 
   private resolveGoalNearTolerance(targetBot: Bot, target: { x: number; y: number; z: number }): number {

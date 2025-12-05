@@ -77,6 +77,7 @@ const {
   websocket,
   agentBridge: agentBridgeConfig,
   moveGoalTolerance,
+  movement,
   skills,
   telemetry: telemetryConfig,
   perception,
@@ -90,6 +91,8 @@ const perceptionBlockRadius = perception.blockRadius;
 const perceptionBlockHeight = perception.blockHeight;
 const perceptionBroadcastIntervalMs = perception.broadcastIntervalMs;
 const moveGoalToleranceMeters = moveGoalTolerance.tolerance;
+const pathfinderMovement = movement.pathfinder;
+const forcedMove = movement.forcedMove;
 const agentControlWebsocketUrl = agentBridgeConfig.url;
 const MINING_APPROACH_TOLERANCE = 1;
 
@@ -148,26 +151,26 @@ let isVptPlaybackActive = false;
 // 知覚ブロードキャストのキャッシュを保持し、サービス間で共有する。
 const perceptionBroadcastState: PerceptionBroadcastState = createPerceptionBroadcastState();
 
-// forcedMove によるサーバー補正後の再探索挙動を調整するための閾値群。
-const FORCED_MOVE_RETRY_WINDOW_MS = 2_000;
-const FORCED_MOVE_MAX_RETRIES = 2;
-const FORCED_MOVE_RETRY_DELAY_MS = 300;
-
-// ブロック破壊を避けたルート探索を優先させるためのコスト設定。
-const DIGGING_DISABLED_COST = 96;
-const DIGGING_ENABLED_COST = 1;
-
 // MovementsClass を拡張して mineflayer-pathfinder の内部プロパティへアクセスできるようにする補助型。
 type MutableMovements = MovementsClass & {
   canDig?: boolean;
   digCost?: number;
 };
 
+// NavigationController へ移動系設定を集約して注入し、環境変数の変更だけで掘削許可やリトライ挙動を切り替えられるようにする。
 const navigationController = new NavigationController({
   moveGoalToleranceMeters,
-  forcedMoveRetryWindowMs: FORCED_MOVE_RETRY_WINDOW_MS,
-  forcedMoveMaxRetries: FORCED_MOVE_MAX_RETRIES,
-  forcedMoveRetryDelayMs: FORCED_MOVE_RETRY_DELAY_MS,
+  forcedMoveRetryWindowMs: forcedMove.retryWindowMs,
+  forcedMoveMaxRetries: forcedMove.maxRetries,
+  forcedMoveRetryDelayMs: forcedMove.retryDelayMs,
+  pathfinder: {
+    allowParkour: pathfinderMovement.allowParkour,
+    allowSprinting: pathfinderMovement.allowSprinting,
+    digCost: {
+      enable: pathfinderMovement.digCost.enabled,
+      disable: pathfinderMovement.digCost.disabled,
+    },
+  },
 });
 
 const STARVATION_FOOD_LEVEL = 0;
@@ -338,16 +341,10 @@ function registerBotEventHandlers(targetBot: Bot): void {
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
     const digFriendlyMovements = new MovementsWithData(targetBot, mcData);
-    navigationController.configureMovementProfile(digFriendlyMovements, true, {
-      enable: DIGGING_ENABLED_COST,
-      disable: DIGGING_DISABLED_COST,
-    });
+    navigationController.configureMovementProfile(digFriendlyMovements, true);
 
     const cautiousMovementProfile = new MovementsWithData(targetBot, mcData);
-    navigationController.configureMovementProfile(cautiousMovementProfile, false, {
-      enable: DIGGING_ENABLED_COST,
-      disable: DIGGING_DISABLED_COST,
-    });
+    navigationController.configureMovementProfile(cautiousMovementProfile, false);
     navigationController.setMovementProfiles(cautiousMovementProfile, digFriendlyMovements);
 
     // Paper 1.21.x ではパルクールやダッシュを多用すると "moved wrongly" 警告が増えるが、
