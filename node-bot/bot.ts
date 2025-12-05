@@ -11,7 +11,7 @@ import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { loadConfigValues } from './runtime/configValues.js';
+import { bootstrapRuntime } from './runtime/bootstrap.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 import {
   AgentRoleDescriptor,
@@ -19,9 +19,8 @@ import {
   createInitialAgentRoleState,
   resolveAgentRole,
 } from './runtime/roles.js';
-import { AgentBridge } from './runtime/agentBridge.js';
 import { startCommandServer } from './runtime/server.js';
-import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
+import { runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
 import { NavigationController } from './runtime/navigationController.js';
 import { createEquipItemCommandHandler, EQUIP_TOOL_MATCHERS } from './runtime/commands/equipItemCommand.js';
 import { createSkillCommandHandlers } from './runtime/commands/skillCommands.js';
@@ -70,7 +69,8 @@ const CURRENT_POSITION_KEYWORDS = ['現在値', '現在地', '現在位置', '�
 // 詳細な Slot 構造体の上書きロジックは runtime/slotPatch.ts に切り出し、複数バージョンへ一括適用する。
 
 // ---- 環境変数・定数設定 ----
-const configValues = loadConfigValues(process.env);
+// 起動フローの可読性を高めるため、設定・テレメトリ・AgentBridge 生成は bootstrapRuntime に集約する。
+const { configValues, telemetry, agentBridge } = bootstrapRuntime();
 const {
   control,
   minecraft,
@@ -79,9 +79,16 @@ const {
   moveGoalTolerance,
   movement,
   skills,
-  telemetry: telemetryConfig,
   perception,
 } = configValues;
+const {
+  tracer,
+  commandDurationMs: commandDurationHistogram,
+  reconnectCounter,
+  directiveCounter,
+  perceptionSnapshotDurationMs: perceptionSnapshotHistogram,
+  perceptionErrorCounter,
+} = telemetry;
 const vptCommandsEnabled = control.vptCommandsEnabled;
 const vptTickIntervalMs = control.tickIntervalMs;
 const vptMaxSequenceLength = control.maxSequenceLength;
@@ -95,35 +102,6 @@ const pathfinderMovement = movement.pathfinder;
 const forcedMove = movement.forcedMove;
 const agentControlWebsocketUrl = agentBridgeConfig.url;
 const MINING_APPROACH_TOLERANCE = 1;
-
-// ---- OpenTelemetry 初期化 ----
-const telemetry = initializeTelemetry(telemetryConfig);
-const tracer = telemetry.tracer;
-const commandDurationHistogram = telemetry.commandDurationMs;
-const agentBridgeEventCounter = telemetry.agentBridgeEventCounter;
-const reconnectCounter = telemetry.reconnectCounter;
-const directiveCounter = telemetry.directiveCounter;
-const perceptionSnapshotHistogram = telemetry.perceptionSnapshotDurationMs;
-const perceptionErrorCounter = telemetry.perceptionErrorCounter;
-
-  // AgentBridge との疎結合な連携を保つための専用サービスを初期化する。
-  const agentBridge = new AgentBridge(
-    {
-      url: agentBridgeConfig.url,
-      connectTimeoutMs: agentBridgeConfig.connectTimeoutMs,
-      sendTimeoutMs: agentBridgeConfig.sendTimeoutMs,
-      healthcheckIntervalMs: agentBridgeConfig.healthcheckIntervalMs,
-      reconnectDelayMs: agentBridgeConfig.reconnectDelayMs,
-      maxRetries: agentBridgeConfig.maxRetries,
-      batchFlushIntervalMs: agentBridgeConfig.batchFlushIntervalMs,
-      batchMaxSize: agentBridgeConfig.batchMaxSize,
-      queueMaxSize: agentBridgeConfig.queueMaxSize,
-    },
-  {
-    tracer,
-    eventCounter: agentBridgeEventCounter,
-  },
-);
 
 const SUPPORTED_VPT_CONTROLS: readonly VptControlName[] = [
   'forward',
