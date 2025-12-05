@@ -23,6 +23,7 @@ __pycache__/
 .venv/
 venv/
 python/.cache/
+python/orchestrator/.cache/
 python/.openai/
 python/.secrets/
 python/.tokens/
