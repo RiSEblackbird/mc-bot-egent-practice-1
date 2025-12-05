@@ -3,19 +3,30 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from orchestrator.context import OrchestratorDependencies, PlanRuntimeContext
+from orchestrator.directive_utils import (
+    build_directive_meta,
+    directive_scope,
+    execute_hybrid_directive,
+    extract_directive_coordinates,
+    parse_hybrid_directive_args,
+    resolve_directive_for_step,
+)
 from planner import ActionDirective, PlanArguments, PlanOut, ReActStep, plan
 from runtime.rules import ACTION_TASK_RULES, DETECTION_TASK_KEYWORDS
 from runtime.reflection_prompt import build_reflection_prompt
 from utils import log_structured_event
 
 if TYPE_CHECKING:  # pragma: no cover
+    from actions import Actions
     from agent import AgentOrchestrator
+    from memory import Memory
+    from runtime.hybrid_directive import HybridDirectiveHandler
+    from runtime.status_service import StatusService
 
 
 class PlanExecutor:
@@ -31,6 +42,13 @@ class PlanExecutor:
         self._agent = agent
         self._dependencies = dependencies
         self._runtime = runtime
+        # 明示的に利用する依存をコピーし、暗黙的な __getattr__ 依存を避ける。
+        self.actions: "Actions" = dependencies.actions
+        self.memory: "Memory" = dependencies.memory
+        self.status_service: "StatusService" = dependencies.status_service
+        self._hybrid_handler: "HybridDirectiveHandler" = dependencies.hybrid_handler
+        self.logger = agent.logger
+        self.default_move_target = runtime.default_move_target
 
     def __getattr__(self, item: str) -> Any:
         """AgentOrchestrator へ属性アクセスをフォールバックする。"""
@@ -107,10 +125,12 @@ class PlanExecutor:
             status = "skipped"
             event_level = "trace"
             log_level = logging.INFO
-            directive = self._resolve_directive_for_step(directives, index, normalized)
-            directive_meta = self._build_directive_meta(directive, plan_out, index, total_steps)
+            directive = resolve_directive_for_step(
+                directives, index, normalized, logger=self.logger
+            )
+            directive_meta = build_directive_meta(directive, plan_out, index, total_steps)
             directive_executor = directive.executor if isinstance(directive, ActionDirective) else ""
-            directive_coords = self._extract_directive_coordinates(directive) if directive else None
+            directive_coords = extract_directive_coordinates(directive)
             target_category = directive.category if isinstance(directive, ActionDirective) else ""
 
             if not normalized:
@@ -154,7 +174,7 @@ class PlanExecutor:
             if directive and directive_executor == "chat":
                 chat_message = str(directive.args.get("message") if isinstance(directive.args, dict) else "") or directive.label or normalized
                 if chat_message:
-                    with self._directive_scope(directive_meta):
+                    with directive_scope(self.actions, directive_meta):
                         await self.actions.say(chat_message)
                     observation_text = f"チャット通知を送信: {chat_message}"
                     status = "completed"
@@ -175,14 +195,15 @@ class PlanExecutor:
 
             if directive and directive_executor == "hybrid":
                 try:
-                    hybrid_payload = self._parse_hybrid_directive_args(directive)
+                    hybrid_payload = parse_hybrid_directive_args(self._hybrid_handler, directive)
                 except ValueError as exc:
                     await self._report_execution_barrier(
                         directive.label or directive.step or "hybrid",
                         f"ハイブリッド指示の解析に失敗しました: {exc}",
                     )
                     continue
-                handled = await self._execute_hybrid_directive(
+                handled = await execute_hybrid_directive(
+                    self._hybrid_handler,
                     directive,
                     hybrid_payload,
                     directive_meta=directive_meta,
@@ -207,7 +228,7 @@ class PlanExecutor:
                     index,
                     detection_category,
                 )
-                with self._directive_scope(directive_meta):
+                with directive_scope(self.actions, directive_meta):
                     detection_result = await self._perform_detection_task(
                         detection_category
                     )
@@ -257,7 +278,7 @@ class PlanExecutor:
                     action_category,
                     coords,
                 )
-                with self._directive_scope(directive_meta):
+                with directive_scope(self.actions, directive_meta):
                     handled, last_target_coords, failure_detail = await self._handle_action_task(
                         action_category,
                         normalized,
@@ -369,7 +390,7 @@ class PlanExecutor:
                     index,
                     action_category,
                 )
-                with self._directive_scope(directive_meta):
+                with directive_scope(self.actions, directive_meta):
                     handled, last_target_coords, failure_detail = await self._handle_action_task(
                         action_category,
                         normalized,
@@ -440,7 +461,7 @@ class PlanExecutor:
                     "plan_step index=%d issuing status_report",
                     index,
                 )
-                with self._directive_scope(directive_meta):
+                with directive_scope(self.actions, directive_meta):
                     await self.actions.say("進捗を確認しています。続報をお待ちください。")
                 observation_text = "進捗報告メッセージを送信しました。"
                 status = "completed"
@@ -819,19 +840,6 @@ class PlanExecutor:
 
     def _match_keywords(self, text: str, keywords: Tuple[str, ...]) -> bool:
         return any(keyword and keyword in text for keyword in keywords)
-
-    @contextlib.contextmanager
-    def directive_scope(self, meta: Optional[Dict[str, Any]]):
-        has_interface = hasattr(self.actions, "begin_directive_scope") and hasattr(
-            self.actions, "end_directive_scope"
-        )
-        if meta and has_interface:
-            self.actions.begin_directive_scope(meta)  # type: ignore[attr-defined]
-        try:
-            yield
-        finally:
-            if meta and has_interface:
-                self.actions.end_directive_scope()  # type: ignore[attr-defined]
 
 
 __all__ = ["PlanExecutor"]

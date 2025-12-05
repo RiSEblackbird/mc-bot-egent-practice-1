@@ -18,6 +18,15 @@ from bridge_role_handler import BridgeRoleHandler
 from perception_service import PerceptionCoordinator
 from orchestrator import OrchestratorDependencies, PlanRuntimeContext
 from orchestrator.action_analyzer import ActionAnalyzer
+from orchestrator.directive_utils import (
+    build_directive_meta,
+    coerce_coordinate_tuple,
+    directive_scope,
+    execute_hybrid_directive,
+    extract_directive_coordinates,
+    parse_hybrid_directive_args,
+    resolve_directive_for_step,
+)
 from orchestrator.skill_detection import SkillDetectionCoordinator
 from orchestrator.plan_executor import PlanExecutor
 from agent_settings import (
@@ -290,21 +299,14 @@ class AgentOrchestrator:
         index: int,
         fallback_step: str,
     ) -> Optional[ActionDirective]:
-        if not directives or index - 1 >= len(directives):
-            return None
-        candidate = directives[index - 1]
-        if isinstance(candidate, ActionDirective):
-            return candidate
-        if isinstance(candidate, dict):
-            try:
-                directive = ActionDirective.model_validate(candidate)
-            except Exception:
-                self.logger.warning("directive validation failed index=%d payload=%s", index, candidate)
-                return None
-            if not directive.step:
-                directive.step = fallback_step
-            return directive
-        return None
+        """directive_utils へ委譲し、PlanExecutor と実装を共有する。"""
+
+        return resolve_directive_for_step(
+            directives,
+            index,
+            fallback_step,
+            logger=self.logger,
+        )
 
     def _build_directive_meta(
         self,
@@ -313,49 +315,25 @@ class AgentOrchestrator:
         index: int,
         total_steps: int,
     ) -> Optional[Dict[str, Any]]:
-        if not isinstance(directive, ActionDirective):
-            return None
-        directive_id = directive.directive_id or f"step-{index}"
-        goal_summary = ""
-        if getattr(plan_out, "goal_profile", None):
-            goal_summary = plan_out.goal_profile.summary or ""
-        return {
-            "directiveId": directive_id,
-            "directiveLabel": directive.label or directive.step or "",
-            "directiveCategory": directive.category or plan_out.intent,
-            "directiveExecutor": directive.executor or "mineflayer",
-            "planIntent": plan_out.intent,
-            "goalSummary": goal_summary,
-            "stepIndex": index,
-            "totalSteps": total_steps,
-        }
+        """directive メタ構築をユーティリティ経由で統一する。"""
+
+        return build_directive_meta(directive, plan_out, index, total_steps)
 
     def _extract_directive_coordinates(
         self,
         directive: Optional[ActionDirective],
     ) -> Optional[Tuple[int, int, int]]:
-        if not isinstance(directive, ActionDirective):
-            return None
-        args = directive.args if isinstance(directive.args, dict) else {}
-        candidates: List[Any] = []
-        for key in ("coordinates", "position"):
-            if key in args:
-                candidates.append(args[key])
-        path = args.get("path")
-        if isinstance(path, list) and path:
-            candidates.append(path[0])
+        """指示の座標抽出ロジックを共通ユーティリティに委譲する。"""
 
-        for candidate in candidates:
-            coords = self._coerce_coordinate_tuple(candidate)
-            if coords:
-                return coords
-        return None
+        return extract_directive_coordinates(directive)
 
     def _parse_hybrid_directive_args(
         self,
         directive: ActionDirective,
     ) -> HybridDirectivePayload:
-        return self._hybrid_handler.parse_arguments(directive)
+        """Hybrid 指示引数のパースをハンドラーへ明示的に委譲する。"""
+
+        return parse_hybrid_directive_args(self._hybrid_handler, directive)
 
     async def _execute_hybrid_directive(
         self,
@@ -368,7 +346,10 @@ class AgentOrchestrator:
         index: int,
         total_steps: int,
     ) -> bool:
-        return await self._hybrid_handler.execute(
+        """Hybrid 指示の実行をユーティリティ経由で一元化する。"""
+
+        return await execute_hybrid_directive(
+            self._hybrid_handler,
             directive,
             payload,
             directive_meta=directive_meta,
@@ -379,20 +360,14 @@ class AgentOrchestrator:
         )
 
     def _coerce_coordinate_tuple(self, payload: Any) -> Optional[Tuple[int, int, int]]:
-        if not isinstance(payload, dict):
-            return None
-        try:
-            x = int(payload.get("x"))
-            y = int(payload.get("y"))
-            z = int(payload.get("z"))
-        except Exception:
-            return None
-        return (x, y, z)
+        """座標辞書の安全な整数変換を共通ロジックへ委譲する。"""
+
+        return coerce_coordinate_tuple(payload)
 
     def _directive_scope(self, meta: Optional[Dict[str, Any]]):
-        """PlanExecutor へ委譲された directive スコープを返す。"""
+        """directive_utils のスコープコンテキストを経由して安全に委譲する。"""
 
-        return self._plan_executor.directive_scope(meta)
+        return directive_scope(self.actions, meta)
 
     async def _execute_plan(
         self,

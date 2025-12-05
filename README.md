@@ -176,6 +176,7 @@ Python 側の `python/actions.py` では、以下の WebSocket コマンドを�
 - `recovery_hints` … 直近の障壁や Reflexion プロンプトから引き継いだ教訓。`planner.graph.record_recovery_hints()`（既存の `langgraph_state` エイリアス経由でも可）を通じて再計画ノードへも共有され、同じ失敗の再発を防ぎます。
 
 Python エージェントは directive メタデータを `Actions.begin_directive_scope()` → `_dispatch()` を経由して WebSocket ペイロードの `meta` に添付します。`node-bot/runtime/telemetryRuntime.ts` は `command.meta.directive_id` / `command.meta.executor` を span 属性へ記録し、`mineflayer.directive.received` カウンターとしてメトリクス化するため、OpenTelemetry 上で「どの目的の指示がどの executor へ渡ったか」を直接観測できます。
+Directive の解析・メタ生成・スコープ管理は `python/orchestrator/directive_utils.py` に集約し、`AgentOrchestrator` / `PlanExecutor` は薄い委譲のみを保持する構成にしました。ハイブリッド指示のパースや座標抽出も同モジュール経由で共有することで、エントリポイントが 1 つに整理され、監査・保守が容易になります。
 
 #### 3.2.6 周囲状況の即時共有
 
