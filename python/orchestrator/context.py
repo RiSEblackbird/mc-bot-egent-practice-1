@@ -12,6 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover - 型チェック専用
     from bridge_role_handler import BridgeRoleHandler
     from chat_pipeline import ChatPipeline
     from perception_service import PerceptionCoordinator
+    from orchestrator.role_perception_adapter import RolePerceptionAdapter
     from runtime.hybrid_directive import HybridDirectiveHandler
     from runtime.inventory_sync import InventorySynchronizer
     from runtime.minedojo_handler import MineDojoHandler
@@ -38,6 +39,7 @@ class OrchestratorDependencies:
     actions: "Actions"
     memory: "Memory"
     chat_pipeline: "ChatPipeline"
+    role_perception: "RolePerceptionAdapter"
     bridge_roles: "BridgeRoleHandler"
     perception: "PerceptionCoordinator"
     status_service: "StatusService"

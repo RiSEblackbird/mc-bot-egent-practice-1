@@ -32,7 +32,7 @@ class ChatPipeline:
             )
         await agent._collect_block_evaluations()
         context = agent.status_service.build_context_snapshot(
-            current_role_id=agent._bridge_roles.current_role
+            current_role_id=agent.role_perception.current_role
         )
         agent.logger.info(
             "creating plan for username=%s message='%s' context=%s",

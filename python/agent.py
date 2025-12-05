@@ -14,8 +14,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from agent_bootstrap import build_agent_dependencies
 from chat_pipeline import ChatPipeline
-from bridge_role_handler import BridgeRoleHandler
-from perception_service import PerceptionCoordinator
 from orchestrator import OrchestratorDependencies, PlanRuntimeContext
 from orchestrator.action_analyzer import ActionAnalyzer
 from orchestrator.directive_utils import (
@@ -29,6 +27,7 @@ from orchestrator.directive_utils import (
 )
 from orchestrator.skill_detection import SkillDetectionCoordinator
 from orchestrator.plan_executor import PlanExecutor
+from orchestrator.role_perception_adapter import RolePerceptionAdapter
 from agent_settings import (
     AgentRuntimeSettings,
     DEFAULT_AGENT_RUNTIME_SETTINGS,
@@ -131,8 +130,9 @@ class AgentOrchestrator:
         self.minedojo_handler = dependencies.minedojo_handler
         self._hybrid_handler = dependencies.hybrid_handler
         self._chat_pipeline = ChatPipeline(self)
-        self._bridge_roles = BridgeRoleHandler(self)
-        self._perception = PerceptionCoordinator(self)
+        self._role_perception = RolePerceptionAdapter(self)
+        self._bridge_roles = self._role_perception.bridge_roles
+        self._perception = self._role_perception.perception
         self._plan_runtime = PlanRuntimeContext(
             default_move_target=self.default_move_target,
             low_food_threshold=self.low_food_threshold,
@@ -143,6 +143,7 @@ class AgentOrchestrator:
             actions=self.actions,
             memory=self.memory,
             chat_pipeline=self._chat_pipeline,
+            role_perception=self._role_perception,
             bridge_roles=self._bridge_roles,
             perception=self._perception,
             status_service=self.status_service,
@@ -192,56 +193,62 @@ class AgentOrchestrator:
     async def start_bridge_event_listener(self) -> None:
         """AgentBridge のイベントストリーム購読タスクを起動する。"""
 
-        await self._bridge_roles.start_listener()
+        await self._role_perception.start_bridge_listener()
 
     async def stop_bridge_event_listener(self) -> None:
         """イベント購読タスクを停止し、スレッドセーフに後始末する。"""
 
-        await self._bridge_roles.stop_listener()
+        await self._role_perception.stop_bridge_listener()
 
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
 
-        await self._bridge_roles.handle_agent_event(args)
+        await self._role_perception.handle_agent_event(args)
 
     def request_role_switch(self, role_id: str, *, reason: Optional[str] = None) -> None:
         """LangGraph ノードからの役割切替要求をキューへ記録する。"""
 
-        self._bridge_roles.request_role_switch(role_id, reason=reason)
+        self._role_perception.request_role_switch(role_id, reason=reason)
 
     def _consume_pending_role_switch(self) -> Optional[Tuple[str, Optional[str]]]:
-        return self._bridge_roles.consume_pending_role_switch()
+        return self._role_perception.consume_pending_role_switch()
 
     @property
     def current_role(self) -> str:
-        return self._bridge_roles.current_role
+        return self._role_perception.current_role
+
+    @property
+    def role_perception(self) -> RolePerceptionAdapter:
+        """役割・perception 系の副作用を一括管理するアダプタへの参照。"""
+
+        return self._role_perception
 
     async def _apply_role_switch(self, role_id: str, reason: Optional[str]) -> bool:
         """実際に Node 側へ役割変更コマンドを送信し、成功時は記憶を更新する。"""
 
-        return await self._bridge_roles.apply_role_switch(role_id, reason)
+        return await self._role_perception.apply_role_switch(role_id, reason)
 
     def _collect_recent_mineflayer_context(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Mineflayer 由来の履歴を LangGraph へ渡すためにまとめて取得する。"""
 
-        return self._perception.collect_recent_mineflayer_context()
+        return self._role_perception.collect_recent_mineflayer_context()
 
     def _build_perception_snapshot(
         self, extra: Optional[Dict[str, Any]] = None
     ) -> Optional[Dict[str, Any]]:
         """ステータスサービス経由で perception スナップショットを生成する互換ラッパー。"""
 
-        return self._perception.build_perception_snapshot(extra)
+        return self._role_perception.build_perception_snapshot(extra)
 
     def _ingest_perception_snapshot(self, snapshot: Dict[str, Any], *, source: str) -> None:
         """従来のエントリポイントを保ちながら perception ingestion をサービスへ委譲する。"""
 
-        self._perception.ingest_perception_snapshot(snapshot, source=source)
+        self._role_perception.ingest_perception_snapshot(snapshot, source=source)
 
     async def _collect_block_evaluations(self) -> None:
         """Bridge から近傍ブロックの情報を収集し、危険度の概略をメモリへ保持する。"""
 
-        await self._perception.collect_block_evaluations()
+        await self._role_perception.collect_block_evaluations()
 
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""

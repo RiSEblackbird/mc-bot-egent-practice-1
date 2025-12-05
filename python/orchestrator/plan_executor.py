@@ -598,7 +598,7 @@ class PlanExecutor:
         bridge_reports = self.memory.get("bridge_event_reports", [])
         if isinstance(bridge_reports, list) and bridge_reports:
             merged_detection_reports.extend(bridge_reports[-5:])
-            failure_reason = self._bridge_roles.augment_failure_reason_with_events(
+            failure_reason = self.role_perception.augment_failure_reason_with_events(
                 failure_reason, bridge_reports
             )
 
@@ -674,7 +674,7 @@ class PlanExecutor:
             return
 
         context = self.status_service.build_context_snapshot(
-            current_role_id=self._bridge_roles.current_role
+            current_role_id=self.role_perception.current_role
         )
         inventory_detail = self.memory.get("inventory_detail")
         # 所持品詳細を replan コンテキストへ含めることで、直前の装備失敗で

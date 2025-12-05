@@ -124,6 +124,11 @@ Python 側で LLM プランニングとアクション実行が行われます�
 を追加し、`AgentOrchestrator` 本体は依存注入とハンドオフに専念するようになりました。
 `PlanExecutor` が LangGraph からの ActionDirective 実行と再計画フローを一手に担い、
 `ActionAnalyzer` が自然言語ステップからカテゴリ・座標・装備/採掘パラメータを抽出します。
+`python/orchestrator/role_perception_adapter.py` には役割切替と perception 系のラッパーを集約した
+`RolePerceptionAdapter` を用意し、`AgentOrchestrator` からは `role_perception` 経由で
+`BridgeRoleHandler` / `PerceptionCoordinator` を操作します。構造化ログと例外ハンドリングを
+アダプタ内へ一本化しているため、テストでは `RolePerceptionAdapter.apply_role_switch()` の成否や
+`collect_block_evaluations()` のログを直接確認するだけで役割更新・環境認識フローを検証できます。
 検出レポートや MineDojo スキル処理は `SkillDetectionCoordinator` にまとめられたため、
 `python/agent.py` の責務はチャットキューとメモリ更新に絞られ、1 ファイルのコンテクスト量を大幅に削減しています。
 ランタイムは `python/runtime` 配下へ分割しており、`bootstrap.py` が設定読込と依存組み立て、`websocket_server.py` が WebSocket 受信ループ、`minedojo.py` が自己対話やスキル登録ヘルパーを担います。`python/__main__.py` からはこれらを束ねて `python -m python` で起動できます。
