@@ -1,7 +1,6 @@
 // 日本語コメント：Mineflayer ボット（WSコマンド受信）
 // 役割：Python からの JSON コマンドを実ゲーム操作へ変換する
 import type { Bot } from 'mineflayer';
-import type { Item } from 'prismarine-item';
 import Vec3, { Vec3 as Vec3Type } from 'vec3';
 import { SpanStatusCode } from '@opentelemetry/api';
 // mineflayer-pathfinder は CommonJS 形式のため、ESM 環境では一度デフォルトインポートしてから必要要素を取り出す。
@@ -9,7 +8,6 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
-import { WebSocket } from 'ws';
 import { bootstrapRuntime } from './runtime/bootstrap.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
 import {
@@ -29,6 +27,8 @@ import {
   type PerceptionBroadcastState,
 } from './runtime/services/telemetryBroadcast.js';
 import { BotLifecycleService } from './runtime/services/lifecycleService.js';
+import { BotChatMessenger, ChatBridge } from './runtime/services/chatBridge.js';
+import { SustainabilityService } from './runtime/services/sustainabilityService.js';
 import type { FoodDictionary } from './runtime/snapshots.js';
 import type { CommandPayload, CommandResponse, MultiAgentEventPayload } from './runtime/types.js';
 
@@ -78,9 +78,6 @@ const agentControlWebsocketUrl = agentBridgeConfig.url;
 const MINING_APPROACH_TOLERANCE = 1;
 
 // ---- Mineflayer ボット本体のライフサイクル管理 ----
-let cachedFoodsByName: FoodDictionary = {};
-let isConsumingFood = false;
-let lastHungerWarningAt = 0;
 const PRIMARY_AGENT_ID = 'primary';
 // 知覚ブロードキャストのキャッシュを保持し、サービス間で共有する。
 const perceptionBroadcastState: PerceptionBroadcastState = createPerceptionBroadcastState();
@@ -186,9 +183,22 @@ async function broadcastAgentPerceptionEvent(targetBot: Bot, options: { force?: 
  * Bot ごとに必要なイベントハンドラを登録し、切断時には再接続をスケジュールする。
  */
 function registerBotEventHandlers(targetBot: Bot): void {
+  const chatMessenger = new BotChatMessenger(() => targetBot);
+  const sustainabilityService = new SustainabilityService(
+    {
+      starvationFoodLevel: STARVATION_FOOD_LEVEL,
+      hungerWarningCooldownMs: HUNGER_WARNING_COOLDOWN_MS,
+    },
+    { chatMessenger },
+  );
+  const chatBridge = new ChatBridge(
+    { agentControlWebsocketUrl, currentPositionKeywords: CURRENT_POSITION_KEYWORDS },
+    { chatMessenger },
+  );
+
   const client = targetBot._client;
   const originalWrite: typeof client.write = client.write.bind(client);
-  // 1.21.1 以降の Paper では属性名が `minecraft:generic.movement_speed` に統一されたため、
+  // 1.21.1 以降の Paper で属性名が `minecraft:generic.movement_speed` に統一されたため、
   // 旧来の `minecraft:movement_speed` を送信するとサーバー側で警告が出る。Mineflayer が
   // まだ古い識別子を用いるケースに備えて、送信前に名称を置き換えて互換性を保つ。
   client.write = ((name: string, params: any) => {
@@ -212,7 +222,9 @@ function registerBotEventHandlers(targetBot: Bot): void {
 
   targetBot.once('spawn', () => {
     const mcData = minecraftData(targetBot.version);
-    cachedFoodsByName = ((mcData as unknown as { foodsByName?: FoodDictionary }).foodsByName) ?? {};
+    const foodsByName = ((mcData as unknown as { foodsByName?: FoodDictionary }).foodsByName) ?? {};
+    sustainabilityService.updateFoodDictionary(foodsByName);
+
     // 型定義上は第2引数が未定義だが、実実装では mcData を渡すのが推奨されているため、コンストラクタ型を拡張して使用する。
     const MovementsWithData = Movements as unknown as new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
     const digFriendlyMovements = new MovementsWithData(targetBot, mcData);
@@ -233,7 +245,7 @@ function registerBotEventHandlers(targetBot: Bot): void {
   });
 
   targetBot.on('health', () => {
-    void monitorCriticalHunger(targetBot);
+    void sustainabilityService.monitorCriticalHunger(targetBot);
     void broadcastAgentStatusEvent(targetBot);
     void broadcastAgentPerceptionEvent(targetBot);
   });
@@ -255,13 +267,8 @@ function registerBotEventHandlers(targetBot: Bot): void {
 
   targetBot.on('chat', (username: string, message: string) => {
     if (username === targetBot.username) return;
-    // 受信したチャット内容を詳細ログへ出力し、
-    // 「チャットは届いているが自動処理は未実装」である点を開発者へ明示する。
     console.info(`[Chat] <${username}> ${message}`);
-    if (shouldReportCurrentPosition(message)) {
-      reportCurrentPosition(targetBot);
-    }
-    void forwardChatToAgent(username, message);
+    void chatBridge.handleIncomingChat(targetBot, username, message);
   });
 
   targetBot.on('error', (error: Error & { code?: string }) => {
@@ -297,6 +304,9 @@ agentBridge.ensureSession('startup');
 function getActiveBot(): Bot | null {
   return lifecycleService.getActiveBot();
 }
+
+// コマンド処理時にもチャット送信を DI し、テストで差し替えられるようにする。
+const chatCommandMessenger = new BotChatMessenger(() => getActiveBot());
 
 const {
   handleGatherStatusCommand,
@@ -473,14 +483,13 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
 // 指定されたテキストをゲーム内チャットで送信する。
 function handleChatCommand(args: Record<string, unknown>): CommandResponse {
   const text = typeof args.text === 'string' ? args.text : '';
-  const activeBot = getActiveBot();
+  const delivered = chatCommandMessenger.sendChat(text);
 
-  if (!activeBot) {
+  if (!delivered) {
     console.warn('[ChatCommand] rejected because bot is unavailable');
     return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
   }
 
-  activeBot.chat(text);
   console.log(`[ChatCommand] sent in-game chat: ${text}`);
   return { ok: true };
 }
@@ -650,134 +659,3 @@ async function handleSetAgentRoleCommand(args: Record<string, unknown>): Promise
   return { ok: true, data: { roleId: descriptor.id, label: descriptor.label } };
 }
 
-/**
- * 空腹が限界に達した際の自動対応を実行する。
- *
- * - 食料が存在しない場合はプレイヤーへチャットで不足を通知
- * - 食料が存在する場合は手元へ装備して摂取し、スタミナ低下を抑制
- */
-async function monitorCriticalHunger(targetBot: Bot): Promise<void> {
-  if (targetBot.food > STARVATION_FOOD_LEVEL) {
-    return;
-  }
-
-  if (isConsumingFood) {
-    return;
-  }
-
-  const edible = findEdibleItem(targetBot);
-
-  if (!edible) {
-    const now = Date.now();
-    if (now - lastHungerWarningAt >= HUNGER_WARNING_COOLDOWN_MS) {
-      targetBot.chat('空腹ですが食料を所持していません。補給をお願いします。');
-      lastHungerWarningAt = now;
-    }
-    return;
-  }
-
-  isConsumingFood = true;
-  try {
-    await targetBot.equip(edible, 'hand');
-    await targetBot.consume();
-    targetBot.chat('空腹のため手持ちの食料を食べました。');
-  } catch (error) {
-    console.error('[Hunger] failed to consume food', error);
-  } finally {
-    isConsumingFood = false;
-  }
-}
-
-/**
- * インベントリ内から食料アイテムを探索し、最初に見つかったアイテムを返す。
- */
-function findEdibleItem(targetBot: Bot): Item | undefined {
-  return targetBot
-    .inventory
-    .items()
-    .find((item) => Boolean(cachedFoodsByName[item.name]));
-}
-
-/**
- * プレイヤーのチャットが現在位置照会かどうかを判定する。
- *
- * 余分な空白や大文字小文字を除去して検索し、誤検出を防ぎながら柔軟にマッチングする。
- */
-function shouldReportCurrentPosition(message: string): boolean {
-  const normalized = message.replace(/\s+/g, '').toLowerCase();
-  return CURRENT_POSITION_KEYWORDS.some((keyword) => normalized.includes(keyword));
-}
-
-/**
- * Bot の現在位置を日本語でチャットへ報告する。
- *
- * Mineflayer の entity 情報が未初期化の場合は警告を残し、誤情報を送らないようにする。
- */
-function reportCurrentPosition(targetBot: Bot): void {
-  if (!targetBot.entity) {
-    console.warn('[Chat] position requested but bot entity is not ready yet.');
-    targetBot.chat('まだワールドに完全に参加していません。しばらくお待ちください。');
-    return;
-  }
-
-  const { x, y, z } = targetBot.entity.position;
-  const formatted = `現在位置は X=${Math.floor(x)} / Y=${Math.floor(y)} / Z=${Math.floor(z)} です。`;
-  targetBot.chat(formatted);
-  console.info(`[Chat] reported current position ${formatted}`);
-}
-
-/**
- * Python エージェントへチャットを転送し、処理キューへ積ませる補助関数。
- * 接続失敗時にはエラーログを残しつつボットのメインループを継続する。
- */
-async function forwardChatToAgent(username: string, message: string): Promise<void> {
-  return new Promise((resolve) => {
-    const payload = {
-      type: 'chat',
-      args: { username, message },
-    } satisfies CommandPayload;
-
-    const ws = new WebSocket(agentControlWebsocketUrl);
-    const timeout = setTimeout(() => {
-      console.warn('[ChatBridge] agent did not respond within 10s');
-      ws.terminate();
-      resolve();
-    }, 10_000);
-
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ws.removeAllListeners();
-      resolve();
-    };
-
-    ws.once('open', () => {
-      ws.send(JSON.stringify(payload));
-    });
-
-    ws.once('message', (data) => {
-      const text = data.toString();
-      console.info(`[ChatBridge] agent response: ${text}`);
-      try {
-        const parsed = JSON.parse(text) as CommandResponse;
-        if (!parsed.ok) {
-          console.warn('[ChatBridge] agent reported failure', parsed);
-        }
-      } catch (error) {
-        console.warn('[ChatBridge] failed to parse agent response', error);
-      }
-      ws.close();
-      cleanup();
-    });
-
-    ws.once('close', () => {
-      cleanup();
-    });
-
-    ws.once('error', (error) => {
-      console.error('[ChatBridge] failed to reach agent', error);
-      cleanup();
-    });
-  }).catch((error) => {
-    console.error('[ChatBridge] unexpected error', error);
-  });
-}
