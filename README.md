@@ -136,6 +136,13 @@ Python 側で LLM プランニングとアクション実行が行われます�
 未実装アクション backlog の整理を単一のファサードで扱います。ActionAnalyzer の
 キーワード設定を拡張したい場合は TaskRouter に差し替えるだけで plan 実行系へ影響
 を伝播でき、MineDojo 側の探索/再生ハンドリングもここに集約されています。
+2026/02 では `agent_bootstrap.initialize_agent_runtime()` を追加し、`AgentOrchestrator`
+ のコンストラクタはファクトリが返す束ねられた依存セットをフィールドへ割り当てる
+ だけの構造になりました。`runtime_settings` や `skill_repository` を差し替えたい場合
+ はコンストラクタ引数へ渡すだけで同ファクトリ経由の注入経路が選択され、
+ `PlanRuntimeContext` にも設定値が一括で伝搬します。LangGraph の閾値や MineDojo
+ クライアントの差し替えは `python/agent_bootstrap.py` を 1 箇所読めば追跡できるため、
+ 新規メンバーでも初期化フローを把握しやすくなっています。
 移動および障壁通知については `services/movement_service.py` に委譲し、`AgentOrchestrator`
 のプライベートメソッドを廃止しました。`MovementService` は Actions 依存を明示的に
 受け取り、移動成功時の `Memory.last_destination` 更新と構造化ログ出力をセットで実施

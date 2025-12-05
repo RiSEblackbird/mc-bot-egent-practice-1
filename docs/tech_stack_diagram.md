@@ -69,6 +69,15 @@ graph TD
     Tests --> AgentBridge
 ```
 
+### 7.6 Orchestrator Bootstrap（初期化フローの単一化）
+
+- **目的**: AgentOrchestrator のコンストラクタを薄く保ち、設定値や依存差し替えの経路を 1 箇所で追跡できるようにする。
+- **実装**:
+  - `python/agent_bootstrap.py` に `initialize_agent_runtime()` を用意し、`PlanRuntimeContext` と `OrchestratorDependencies` の構築を集約。
+  - `runtime_settings` や `inventory_sync`、`skill_repository` などをコンストラクタ引数へ渡すだけで同ファクトリが参照し、チャットキューや MineDojo ハンドラーにも一貫して伝搬する。
+  - `AgentInitialization` データクラスに初期化結果を束ねることで、LangGraph 閾値や MovementService の差し替えポイントを新人メンバーが素早く把握できるようになっている。
+
+
 ### 1.1 レイヤーごとの役割整理
 
 - **クライアント層**: 実プレイヤーが操作する Minecraft クライアント。技術的には Vanilla だが、プロトコルバージョンが Paper / Mineflayer と合うことが重要です。
