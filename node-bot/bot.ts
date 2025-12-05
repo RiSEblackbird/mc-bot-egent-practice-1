@@ -10,9 +10,6 @@ import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import minecraftData from 'minecraft-data';
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants } from 'node:fs';
-import { access, appendFile, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { WebSocket } from 'ws';
 import { loadConfigValues } from './runtime/configValues.js';
 import { CUSTOM_SLOT_PATCH } from './runtime/slotPatch.js';
@@ -26,6 +23,8 @@ import { AgentBridge } from './runtime/agentBridge.js';
 import { startCommandServer } from './runtime/server.js';
 import { initializeTelemetry, runWithSpan, summarizeArgs } from './runtime/telemetryRuntime.js';
 import { NavigationController } from './runtime/navigationController.js';
+import { createEquipItemCommandHandler, EQUIP_TOOL_MATCHERS } from './runtime/commands/equipItemCommand.js';
+import { createSkillCommandHandlers } from './runtime/commands/skillCommands.js';
 import type {
   EnvironmentSnapshot,
   FoodDictionary,
@@ -42,7 +41,6 @@ import type {
   PerceptionSnapshot,
   PositionReference,
   PositionSnapshot,
-  RegisteredSkill,
   VptAction,
   VptControlAction,
   VptControlName,
@@ -140,8 +138,6 @@ let isConsumingFood = false;
 let lastHungerWarningAt = 0;
 const agentRoleState: AgentRoleState = createInitialAgentRoleState();
 const PRIMARY_AGENT_ID = 'primary';
-const skillRegistry = new Map<string, RegisteredSkill>();
-let skillHistoryInitialized = false;
 let isVptPlaybackActive = false;
 let lastPerceptionSnapshot: PerceptionSnapshot | null = null;
 let lastPerceptionBroadcastAt = 0;
@@ -222,41 +218,6 @@ function startBotLifecycle(): void {
 function getActiveAgentRole(): AgentRoleDescriptor {
   return agentRoleState.activeRole;
 }
-
-  async function ensureSkillHistorySink(): Promise<void> {
-    if (!skillHistoryPath || skillHistoryInitialized) {
-      return;
-    }
-    try {
-      await access(skillHistoryPath, fsConstants.F_OK);
-      skillHistoryInitialized = true;
-      return;
-    } catch {
-      try {
-        await mkdir(dirname(skillHistoryPath), { recursive: true });
-        await appendFile(skillHistoryPath, '');
-        skillHistoryInitialized = true;
-      } catch (error) {
-        console.error('[SkillLog] failed to prepare history sink', error);
-      }
-    }
-  }
-
-function logSkillEvent(level: 'info' | 'warn' | 'error', event: string, context: Record<string, unknown>): void {
-  const payload = {
-    level,
-    event,
-    timestamp: new Date().toISOString(),
-    context,
-  };
-  console.log(JSON.stringify(payload));
-    if (!skillHistoryPath) {
-      return;
-    }
-    ensureSkillHistorySink()
-      .then(() => appendFile(skillHistoryPath, `${JSON.stringify(payload)}\n`))
-      .catch((error) => console.error('[SkillLog] failed to append event', error));
-  }
 
 /**
  * 役割変更要求を適用し、共有イベント向けにメタ情報を更新する。
@@ -495,10 +456,6 @@ startBotLifecycle();
 // LangGraph 共有イベント用の WebSocket セッションを先に確立し、初回イベント配送の待ち時間を抑える。
 agentBridge.ensureSession('startup');
 
-if (skillHistoryPath) {
-  void ensureSkillHistorySink();
-}
-
 /**
  * コマンド実行時に利用可能な Bot インスタンスを取得する。未接続の場合は null を返す。
  */
@@ -515,6 +472,20 @@ function getActiveBot(): Bot | null {
   }
 
   return bot;
+}
+
+// ---- コマンドハンドラの組み立て ----
+// Bot の取得ロジックを共有しつつ、装備操作と skill 系処理を個別モジュールへ委譲する。
+const { handleEquipItemCommand } = createEquipItemCommandHandler({ getActiveBot });
+const {
+  handleRegisterSkillCommand,
+  handleInvokeSkillCommand,
+  handleSkillExploreCommand,
+  ensureSkillHistorySink,
+} = createSkillCommandHandlers({ skillHistoryPath, getActiveBot });
+
+if (skillHistoryPath) {
+  void ensureSkillHistorySink();
 }
 
 startCommandServer({ host: websocket.host, port: websocket.port }, { tracer, executeCommand });
@@ -642,98 +613,6 @@ async function executeCommand(payload: CommandPayload): Promise<CommandResponse>
       }
     },
   );
-}
-
-// ---- skill コマンド処理 ----
-function handleRegisterSkillCommand(args: Record<string, unknown>): CommandResponse {
-  const skillId = typeof args.skillId === 'string' ? args.skillId.trim() : '';
-  const title = typeof args.title === 'string' ? args.title.trim() : '';
-  const description = typeof args.description === 'string' ? args.description.trim() : '';
-  const stepsRaw = Array.isArray(args.steps) ? args.steps : [];
-  const steps: string[] = stepsRaw
-    .filter((step): step is string => typeof step === 'string' && step.trim().length > 0)
-    .map((step) => step.trim());
-  const tagsRaw = Array.isArray(args.tags) ? args.tags : [];
-  const tags: string[] = tagsRaw
-    .filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
-    .map((tag) => tag.trim());
-
-  if (!skillId || !title || !description || steps.length === 0) {
-    return { ok: false, error: 'Invalid skill registration payload' };
-  }
-
-  const record: RegisteredSkill = {
-    id: skillId,
-    title,
-    description,
-    steps,
-    tags,
-    createdAt: Date.now(),
-  };
-
-  skillRegistry.set(skillId, record);
-  logSkillEvent('info', 'skill.registered', {
-    skillId,
-    title,
-    stepCount: steps.length,
-    tags,
-  });
-
-  return { ok: true, data: { registered: true } };
-}
-
-function handleInvokeSkillCommand(args: Record<string, unknown>): CommandResponse {
-  const skillId = typeof args.skillId === 'string' ? args.skillId.trim() : '';
-  const context = typeof args.context === 'string' ? args.context : '';
-
-  if (!skillId) {
-    return { ok: false, error: 'skillId is required' };
-  }
-
-  const record = skillRegistry.get(skillId);
-  if (!record) {
-    logSkillEvent('warn', 'skill.invoke.missing', { skillId, context });
-    return { ok: false, error: `Skill ${skillId} is not registered` };
-  }
-
-  logSkillEvent('info', 'skill.invoke', {
-    skillId,
-    title: record.title,
-    context,
-    stepCount: record.steps.length,
-  });
-
-  const activeBot = getActiveBot();
-  if (activeBot) {
-    activeBot.chat(
-      `[Skill] ${record.title} を再生します。登録ステップ数: ${record.steps.length}`,
-    );
-  }
-
-  return { ok: true, data: { steps: record.steps } };
-}
-
-function handleSkillExploreCommand(args: Record<string, unknown>): CommandResponse {
-  const skillId = typeof args.skillId === 'string' ? args.skillId.trim() : '';
-  const description = typeof args.description === 'string' ? args.description.trim() : '';
-  const context = typeof args.context === 'string' ? args.context : '';
-
-  if (!skillId || !description) {
-    return { ok: false, error: 'Invalid exploration payload' };
-  }
-
-  logSkillEvent('info', 'skill.explore', {
-    skillId,
-    description,
-    context,
-  });
-
-  const activeBot = getActiveBot();
-  if (activeBot) {
-    activeBot.chat(`[Skill] ${skillId} の探索を開始します。ヒント: ${description}`);
-  }
-
-  return { ok: true, data: { exploring: skillId } };
 }
 
 // ---- chat コマンド処理 ----
@@ -915,111 +794,6 @@ async function handleSetAgentRoleCommand(args: Record<string, unknown>): Promise
   });
 
   return { ok: true, data: { roleId: descriptor.id, label: descriptor.label } };
-}
-
-type EquipDestination = 'hand' | 'off-hand';
-
-const EQUIP_TOOL_MATCHERS: Record<string, (item: Item) => boolean> = {
-  pickaxe: (item) => item.name.endsWith('_pickaxe'),
-  sword: (item) => item.name.endsWith('_sword'),
-  axe: (item) => item.name.endsWith('_axe') && !item.name.endsWith('_pickaxe'),
-  shovel: (item) => item.name.endsWith('_shovel') || item.name.endsWith('_spade'),
-  hoe: (item) => item.name.endsWith('_hoe'),
-  shield: (item) => item.name === 'shield',
-  torch: (item) => item.name === 'torch',
-};
-
-/**
- * equipItem コマンドで渡された語を Mineflayer のアイテム名と整合する形式へ正規化する。
- */
-function normalizeEquipToken(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const withUnderscore = trimmed.replace(/\s+/g, '_');
-  return withUnderscore.replace(/[^a-z0-9_]/g, '');
-}
-
-/**
- * ツール種別からインベントリ内の一致するアイテムを探索する。
- */
-function findInventoryItemByToolType(targetBot: Bot, toolTypeRaw: string): Item | null {
-  const matcher = EQUIP_TOOL_MATCHERS[toolTypeRaw.toLowerCase()];
-
-  if (!matcher) {
-    return null;
-  }
-
-  return targetBot.inventory.items().find((item) => matcher(item)) ?? null;
-}
-
-/**
- * 任意のアイテム名から対応するインベントリアイテムを推測する。
- */
-function findInventoryItemByName(targetBot: Bot, itemNameRaw: string): Item | null {
-  const normalized = normalizeEquipToken(itemNameRaw);
-  const items = targetBot.inventory.items();
-
-  const byName = items.find((item) => normalizeEquipToken(item.name) === normalized);
-  if (byName) {
-    return byName;
-  }
-
-  const byDisplay = items.find((item) => normalizeEquipToken(item.displayName) === normalized);
-  if (byDisplay) {
-    return byDisplay;
-  }
-
-  return (
-    items.find((item) => normalizeEquipToken(item.name).includes(normalized)) ??
-    items.find((item) => normalizeEquipToken(item.displayName).includes(normalized)) ??
-    null
-  );
-}
-
-/**
- * equipItem コマンドを処理し、指定された装備を右手または左手へ持ち替える。
- */
-async function handleEquipItemCommand(args: Record<string, unknown>): Promise<CommandResponse> {
-  const toolTypeRaw = typeof args.toolType === 'string' ? args.toolType : undefined;
-  const itemNameRaw = typeof args.itemName === 'string' ? args.itemName : undefined;
-  const destinationRaw = typeof args.destination === 'string' ? args.destination : 'hand';
-  const destination: EquipDestination = destinationRaw === 'off-hand' ? 'off-hand' : 'hand';
-
-  if (!toolTypeRaw && !itemNameRaw) {
-    return { ok: false, error: 'Either toolType or itemName must be provided' };
-  }
-
-  const activeBot = getActiveBot();
-
-  if (!activeBot) {
-    console.warn('[EquipItemCommand] rejected because bot is unavailable');
-    return { ok: false, error: 'Bot is not connected to the Minecraft server yet' };
-  }
-
-  let targetItem: Item | null = null;
-
-  if (itemNameRaw) {
-    targetItem = findInventoryItemByName(activeBot, itemNameRaw);
-  }
-
-  if (!targetItem && toolTypeRaw) {
-    targetItem = findInventoryItemByToolType(activeBot, toolTypeRaw);
-  }
-
-  if (!targetItem) {
-    console.warn('[EquipItemCommand] requested item not found', { toolTypeRaw, itemNameRaw });
-    return { ok: false, error: 'Requested item is not available in inventory' };
-  }
-
-  try {
-    await activeBot.equip(targetItem, destination);
-    console.log(
-      `[EquipItemCommand] equipped ${targetItem.displayName ?? targetItem.name} to ${destination}`,
-    );
-    return { ok: true };
-  } catch (error) {
-    console.error('[EquipItemCommand] failed to equip item', error);
-    return { ok: false, error: 'Failed to equip item' };
-  }
 }
 
 /**

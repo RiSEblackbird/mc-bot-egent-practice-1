@@ -100,6 +100,8 @@ node-bot/coverage/
 # Skill library runtime storage（学習履歴やプレイヤー座標を含むため除外）
 var/skills/
 python/skills/*.runtime.json
+# Skill コマンド履歴ログ（操作内容や座標などの秘匿情報が含まれる可能性があるため除外）
+node-bot/runtime/commands/skill_history*.log
 # MineDojo 連携で使用するキャッシュ/データセット（API 応答やデモ軌跡に秘匿情報が含まれる）
 var/cache/minedojo/
 var/datasets/minedojo/
