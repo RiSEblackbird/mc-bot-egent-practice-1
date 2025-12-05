@@ -59,6 +59,8 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.perception.entityRadius).toBe(12);
     expect(config.perception.blockRadius).toBe(4);
     expect(config.perception.broadcastIntervalMs).toBe(1500);
+    expect(config.movement.pathfinder.digCost.enabled).toBe(1);
+    expect(config.movement.forcedMove.maxRetries).toBe(2);
     expect(warnings).toBeInstanceOf(Array);
   });
 
@@ -75,6 +77,29 @@ describe('loadBotRuntimeConfig', () => {
     expect(config.control.vpt.tickIntervalMs).toBe(15);
     expect(config.control.vpt.maxSequenceLength).toBe(500);
     expect(warnings).toBeInstanceOf(Array);
+  });
+
+  it('移動関連の環境変数を解釈して丸める', () => {
+    const env = {
+      PATHFINDER_ALLOW_PARKOUR: 'no',
+      PATHFINDER_ALLOW_SPRINTING: 'maybe',
+      PATHFINDER_DIG_COST_ENABLED: '0',
+      PATHFINDER_DIG_COST_DISABLED: '20000',
+      FORCED_MOVE_RETRY_WINDOW_MS: '-100',
+      FORCED_MOVE_MAX_RETRIES: '11',
+      FORCED_MOVE_RETRY_DELAY_MS: 'abc',
+    } as NodeJS.ProcessEnv;
+
+    const { config, warnings } = loadBotRuntimeConfig(env, fakeDeps);
+
+    expect(config.movement.pathfinder.allowParkour).toBe(false);
+    expect(config.movement.pathfinder.allowSprinting).toBe(true);
+    expect(config.movement.pathfinder.digCost.enabled).toBe(1);
+    expect(config.movement.pathfinder.digCost.disabled).toBe(10_000);
+    expect(config.movement.forcedMove.retryWindowMs).toBe(0);
+    expect(config.movement.forcedMove.maxRetries).toBe(10);
+    expect(config.movement.forcedMove.retryDelayMs).toBe(300);
+    expect(warnings.length).toBeGreaterThan(0);
   });
 
   it('hybrid モードを有効化できる', () => {

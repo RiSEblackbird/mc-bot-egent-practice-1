@@ -8,6 +8,7 @@ import {
   resolveControlMode,
   resolveMinecraftHostValue,
   resolveMoveGoalTolerance,
+  resolveMovementConfig,
   resolveVptPlaybackConfig,
   type DockerDetectionDeps,
 } from '../runtime/env.js';
@@ -116,6 +117,34 @@ describe('resolveMoveGoalTolerance', () => {
     const result = resolveMoveGoalTolerance('100');
     expect(result.tolerance).toBe(30);
     expect(result.warnings).toHaveLength(1);
+  });
+});
+
+describe('resolveMovementConfig', () => {
+  it('未設定の場合は掘削コストやパルクール許可の既定値を返す', () => {
+    const result = resolveMovementConfig(undefined, undefined, undefined, undefined, undefined, undefined, undefined);
+
+    expect(result.pathfinder.allowParkour).toBe(true);
+    expect(result.pathfinder.allowSprinting).toBe(true);
+    expect(result.pathfinder.digCost.enabled).toBe(1);
+    expect(result.pathfinder.digCost.disabled).toBe(96);
+    expect(result.forcedMove.retryWindowMs).toBe(2_000);
+    expect(result.forcedMove.maxRetries).toBe(2);
+    expect(result.forcedMove.retryDelayMs).toBe(300);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('範囲外や無効値は丸めて警告を返す', () => {
+    const result = resolveMovementConfig('off', 'invalid', '-5', '20000', '-1', '20', 'nan');
+
+    expect(result.pathfinder.allowParkour).toBe(false);
+    expect(result.pathfinder.allowSprinting).toBe(true);
+    expect(result.pathfinder.digCost.enabled).toBe(1);
+    expect(result.pathfinder.digCost.disabled).toBe(10_000);
+    expect(result.forcedMove.retryWindowMs).toBe(0);
+    expect(result.forcedMove.maxRetries).toBe(10);
+    expect(result.forcedMove.retryDelayMs).toBe(300);
+    expect(result.warnings.length).toBeGreaterThan(0);
   });
 });
 

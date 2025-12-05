@@ -56,6 +56,7 @@ Node 側のボット実装は TypeScript 化しており、`npm start` を実行
 本リポジトリ直下の `.nvmrc` は 22 系を指しているので、`nvm use` でバージョンを切り替えられます。
 
 Mineflayer 起動時の環境変数は `node-bot/runtime/config.ts` へ集約しており、Docker 実行時の `MC_HOST` 補正や `MC_VERSION` のフォールバック、`MOVE_GOAL_TOLERANCE` の上下限チェックを一括で行います。
+`PATHFINDER_ALLOW_PARKOUR` や `PATHFINDER_DIG_COST_ENABLED` などの移動系チューニングも同じレイヤーで正規化され、掘削コストやスプリント許可・強制移動リトライの閾値を `.env` から安全に切り替えられます。
 WebSocket サーバーの起動・接続管理は `node-bot/runtime/server.ts` に分離し、OpenTelemetry の初期化は `node-bot/runtime/telemetryRuntime.ts` へ整理しました。コマンド/レスポンス型も `node-bot/runtime/types.ts` へ集約しているため、IDE から追跡しやすくなっています。
 設定変更のテストは `node-bot/tests/config.test.ts` を実行すると安全に回帰確認できます。
 

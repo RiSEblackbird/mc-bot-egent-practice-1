@@ -42,6 +42,11 @@ function createController(): NavigationController {
     forcedMoveRetryWindowMs: 2_000,
     forcedMoveMaxRetries: 2,
     forcedMoveRetryDelayMs: 300,
+    pathfinder: {
+      allowParkour: true,
+      allowSprinting: true,
+      digCost: { enable: 1, disable: 96 },
+    },
   });
 }
 

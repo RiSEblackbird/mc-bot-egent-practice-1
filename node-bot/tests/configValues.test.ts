@@ -15,6 +15,10 @@ describe('loadConfigValues', () => {
       VPT_MAX_SEQUENCE_LENGTH: '15',
       MC_VERSION: '9.9.9',
       OTEL_TRACES_SAMPLER_RATIO: 'invalid',
+      PATHFINDER_ALLOW_PARKOUR: 'false',
+      PATHFINDER_DIG_COST_ENABLED: '5',
+      PATHFINDER_DIG_COST_DISABLED: '200',
+      FORCED_MOVE_MAX_RETRIES: '5',
     } as NodeJS.ProcessEnv;
 
     const infoLogs: string[] = [];
@@ -34,7 +38,10 @@ describe('loadConfigValues', () => {
     expect(values.control.tickIntervalMs).toBe(25);
     expect(values.control.maxSequenceLength).toBe(15);
     expect(values.telemetry.samplerRatio).toBe(1);
+    expect(values.movement.forcedMove.maxRetries).toBe(5);
+    expect(values.movement.pathfinder.digCost.enabled).toBe(5);
     expect(warningLogs.length).toBeGreaterThan(0);
     expect(infoLogs.some((message) => message.includes('mode=hybrid'))).toBe(true);
+    expect(infoLogs.some((message) => message.includes('parkour=false'))).toBe(true);
   });
 });

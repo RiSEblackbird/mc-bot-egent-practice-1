@@ -42,6 +42,7 @@ export interface RuntimeConfigValues {
   };
   agentBridge: BotRuntimeConfig['agentBridge'];
   moveGoalTolerance: BotRuntimeConfig['moveGoalTolerance'];
+  movement: BotRuntimeConfig['movement'];
   skills: BotRuntimeConfig['skills'];
   telemetry: BotRuntimeConfig['telemetry'];
   perception: BotRuntimeConfig['perception'];
@@ -77,6 +78,11 @@ export function loadConfigValues(
     `[Control] mode=${controlValues.mode} vptEnabled=${controlValues.vptCommandsEnabled} tick=${controlValues.tickIntervalMs}ms maxSeq=${controlValues.maxSequenceLength}`,
   );
 
+  const movement = config.movement;
+  logger.info(
+    `[Movement] parkour=${movement.pathfinder.allowParkour} sprint=${movement.pathfinder.allowSprinting} digCost=${movement.pathfinder.digCost.enabled}/${movement.pathfinder.digCost.disabled} forcedMoveWindow=${movement.forcedMove.retryWindowMs}ms retries=${movement.forcedMove.maxRetries} delay=${movement.forcedMove.retryDelayMs}ms`,
+  );
+
   return {
     runtime: config,
     control: controlValues,
@@ -94,6 +100,7 @@ export function loadConfigValues(
     },
     agentBridge: config.agentBridge,
     moveGoalTolerance: config.moveGoalTolerance,
+    movement,
     skills: config.skills,
     telemetry: config.telemetry,
     perception: config.perception,

@@ -6,5 +6,6 @@ export * from './env/minecraft.js';
 export * from './env/websocket.js';
 export * from './env/control.js';
 export * from './env/perception.js';
+export * from './env/movement.js';
 export * from './env/telemetry.js';
 export * from './env/utils.js';
