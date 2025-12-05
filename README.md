@@ -131,6 +131,11 @@ Python 側で LLM プランニングとアクション実行が行われます�
 `collect_block_evaluations()` のログを直接確認するだけで役割更新・環境認識フローを検証できます。
 検出レポートや MineDojo スキル処理は `SkillDetectionCoordinator` にまとめられたため、
 `python/agent.py` の責務はチャットキューとメモリ更新に絞られ、1 ファイルのコンテクスト量を大幅に削減しています。
+2026/01 以降は `orchestrator/task_router.py` に新設した `TaskRouter` が `ChatPipeline` と
+`SkillDetectionCoordinator` の連携を肩代わりし、分類（行動/検出）・スキル探索・
+未実装アクション backlog の整理を単一のファサードで扱います。ActionAnalyzer の
+キーワード設定を拡張したい場合は TaskRouter に差し替えるだけで plan 実行系へ影響
+を伝播でき、MineDojo 側の探索/再生ハンドリングもここに集約されています。
 ランタイムは `python/runtime` 配下へ分割しており、`bootstrap.py` が設定読込と依存組み立て、`websocket_server.py` が WebSocket 受信ループ、`minedojo.py` が自己対話やスキル登録ヘルパーを担います。`python/__main__.py` からはこれらを束ねて `python -m python` で起動できます。
 設定値の読み込みは `python/config.py` に統合しており、ポート番号やデフォルト座標のバリデーションを一括で処理します。
 ユニットテスト `tests/test_agent_config.py` で挙動を確認できるため、環境変数を追加した場合も回帰チェックが容易です。

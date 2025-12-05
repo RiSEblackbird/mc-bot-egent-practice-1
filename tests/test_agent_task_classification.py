@@ -19,6 +19,7 @@ if str(PYTHON_DIR) not in sys.path:
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
+from runtime.rules import ACTION_TASK_RULES  # type: ignore  # noqa: E402
 
 
 @dataclass
@@ -45,7 +46,7 @@ def legacy_classify(orchestrator: AgentOrchestrator, text: str) -> Optional[str]
     """旧ロジック（先着順の単純一致）を再現し、新旧差分を比較する。"""
 
     normalized = text.replace(" ", "").replace("　", "")
-    for category, rule in orchestrator._ACTION_TASK_RULES.items():
+    for category, rule in ACTION_TASK_RULES.items():
         if any(keyword and keyword in normalized for keyword in rule.keywords):
             return category
     return None
@@ -65,7 +66,9 @@ def test_classification_matches_legacy_for_single_category(
 ) -> None:
     """単一カテゴリだけを含む指示では新旧ロジックが同じ結果になる。"""
 
-    assert orchestrator._classify_action_task(text) == legacy_classify(orchestrator, text)
+    assert orchestrator.task_router.classify_action_task(text) == legacy_classify(
+        orchestrator, text
+    )
 
 
 def test_classification_prioritizes_equip_over_mine(
@@ -75,7 +78,7 @@ def test_classification_prioritizes_equip_over_mine(
 
     text = "採掘に行く前にツルハシを装備して採掘を開始"
     assert legacy_classify(orchestrator, text) == "mine"
-    assert orchestrator._classify_action_task(text) == "equip"
+    assert orchestrator.task_router.classify_action_task(text) == "equip"
 
 
 def test_classification_handles_punctuated_text(
@@ -85,4 +88,4 @@ def test_classification_handles_punctuated_text(
 
     text = "目的地へ移動して、鉱石を掘る"
     assert legacy_classify(orchestrator, text) == "move"
-    assert orchestrator._classify_action_task(text) == "move"
+    assert orchestrator.task_router.classify_action_task(text) == "move"
