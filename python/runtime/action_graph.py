@@ -10,22 +10,18 @@ Mineflayer 連携やスキル探索は依存注入された orchestrator 経由�
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from skills import SkillMatch
-from services.building_service import (
-    BuildingPhase,
-    advance_building_state,
-    checkpoint_to_dict,
-    restore_checkpoint,
-)
 from services.minedojo_client import MineDojoDemoMetadata
 
-from utils import log_structured_event, span_context
+from runtime.action_graph_utils import with_metadata, wrap_for_logging
+from runtime.building_plan_processor import BuildingPlanProcessor
+from runtime.move_handler import handle_move
+from utils import span_context
 from langgraph_state import UnifiedPlanState, record_structured_step
 from planner import PlanOut, plan
 
@@ -62,6 +58,7 @@ class ActionGraph:
 
     def __init__(self, orchestrator: "AgentOrchestrator") -> None:
         self._orchestrator = orchestrator
+        self._building_processor = BuildingPlanProcessor(orchestrator)
         self._graph: CompiledStateGraph = self._build_graph()
 
     async def run(
@@ -120,63 +117,6 @@ class ActionGraph:
         orchestrator = self._orchestrator
         graph: StateGraph = StateGraph(_ActionState)
 
-        def _with_metadata(
-            state: _ActionState,
-            *,
-            step_label: str,
-            base: Optional[Dict[str, Any]] = None,
-            inputs: Optional[Dict[str, Any]] = None,
-            outputs: Optional[Dict[str, Any]] = None,
-            error: Optional[str] = None,
-        ) -> Dict[str, Any]:
-            """record_structured_step を統一的に適用する薄いラッパー。"""
-
-            merged = dict(base or {})
-            merged.update(
-                record_structured_step(
-                    state,
-                    step_label=step_label,
-                    inputs=inputs,
-                    outputs=outputs,
-                    error=error,
-                )
-            )
-            return merged
-
-        def _wrap_for_logging(label: str, func):
-            async def _runner(state: _ActionState):
-                result_or_coroutine = func(state)
-                result = (
-                    await result_or_coroutine
-                    if inspect.isawaitable(result_or_coroutine)
-                    else result_or_coroutine
-                )
-                events = state.get("structured_events") or []
-                if any(event.get("step_label") == label for event in events):
-                    return result
-
-                outputs: Dict[str, Any] = {}
-                if isinstance(result, dict):
-                    outputs = {k: result.get(k) for k in ("handled", "module", "skill_status", "failure_detail") if k in result}
-                    result.update(
-                        record_structured_step(
-                            state,
-                            step_label=label,
-                            inputs={"category": state.get("category"), "step": state.get("step")},
-                            outputs=outputs,
-                        )
-                    )
-                else:
-                    record_structured_step(
-                        state,
-                        step_label=label,
-                        inputs={"category": state.get("category"), "step": state.get("step")},
-                        outputs=outputs,
-                    )
-                return result
-
-            return _runner
-
         async def initialize(state: _ActionState) -> Dict[str, Any]:
             base = {
                 "handled": False,
@@ -188,7 +128,7 @@ class ActionGraph:
                 "role_transition_reason": None,
                 "skill_status": "none",
             }
-            return _with_metadata(
+            return with_metadata(
                 state,
                 step_label="initialize_action",
                 base=base,
@@ -205,7 +145,7 @@ class ActionGraph:
             category = state.get("category", "")
             step = state["step"]
             if not category:
-                return _with_metadata(
+                return with_metadata(
                     state,
                     step_label="seek_skill",
                     base={"skill_status": "none"},
@@ -214,7 +154,7 @@ class ActionGraph:
                 )
             match = await orchestrator._find_skill_for_step(category, step)  # type: ignore[attr-defined]
             if match is None:
-                return _with_metadata(
+                return with_metadata(
                     state,
                     step_label="seek_skill",
                     base={"skill_status": "none"},
@@ -226,7 +166,7 @@ class ActionGraph:
                     orchestrator.logger.info(  # type: ignore[attr-defined]
                         "skill invocation skipped because Actions.invoke_skill is unavailable",
                     )
-                    return _with_metadata(
+                    return with_metadata(
                         state,
                         step_label="seek_skill",
                         base={"skill_status": "none"},
@@ -246,7 +186,7 @@ class ActionGraph:
                     "skill_candidate": match,
                     "skill_status": status,
                 }
-                return _with_metadata(
+                return with_metadata(
                     state,
                     step_label="seek_skill",
                     base=base,
@@ -258,14 +198,14 @@ class ActionGraph:
                 orchestrator.logger.info(  # type: ignore[attr-defined]
                     "skill exploration skipped because Actions.begin_skill_exploration is unavailable",
                 )
-                return _with_metadata(
+                return with_metadata(
                     state,
                     step_label="seek_skill",
                     base={"skill_status": "none"},
                     inputs={"category": category, "step": step},
                     outputs={"skill_status": "none"},
                 )
-            return _with_metadata(
+            return with_metadata(
                 state,
                 step_label="seek_skill",
                 base={
@@ -294,7 +234,7 @@ class ActionGraph:
                 "role_transitioned": transitioned,
                 "role_transition_reason": reason,
             }
-            return _with_metadata(
+            return with_metadata(
                 state,
                 step_label="apply_role_policy",
                 base=base,
@@ -315,7 +255,7 @@ class ActionGraph:
                 module = "move"
             elif category == "equip":
                 module = "equip"
-            return _with_metadata(
+            return with_metadata(
                 state,
                 step_label="route_module",
                 base={"module": module},
@@ -326,7 +266,7 @@ class ActionGraph:
         async def trigger_exploration(state: _ActionState) -> Dict[str, Any]:
             match = state.get("skill_candidate")
             if not isinstance(match, SkillMatch):
-                return _with_metadata(
+                return with_metadata(
                     state,
                     step_label="trigger_exploration",
                     base={
@@ -347,7 +287,7 @@ class ActionGraph:
                 "updated_target": state.get("last_target_coords"),
                 "skill_status": status,
             }
-            return _with_metadata(
+            return with_metadata(
                 state,
                 step_label="trigger_exploration",
                 base=base,
@@ -356,75 +296,8 @@ class ActionGraph:
                 error=failure_detail,
             )
 
-        async def handle_move(state: _ActionState) -> Dict[str, Any]:
-            step = state["step"]
-            explicit_coords = state.get("explicit_coords")
-            last_target = state.get("last_target_coords")
-            perception_history = state.get("perception_history") or []
-            recent_perception = perception_history[-1] if perception_history else {}
-            hunger_level = recent_perception.get("food_level")
-            weather = recent_perception.get("weather")
-            target = explicit_coords or orchestrator._extract_coordinates(step)  # type: ignore[attr-defined]
-            if target is None:
-                target = last_target
-            used_default = False
-            if target is None:
-                target = orchestrator.default_move_target  # type: ignore[attr-defined]
-                used_default = True
-            if target is None:
-                await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
-                    step,
-                    "指示文から移動先の座標を特定できず、実行を継続できませんでした。文章に XYZ 形式の座標を含めてください。",
-                )
-                return {
-                    "handled": False,
-                    "updated_target": last_target,
-                    "failure_detail": "移動先の座標が不明です。",
-                }
-
-            move_ok, move_error = await orchestrator._move_to_coordinates(target)  # type: ignore[attr-defined]
-            if used_default:
-                await orchestrator._report_execution_barrier(  # type: ignore[attr-defined]
-                    step,
-                    "指示文から移動先の座標を特定できず、既定座標へ退避しました。文章に XYZ 形式の座標を含めてください。",
-                )
-            if not move_ok:
-                error_detail = move_error or "Mineflayer 側で移動が拒否されました"
-                return {
-                    "handled": False,
-                    "updated_target": last_target,
-                    "failure_detail": error_detail,
-                }
-            if isinstance(hunger_level, (int, float)) and hunger_level <= orchestrator.low_food_threshold:  # type: ignore[attr-defined]
-                # コンテキストを LangGraph の後続ノードへ共有し、空腹時のフォローアップを促す。
-                state["backlog"].append(
-                    {
-                        "category": "status",
-                        "step": step,
-                        "label": "空腹度が低いため、食料補給を検討してください",
-                        "weather": weather,
-                        "food_level": hunger_level,
-                    }
-                )
-            if state.get("role_transitioned"):
-                active_role = state.get("active_role", "")
-                reason = state.get("role_transition_reason") or ""
-                state["backlog"].append(
-                    {
-                        "category": "role",
-                        "step": step,
-                        "label": f"役割切替: {active_role or '不明'}",
-                        "module": "role",
-                        "role": active_role,
-                        "reason": reason,
-                    }
-                )
-            return {
-                "handled": True,
-                "updated_target": target,
-                "failure_detail": None,
-            }
-
+        async def handle_move_node(state: _ActionState) -> Dict[str, Any]:
+            return await handle_move(state, orchestrator)
         async def handle_equip(state: _ActionState) -> Dict[str, Any]:
             step = state["step"]
             equip_args = orchestrator._infer_equip_arguments(step)  # type: ignore[attr-defined]
@@ -611,106 +484,8 @@ class ActionGraph:
             }
 
         async def handle_building(state: _ActionState) -> Dict[str, Any]:
-            # Mineflayer 側の建築アクションは段階的に拡張する予定のため、LangGraph 側では
-            # 純粋関数ベースで資材調達と配置計画を立て、ジョブの中断・再開が安全に行える
-            # ようにする。副作用を伴う操作は最終的に別ノードへ移譲し、ここでは計画のみ
-            # を算出する方針。
-            backlog = state["backlog"]
-            label = state.get("rule_label") or "建築作業"
+            return self._building_processor.process(state)
 
-            checkpoint_raw = orchestrator.memory.get("building_checkpoint")  # type: ignore[attr-defined]
-            requirements = orchestrator.memory.get("building_material_requirements", {})  # type: ignore[attr-defined]
-            layout = orchestrator.memory.get("building_layout", [])  # type: ignore[attr-defined]
-            inventory_snapshot = orchestrator.memory.get("inventory_summary", {})  # type: ignore[attr-defined]
-
-            checkpoint = restore_checkpoint(checkpoint_raw)
-            resumed = (
-                checkpoint.phase != BuildingPhase.SURVEY or checkpoint.placed_blocks > 0
-            )
-            checkpoint_base_id = orchestrator.memory.get("building_checkpoint_base_id")  # type: ignore[attr-defined]
-            if not isinstance(checkpoint_base_id, str) or not checkpoint_base_id:
-                checkpoint_base_id = f"building:{state.get('step', 'unknown')}"
-                orchestrator.memory.set(  # type: ignore[attr-defined]
-                    "building_checkpoint_base_id",
-                    checkpoint_base_id,
-                )
-            updated_checkpoint, procurement_plan, placement_plan = advance_building_state(
-                checkpoint=checkpoint,
-                requirements=requirements if isinstance(requirements, dict) else {},
-                inventory=inventory_snapshot if isinstance(inventory_snapshot, dict) else {},
-                layout=layout if isinstance(layout, list) else [],
-            )
-
-            orchestrator.memory.set(  # type: ignore[attr-defined]
-                "building_checkpoint",
-                checkpoint_to_dict(updated_checkpoint),
-            )
-
-            checkpoint_identifier = (
-                f"{checkpoint_base_id}:{updated_checkpoint.phase.value}:{updated_checkpoint.placed_blocks}"
-            )
-            placement_snapshot = [
-                {
-                    "block": task.block,
-                    "coords": {
-                        "x": task.coords[0],
-                        "y": task.coords[1],
-                        "z": task.coords[2],
-                    },
-                }
-                for task in placement_plan
-            ]
-            event_level = "recovery" if resumed else "progress"
-            # LangGraph のビルド系ノードは障害復旧時の分析が重要なため、
-            # イベントレベルや配置バッチを構造化ログで追跡する。
-            log_structured_event(
-                orchestrator.logger,  # type: ignore[attr-defined]
-                "building checkpoint advanced",
-                langgraph_node_id="action.handle_building",
-                checkpoint_id=checkpoint_identifier,
-                event_level=event_level,
-                context={
-                    "phase": updated_checkpoint.phase.value,
-                    "procurement_plan": procurement_plan,
-                    "placement_batch": placement_snapshot,
-                    "reserved_materials": dict(updated_checkpoint.reserved_materials),
-                    "role": state.get("active_role", ""),
-                    "resumed": resumed,
-                },
-            )
-
-            procurement_label = (
-                ", ".join(f"{name}:{amount}" for name, amount in procurement_plan.items())
-                if procurement_plan
-                else "なし"
-            )
-            placement_label = (
-                ", ".join(
-                    f"{task.block}@{task.coords[0]},{task.coords[1]},{task.coords[2]}"
-                    for task in placement_plan
-                )
-                if placement_plan
-                else "なし"
-            )
-
-            backlog.append(
-                {
-                    "category": "build",
-                    "step": state["step"],
-                    "label": label,
-                    "module": "building",
-                    "phase": updated_checkpoint.phase.value,
-                    "procurement": procurement_label,
-                    "placement": placement_label,
-                    "role": state.get("active_role", ""),
-                }
-            )
-
-            return {
-                "handled": True,
-                "updated_target": state.get("last_target_coords"),
-                "failure_detail": None,
-            }
 
         async def handle_defense(state: _ActionState) -> Dict[str, Any]:
             # 防衛系の指示も backlog として扱い、今後 Mineflayer 側に戦闘コマンドが
@@ -770,33 +545,33 @@ class ActionGraph:
                 return {"updated_target": state.get("last_target_coords")}
             return {}
 
-        graph.add_node("initialize", _wrap_for_logging("initialize_action", initialize))
-        graph.add_node("seek_skill", _wrap_for_logging("seek_skill", seek_skill))
+        graph.add_node("initialize", wrap_for_logging("initialize_action", initialize))
+        graph.add_node("seek_skill", wrap_for_logging("seek_skill", seek_skill))
         graph.add_node(
             "apply_role_policy",
-            _wrap_for_logging("apply_role_policy", apply_role_policy),
+            wrap_for_logging("apply_role_policy", apply_role_policy),
         )
-        graph.add_node("route_module", _wrap_for_logging("route_module", route_module))
+        graph.add_node("route_module", wrap_for_logging("route_module", route_module))
         graph.add_node(
             "trigger_exploration",
-            _wrap_for_logging("trigger_exploration", trigger_exploration),
+            wrap_for_logging("trigger_exploration", trigger_exploration),
         )
-        graph.add_node("handle_move", _wrap_for_logging("handle_move", handle_move))
-        graph.add_node("handle_equip", _wrap_for_logging("handle_equip", handle_equip))
-        graph.add_node("handle_mining", _wrap_for_logging("handle_mining", handle_mining))
+        graph.add_node("handle_move", wrap_for_logging("handle_move", handle_move_node))
+        graph.add_node("handle_equip", wrap_for_logging("handle_equip", handle_equip))
+        graph.add_node("handle_mining", wrap_for_logging("handle_mining", handle_mining))
         graph.add_node(
             "handle_building",
-            _wrap_for_logging("handle_building", handle_building),
+            wrap_for_logging("handle_building", handle_building),
         )
         graph.add_node(
             "handle_defense",
-            _wrap_for_logging("handle_defense", handle_defense),
+            wrap_for_logging("handle_defense", handle_defense),
         )
         graph.add_node(
             "handle_generic",
-            _wrap_for_logging("handle_generic", handle_generic),
+            wrap_for_logging("handle_generic", handle_generic),
         )
-        graph.add_node("finalize", _wrap_for_logging("finalize_action", finalize))
+        graph.add_node("finalize", wrap_for_logging("finalize_action", finalize))
 
         graph.add_edge(START, "initialize")
         graph.add_edge("initialize", "seek_skill")
