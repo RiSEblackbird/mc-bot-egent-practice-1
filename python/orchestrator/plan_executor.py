@@ -8,16 +8,14 @@ import logging
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from orchestrator.context import OrchestratorDependencies, PlanRuntimeContext
+from orchestrator.directive_executor import DirectiveExecutor
 from orchestrator.directive_utils import (
     build_directive_meta,
-    directive_scope,
-    execute_hybrid_directive,
     extract_directive_coordinates,
-    parse_hybrid_directive_args,
     resolve_directive_for_step,
 )
 from planner import ActionDirective, PlanArguments, PlanOut, ReActStep, plan
-from runtime.rules import ACTION_TASK_RULES, DETECTION_TASK_KEYWORDS
+from runtime.rules import ACTION_TASK_RULES
 from runtime.reflection_prompt import build_reflection_prompt
 from utils import log_structured_event
 
@@ -54,6 +52,7 @@ class PlanExecutor:
             raise ValueError("TaskRouter dependency is required for PlanExecutor")
         self.logger = agent.logger
         self.default_move_target = runtime.default_move_target
+        self.directive_executor = DirectiveExecutor(self)
 
     def __getattr__(self, item: str) -> Any:
         """AgentOrchestrator へ属性アクセスをフォールバックする。"""
@@ -126,144 +125,45 @@ class PlanExecutor:
                     react_entry = candidate
 
             thought_text = react_entry.thought.strip() if react_entry else ""
-            observation_text = ""
-            status = "skipped"
-            event_level = "trace"
-            log_level = logging.INFO
             directive = resolve_directive_for_step(
                 directives, index, normalized, logger=self.logger
             )
             directive_meta = build_directive_meta(directive, plan_out, index, total_steps)
-            directive_executor = directive.executor if isinstance(directive, ActionDirective) else ""
             directive_coords = extract_directive_coordinates(directive)
-            target_category = directive.category if isinstance(directive, ActionDirective) else ""
 
-            if not normalized:
-                observation_text = "ステップ文字列が空だったためスキップしました。"
-                if react_entry:
-                    react_entry.observation = observation_text
-                self._emit_react_log(
-                    index=index,
-                    total_steps=total_steps,
-                    thought=thought_text,
-                    action="",
-                    observation=observation_text,
-                    status=status,
-                    event_level=event_level,
-                    log_level=log_level,
-                )
+            result = await self.directive_executor.handle_step(
+                directive=directive,
+                directive_meta=directive_meta,
+                directive_coords=directive_coords,
+                argument_coords=argument_coords,
+                normalized=normalized,
+                plan_out=plan_out,
+                index=index,
+                total_steps=total_steps,
+                react_entry=react_entry,
+                thought_text=thought_text,
+                last_target_coords=last_target_coords,
+                action_backlog=action_backlog,
+            )
+
+            if not result.handled:
                 continue
 
-            if directive and directive_executor == "minedojo":
-                handled = await self.minedojo_handler.handle_directive(
-                    directive, plan_out, index
-                )
-                if handled:
-                    observation_text = "MineDojo の自己対話タスクを実行しました。"
-                    status = "completed"
-                    event_level = "progress"
-                    if react_entry:
-                        react_entry.observation = observation_text
-                    self._emit_react_log(
-                        index=index,
-                        total_steps=total_steps,
-                        thought=thought_text,
-                        action=normalized,
-                        observation=observation_text,
-                        status=status,
-                        event_level=event_level,
-                        log_level=log_level,
-                    )
-                    continue
+            observation_text = result.observation
+            status = result.status
+            event_level = result.event_level
+            log_level = result.log_level
 
-            if directive and directive_executor == "chat":
-                chat_message = str(directive.args.get("message") if isinstance(directive.args, dict) else "") or directive.label or normalized
-                if chat_message:
-                    with directive_scope(self.actions, directive_meta):
-                        await self.actions.say(chat_message)
-                    observation_text = f"チャット通知を送信: {chat_message}"
-                    status = "completed"
-                    event_level = "progress"
-                    if react_entry:
-                        react_entry.observation = observation_text
-                    self._emit_react_log(
-                        index=index,
-                        total_steps=total_steps,
-                        thought=thought_text,
-                        action=normalized,
-                        observation=observation_text,
-                        status=status,
-                        event_level=event_level,
-                        log_level=log_level,
-                    )
-                    continue
+            if result.detection_report:
+                detection_reports.append(result.detection_report)
 
-            if directive and directive_executor == "hybrid":
-                try:
-                    hybrid_payload = parse_hybrid_directive_args(self._hybrid_handler, directive)
-                except ValueError as exc:
-                    await self.movement_service.report_execution_barrier(
-                        directive.label or directive.step or "hybrid",
-                        f"ハイブリッド指示の解析に失敗しました: {exc}",
-                    )
-                    continue
-                handled = await execute_hybrid_directive(
-                    self._hybrid_handler,
-                    directive,
-                    hybrid_payload,
-                    directive_meta=directive_meta,
-                    react_entry=react_entry,
-                    thought_text=thought_text,
-                    index=index,
-                    total_steps=total_steps,
-                )
-                if handled:
-                    continue
+            if result.last_target_coords is not None:
+                last_target_coords = result.last_target_coords
 
-            detection_category = None
-            if directive and directive.category in DETECTION_TASK_KEYWORDS:
-                detection_category = directive.category
-            if not detection_category:
-                detection_category = self.task_router.classify_detection_task(
-                    normalized
-                )
-            if not detection_category and plan_out.intent.strip().lower().startswith("report"):
-                detection_category = "general_status"
-            if detection_category:
-                self.logger.info(
-                    "plan_step index=%d classified as detection_report category=%s",
-                    index,
-                    detection_category,
-                )
-                with directive_scope(self.actions, directive_meta):
-                    detection_result = await self.task_router.perform_detection_task(
-                        detection_category
-                    )
-                if detection_result:
-                    detection_reports.append(detection_result)
-                    observation_text = str(
-                        detection_result.get("summary")
-                        or "ステータスを報告しました。"
-                    )
-                    data = detection_result.get("data")
-                    if isinstance(data, dict):
-                        coords = (data.get("x"), data.get("y"), data.get("z"))
-                        if all(isinstance(coord, (int, float)) for coord in coords):
-                            # caplog で位置報告を明示的に追跡できるよう、座標を含む
-                            # 文字列へ置き換える。メンバーが動作確認しやすいよう、
-                            # 人間可読なフォーマットを採用する。
-                            observation_text = (
-                                f"位置報告: X={int(coords[0])} / Y={int(coords[1])} / Z={int(coords[2])}"
-                            )
-                    status = "completed"
-                    event_level = "progress"
-                else:
-                    observation_text = "ステータス取得に失敗し障壁を報告しました。"
-                    status = "failed"
-                    event_level = "fault"
-                    log_level = logging.WARNING
-                if react_entry:
-                    react_entry.observation = observation_text
+            if react_entry and observation_text:
+                react_entry.observation = observation_text
+
+            if result.emit_log:
                 self._emit_react_log(
                     index=index,
                     total_steps=total_steps,
@@ -274,249 +174,19 @@ class PlanExecutor:
                     event_level=event_level,
                     log_level=log_level,
                 )
-                continue
 
-            coords = directive_coords or argument_coords or self._extract_coordinates(normalized)
-            if coords:
-                action_category = target_category or "move"
-                self.logger.info(
-                    "plan_step index=%d classified as %s coords=%s",
-                    index,
-                    action_category,
-                    coords,
-                )
-                with directive_scope(self.actions, directive_meta):
-                    handled, last_target_coords, failure_detail = await self._handle_action_task(
-                        action_category,
-                        normalized,
-                        last_target_coords=coords,
-                        backlog=action_backlog,
-                        explicit_coords=coords,
-                    )
-                if not handled:
-                    observation_text = failure_detail or "座標移動の処理に失敗しました。"
-                    status = "failed"
-                    event_level = "fault"
-                    log_level = logging.WARNING
-                    if react_entry:
-                        react_entry.observation = observation_text
-                    self._emit_react_log(
-                        index=index,
-                        total_steps=total_steps,
-                        thought=thought_text,
-                        action=normalized,
-                        observation=observation_text,
-                        status=status,
-                        event_level=event_level,
-                        log_level=log_level,
-                    )
-                    await self._handle_plan_failure(
-                        failed_step=normalized,
-                        failure_reason=
-                            failure_detail
-                            or "座標移動の処理に失敗しました。Mineflayer の応答を確認してください。",
-                        detection_reports=detection_reports,
-                        action_backlog=action_backlog,
-                        remaining_steps=plan_out.plan[index:],
-                        replan_depth=replan_depth,
-                    )
-                    return
-
-                target_coords = last_target_coords or coords
-                if target_coords:
-                    observation_text = (
-                        f"移動成功: X={target_coords[0]} / Y={target_coords[1]} / Z={target_coords[2]}"
-                    )
-                else:
-                    observation_text = "移動に成功しました。"
-                status = "completed"
-                event_level = "progress"
-                if react_entry:
-                    react_entry.observation = observation_text
-                self._emit_react_log(
-                    index=index,
-                    total_steps=total_steps,
-                    thought=thought_text,
-                    action=normalized,
-                    observation=observation_text,
-                    status=status,
-                    event_level=event_level,
-                    log_level=log_level,
-                )
-                continue
-
-            if self._is_status_check_step(normalized):
-                # 状況確認系のメタ指示は Mineflayer の直接操作に該当しないため、
-                # 障壁扱いにせず静かに無視して実行フローを前に進める。
-                self.logger.info(
-                    "plan_step index=%d ignored introspection step='%s'",
-                    index,
-                    normalized,
-                )
-                observation_text = "ステータス確認ステップのため実行不要と判断しました。"
-                if react_entry:
-                    react_entry.observation = observation_text
-                self._emit_react_log(
-                    index=index,
-                    total_steps=total_steps,
-                    thought=thought_text,
-                    action=normalized,
-                    observation=observation_text,
-                    status=status,
-                    event_level=event_level,
-                    log_level=log_level,
-                )
-                continue
-
-            if await self._attempt_proactive_progress(normalized, last_target_coords):
-                observation_text = "前回の目的地へ継続移動しました。"
-                status = "completed"
-                event_level = "progress"
-                if react_entry:
-                    react_entry.observation = observation_text
-                self._emit_react_log(
-                    index=index,
-                    total_steps=total_steps,
-                    thought=thought_text,
-                    action=normalized,
-                    observation=observation_text,
-                    status=status,
-                    event_level=event_level,
-                    log_level=log_level,
-                )
-                continue
-
-            action_category = None
-            if directive and directive.category in ACTION_TASK_RULES:
-                action_category = directive.category
-            if not action_category:
-                action_category = self.task_router.classify_action_task(normalized)
-            if action_category:
-                self.logger.info(
-                    "plan_step index=%d classified as action_task category=%s",
-                    index,
-                    action_category,
-                )
-                with directive_scope(self.actions, directive_meta):
-                    (
-                        handled,
-                        last_target_coords,
-                        failure_detail,
-                    ) = await self.task_router.handle_action_task(
-                        action_category,
-                        normalized,
-                        last_target_coords=last_target_coords,
-                        backlog=action_backlog,
-                        explicit_coords=directive_coords if action_category == "move" else None,
-                    )
-                if handled:
-                    if action_category == "move":
-                        destination = last_target_coords or self.default_move_target
-                        if destination:
-                            observation_text = (
-                                f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
-                            )
-                        else:
-                            observation_text = "移動に成功しました。"
-                    else:
-                        observation_text = f"{action_category} タスクを完了しました。"
-                    status = "completed"
-                    event_level = "progress"
-                    if react_entry:
-                        react_entry.observation = observation_text
-                    self._emit_react_log(
-                        index=index,
-                        total_steps=total_steps,
-                        thought=thought_text,
-                        action=normalized,
-                        observation=observation_text,
-                        status=status,
-                        event_level=event_level,
-                        log_level=log_level,
-                    )
-                    continue
-
-                observation_text = (
-                    failure_detail
-                    or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。"
-                )
-                status = "failed"
-                event_level = "fault"
-                log_level = logging.WARNING
-                if react_entry:
-                    react_entry.observation = observation_text
-                self._emit_react_log(
-                    index=index,
-                    total_steps=total_steps,
-                    thought=thought_text,
-                    action=normalized,
-                    observation=observation_text,
-                    status=status,
-                    event_level=event_level,
-                    log_level=log_level,
-                )
+            if result.should_halt:
                 await self._handle_plan_failure(
                     failed_step=normalized,
-                    failure_reason=
-                        failure_detail
-                        or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。",
+                    failure_reason=result.failure_reason
+                    or observation_text
+                    or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。",
                     detection_reports=detection_reports,
                     action_backlog=action_backlog,
                     remaining_steps=plan_out.plan[index:],
                     replan_depth=replan_depth,
                 )
                 return
-
-            if "報告" in normalized or "伝える" in normalized:
-                self.logger.info(
-                    "plan_step index=%d issuing status_report",
-                    index,
-                )
-                with directive_scope(self.actions, directive_meta):
-                    await self.actions.say("進捗を確認しています。続報をお待ちください。")
-                observation_text = "進捗報告メッセージを送信しました。"
-                status = "completed"
-                event_level = "progress"
-                if react_entry:
-                    react_entry.observation = observation_text
-                self._emit_react_log(
-                    index=index,
-                    total_steps=total_steps,
-                    thought=thought_text,
-                    action=normalized,
-                    observation=observation_text,
-                    status=status,
-                    event_level=event_level,
-                    log_level=log_level,
-                )
-                continue
-
-            self.logger.info(
-                "plan_step index=%d no_direct_mapping step='%s'",
-                index,
-                normalized,
-            )
-            observation_text = "対応可能なアクションが見つからず障壁を通知しました。"
-            status = "failed"
-            event_level = "fault"
-            log_level = logging.WARNING
-            if react_entry:
-                react_entry.observation = observation_text
-            self._emit_react_log(
-                index=index,
-                total_steps=total_steps,
-                thought=thought_text,
-                action=normalized,
-                observation=observation_text,
-                status=status,
-                event_level=event_level,
-                log_level=log_level,
-            )
-            await self.movement_service.report_execution_barrier(
-                normalized,
-                "対応可能なアクションが見つからず停滞しています。計画ステップの表現を見直してください。",
-            )
-            continue
 
         if detection_reports:
             await self.task_router.handle_detection_reports(
