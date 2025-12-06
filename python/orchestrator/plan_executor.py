@@ -14,9 +14,9 @@ from orchestrator.directive_utils import (
     extract_directive_coordinates,
     resolve_directive_for_step,
 )
-from planner import ActionDirective, PlanArguments, PlanOut, ReActStep, plan
+from orchestrator.recovery_coordinator import RecoveryCoordinator
+from planner import ActionDirective, PlanOut, ReActStep
 from runtime.rules import ACTION_TASK_RULES
-from runtime.reflection_prompt import build_reflection_prompt
 from utils import log_structured_event
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -53,6 +53,18 @@ class PlanExecutor:
         self.logger = agent.logger
         self.default_move_target = runtime.default_move_target
         self.directive_executor = DirectiveExecutor(self)
+        # 例外系・再計画処理を単一責務へ集約する協調オブジェクト。
+        self.recovery = RecoveryCoordinator(
+            actions=self.actions,
+            memory=self.memory,
+            movement_service=self.movement_service,
+            role_perception=self.role_perception,
+            status_service=self.status_service,
+            task_router=self.task_router,
+            logger=self.logger,
+            plan_runner=self.run,
+            max_replan_depth=self._MAX_REPLAN_DEPTH,
+        )
 
     def __getattr__(self, item: str) -> Any:
         """AgentOrchestrator へ属性アクセスをフォールバックする。"""
@@ -176,7 +188,7 @@ class PlanExecutor:
                 )
 
             if result.should_halt:
-                await self._handle_plan_failure(
+                await self.recovery.handle_failure(
                     failed_step=normalized,
                     failure_reason=result.failure_reason
                     or observation_text
@@ -249,150 +261,6 @@ class PlanExecutor:
             event_level=event_level,
             langgraph_node_id="agent.react_loop",
             context=context,
-        )
-
-    async def _handle_plan_failure(
-        self,
-        *,
-        failed_step: str,
-        failure_reason: str,
-        detection_reports: List[Dict[str, Any]],
-        action_backlog: List[Dict[str, str]],
-        remaining_steps: List[str],
-        replan_depth: int,
-    ) -> None:
-        """Mineflayer 側の失敗で計画を続行できない場合の回復処理をまとめる。"""
-
-        await self.movement_service.report_execution_barrier(
-            failed_step, failure_reason
-        )
-
-        # 直前の再試行が完了していない状態で失敗が再発した場合は、結果を明示的に記録する。
-        previous_pending = self.memory.finalize_pending_reflection(
-            outcome="failed",
-            detail=f"step='{failed_step}' reason='{failure_reason}'",
-        )
-        if previous_pending:
-            self.logger.info(
-                "previous reflection marked as failed id=%s", previous_pending.id
-            )
-
-        merged_detection_reports: List[Dict[str, Any]] = list(detection_reports)
-        bridge_reports = self.memory.get("bridge_event_reports", [])
-        if isinstance(bridge_reports, list) and bridge_reports:
-            merged_detection_reports.extend(bridge_reports[-5:])
-            failure_reason = self.role_perception.augment_failure_reason_with_events(
-                failure_reason, bridge_reports
-            )
-
-        task_signature = self.memory.derive_task_signature(failed_step)
-        previous_reflections = self.memory.export_reflections_for_prompt(
-            task_signature=task_signature,
-            limit=3,
-        )
-        # 失敗状況と過去の学習履歴をまとめ、次回 plan() へ渡す Reflexion プロンプトを生成する。
-        reflection_prompt = build_reflection_prompt(
-            failed_step,
-            failure_reason,
-            detection_reports=merged_detection_reports,
-            action_backlog=action_backlog,
-            previous_reflections=previous_reflections,
-        )
-        # 永続化ログへ改善案を追加し、plan() の文脈へ差し込めるように保持する。
-        self.memory.begin_reflection(
-            task_signature=task_signature,
-            failed_step=failed_step,
-            failure_reason=failure_reason,
-            improvement=reflection_prompt,
-            metadata={
-                "detection_reports": list(merged_detection_reports),
-                "action_backlog": list(action_backlog),
-                "remaining_steps": list(remaining_steps),
-            },
-        )
-        self.memory.set("last_reflection_prompt", reflection_prompt)
-        self.memory.set(
-            "recovery_hints",
-            [
-                f"step:{failed_step}",
-                failure_reason,
-            ],
-        )
-
-        if merged_detection_reports:
-            await self.task_router.handle_detection_reports(
-                merged_detection_reports,
-                already_responded=True,
-            )
-
-        if action_backlog:
-            await self.task_router.handle_action_backlog(
-                action_backlog,
-                already_responded=True,
-            )
-
-        await self._request_replan(
-            failed_step=failed_step,
-            failure_reason=failure_reason,
-            remaining_steps=remaining_steps,
-            replan_depth=replan_depth,
-        )
-
-    async def _request_replan(
-        self,
-        *,
-        failed_step: str,
-        failure_reason: str,
-        remaining_steps: List[str],
-        replan_depth: int,
-    ) -> None:
-        """障壁内容を踏まえて LLM へ再計画を依頼し、後続ステップを自動調整する。"""
-
-        if replan_depth >= self._MAX_REPLAN_DEPTH:
-            self.logger.warning(
-                "skip replan because max depth reached step='%s' reason='%s'",
-                failed_step,
-                failure_reason,
-            )
-            return
-
-        context = self.status_service.build_context_snapshot(
-            current_role_id=self.role_perception.current_role
-        )
-        inventory_detail = self.memory.get("inventory_detail")
-        # 所持品詳細を replan コンテキストへ含めることで、直前の装備失敗で
-        # ツルハシが不足しているなどの状況を LLM へ明確に伝えられる。
-        if inventory_detail is not None:
-            context["inventory_detail"] = inventory_detail
-        remaining_text = "、".join(remaining_steps) if remaining_steps else ""
-        replan_instruction = (
-            f"手順「{failed_step}」の実行に失敗しました（{failure_reason}）。"
-            "現在の状況を踏まえて作業を継続するための別案を提示してください。"
-        )
-        if remaining_text:
-            replan_instruction += f" 未完了ステップ候補: {remaining_text}"
-
-        # Reflexion プロンプトを再計画メッセージの冒頭へ付与し、LLM へ明示的な振り返りを促す。
-        reflection_prompt = self.memory.get_active_reflection_prompt()
-        if reflection_prompt:
-            replan_instruction = f"{reflection_prompt}\n\n{replan_instruction}"
-
-        self.logger.info(
-            "requesting replan depth=%d instruction='%s' context=%s",
-            replan_depth + 1,
-            replan_instruction,
-            context,
-        )
-
-        new_plan = await plan(replan_instruction, context)
-
-        if new_plan.resp.strip():
-            await self.actions.say(new_plan.resp)
-
-        await self.run(
-            new_plan,
-            initial_target=None,
-            replan_depth=replan_depth + 1,
         )
 
     def _resolve_directive_for_step(
