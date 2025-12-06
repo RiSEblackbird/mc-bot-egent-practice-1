@@ -18,8 +18,9 @@ from orchestrator.directive_utils import (
     execute_hybrid_directive,
     parse_hybrid_directive_args,
 )
+from orchestrator.action_step_executor import ActionStepExecutor
 from planner import ActionDirective, PlanOut, ReActStep
-from runtime.rules import ACTION_TASK_RULES, DETECTION_TASK_KEYWORDS
+from runtime.rules import DETECTION_TASK_KEYWORDS
 
 if TYPE_CHECKING:  # pragma: no cover - 型チェック専用の依存
     from orchestrator.plan_executor import PlanExecutor
@@ -58,6 +59,8 @@ class DirectiveExecutor:
         self._task_router = plan_executor.task_router
         self._hybrid_handler = plan_executor._hybrid_handler
         self._default_move_target = plan_executor.default_move_target
+        # 行動ステップの実行を専用クラスへ委譲し、PlanExecutor.run 側の分岐を浅くする。
+        self._action_step_executor = ActionStepExecutor(plan_executor)
 
     async def handle_step(
         self,
@@ -143,23 +146,30 @@ class DirectiveExecutor:
         if proactive_move_result:
             return proactive_move_result
 
-        action_task_result = await self._handle_action_task(
-            directive,
-            directive_meta,
+        action_step_result = await self._action_step_executor.handle_step(
             normalized,
+            directive_meta,
             directive_coords,
-            react_entry,
-            action_backlog,
             last_target_coords,
+            action_backlog,
+            directive_category=directive.category
+            if isinstance(directive, ActionDirective)
+            else None,
         )
-        if action_task_result:
-            return action_task_result
-
-        status_report_result = await self._handle_status_report(
-            normalized, directive_meta, react_entry
-        )
-        if status_report_result:
-            return status_report_result
+        if action_step_result:
+            if react_entry and action_step_result.observation:
+                react_entry.observation = action_step_result.observation
+            return DirectiveResult(
+                handled=action_step_result.handled,
+                observation=action_step_result.observation,
+                status=action_step_result.status,
+                event_level=action_step_result.event_level,
+                log_level=action_step_result.log_level,
+                last_target_coords=action_step_result.last_target_coords,
+                failure_reason=action_step_result.failure_reason,
+                should_halt=action_step_result.should_halt,
+                emit_log=action_step_result.emit_log,
+            )
 
         return await self._handle_fallback(normalized, react_entry)
 
@@ -433,98 +443,6 @@ class DirectiveExecutor:
             status="completed",
             event_level="progress",
             last_target_coords=last_target_coords,
-        )
-
-    async def _handle_action_task(
-        self,
-        directive: Optional[ActionDirective],
-        directive_meta: Optional[Dict[str, Any]],
-        normalized: str,
-        directive_coords: Optional[Tuple[int, int, int]],
-        react_entry: Optional[ReActStep],
-        action_backlog: List[Dict[str, str]],
-        last_target_coords: Optional[Tuple[int, int, int]],
-    ) -> Optional[DirectiveResult]:
-        """座標を伴わない一般アクションタスクを実行する。"""
-
-        action_category = None
-        if directive and directive.category in ACTION_TASK_RULES:
-            action_category = directive.category
-        if not action_category:
-            action_category = self._task_router.classify_action_task(normalized)
-        if not action_category:
-            return None
-
-        self._logger.info(
-            "plan_step classified as action_task category=%s",
-            action_category,
-        )
-        with directive_scope(self._actions, directive_meta):
-            handled, last_target_coords, failure_detail = await self._task_router.handle_action_task(
-                action_category,
-                normalized,
-                last_target_coords=last_target_coords,
-                backlog=action_backlog,
-                explicit_coords=directive_coords if action_category == "move" else None,
-            )
-        if handled:
-            if action_category == "move":
-                destination = last_target_coords or self._default_move_target
-                observation_text = (
-                    f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
-                    if destination
-                    else "移動に成功しました。"
-                )
-            else:
-                observation_text = f"{action_category} タスクを完了しました。"
-            if react_entry:
-                react_entry.observation = observation_text
-            return DirectiveResult(
-                handled=True,
-                observation=observation_text,
-                status="completed",
-                event_level="progress",
-                last_target_coords=last_target_coords,
-            )
-
-        observation_text = (
-            failure_detail
-            or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。"
-        )
-        if react_entry:
-            react_entry.observation = observation_text
-        return DirectiveResult(
-            handled=True,
-            observation=observation_text,
-            status="failed",
-            event_level="fault",
-            log_level=logging.WARNING,
-            last_target_coords=last_target_coords,
-            failure_reason=failure_detail
-            or "Mineflayer からアクションが拒否され、残りの計画を進められませんでした。",
-            should_halt=True,
-        )
-
-    async def _handle_status_report(
-        self,
-        normalized: str,
-        directive_meta: Optional[Dict[str, Any]],
-        react_entry: Optional[ReActStep],
-    ) -> Optional[DirectiveResult]:
-        """報告指示に対してチャットで進捗を伝える。"""
-
-        if "報告" not in normalized and "伝える" not in normalized:
-            return None
-        with directive_scope(self._actions, directive_meta):
-            await self._actions.say("進捗を確認しています。続報をお待ちください。")
-        observation_text = "進捗報告メッセージを送信しました。"
-        if react_entry:
-            react_entry.observation = observation_text
-        return DirectiveResult(
-            handled=True,
-            observation=observation_text,
-            status="completed",
-            event_level="progress",
         )
 
     async def _handle_fallback(
