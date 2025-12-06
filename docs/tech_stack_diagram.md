@@ -83,7 +83,7 @@ graph TD
 - **クライアント層**: 実プレイヤーが操作する Minecraft クライアント。技術的には Vanilla だが、プロトコルバージョンが Paper / Mineflayer と合うことが重要です。
 - **サーバー層（Paper + AgentBridge）**: Minecraft のワールドそのものをホストしつつ、AgentBridge プラグインが WorldGuard / CoreProtect と連携し、「どの領域を掘ってよいか」「どのブロックが保護されているか」といった情報を HTTP 経由でエージェントへ渡します。
 - **Node.js ボット層（Mineflayer）**: 実際にワールド内で動き回るボット。Mineflayer と minecraft-protocol が Minecraft プロトコルの詳細を吸収し、Python 側からは「コマンド」として高レベルに制御できるようにします。
-- **Python LLM エージェント層**: チャット解釈・タスク分解・LangGraph によるフロー制御・Reflexion に基づく自己評価を担う中枢。OpenAI Responses API / MineDojo / VPT など、外部の知識ソース・モデルへここから接続します。
+- **Python LLM エージェント層**: チャット解釈・タスク分解・LangGraph によるフロー制御・Reflexion に基づく自己評価を担う中枢。OpenAI Responses API / MineDojo / VPT など、外部の知識ソース・モデルへここから接続します。DASHBOARD_* 設定で有効化できるブラウザダッシュボードから、キュー状況や perception サマリを即時確認できます。
 - **インフラ層（Docker / テスト）**: Python / Node 双方のホットリロードと依存管理、pytest / Vitest / LangGraph シナリオによる回帰テストを一括で支える層です。
 
 ---

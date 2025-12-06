@@ -216,6 +216,14 @@ LangGraph の責務が増えたため、`python/runtime` 配下に以下のモ�
 - `python/runtime/inventory_sync.py`: Mineflayer からの所持品スナップショット取得と要約を担当。`InventorySynchronizer` をコンストラクタ引数に渡すことでオーケストレータの差し替えを容易にします。
 - `python/runtime/reflection_prompt.py`: Reflexion 用プロンプト生成を共通化し、再計画ノードから安全に再利用できるようにしたユーティリティ。
 
+#### 3.2.8 ダッシュボード監視（ブラウザ表示）
+
+- Python エージェント起動中に `http://127.0.0.1:9100/`（既定）へアクセスすると、キュー長・現在ロール・最後のプラン要約・perception サマリ・構造化イベント・Reflexion 抜粋が 2 秒間隔で自動更新される簡易モニタを表示します。
+- 有効化は `DASHBOARD_ENABLED=true`（既定）で、`DASHBOARD_HOST`/`DASHBOARD_PORT` でバインド先を変更可能。外部公開が不要な場合は 127.0.0.1 のままにしてください。
+- `DASHBOARD_ACCESS_TOKEN` を設定すると Bearer 認証を要求します。ブラウザでは `?token=...` を付けてアクセスするか、手元のリクエストに `Authorization: Bearer <token>` を付与してください。
+- UI は React/TypeScript で構成し、`/static/app.js` を CDN React とともに配信するだけのシンプル構成です。ビルド不要で、Python プロセスが静的アセットを返します。
+- ログは `agent.dashboard` 名前空間へ出力されます。起動に失敗した場合もエージェント自体は稼働し続けるため、本番環境でポート競合が起きても計画実行は止まりません。
+
 #### MineDojo ミッション連携
 
 * Python エージェントは行動タスクの分類結果から MineDojo ミッション ID を推論し、該当カテゴリでは `python/services/minedojo_client.py` を介してミッション情報とデモを取得します。
@@ -398,6 +406,13 @@ python -m python.cli agentbridge jobs watch --danger-only --format text
 
 ### 4.8 OpenTelemetry / LangGraph の補足
 LangGraph のノード実行、Responses API 呼び出し、AgentBridge HTTP 通信では OpenTelemetry の span を自動で開始します。`OTEL_EXPORTER_OTLP_ENDPOINT` と `OTEL_TRACES_SAMPLER_RATIO` を設定すると、`langgraph_node_id` や `checkpoint_id` を含むトレースを収集できます。Mineflayer 側も WebSocket 受信ループや `gatherStatus` / `invokeSkill` コマンドを span・メトリクスに記録するため、Collector が OTLP/HTTP を受け付ける状態で起動すれば、実行時間ヒストグラムや再接続カウンターをまとめて可視化できます。
+
+### 4.9 ダッシュボード (HTTP モニタ)
+- `DASHBOARD_ENABLED` … true で HTTP ダッシュボードを起動（既定 true）
+- `DASHBOARD_HOST` … バインドアドレス（既定 127.0.0.1）
+- `DASHBOARD_PORT` … バインドポート（既定 9100）
+- `DASHBOARD_ACCESS_TOKEN` … 任意。設定すると Bearer 認証を要求。ブラウザは `?token=...` 付きでアクセスするか、ヘッダーに `Authorization: Bearer <token>` を付与してください。
+- フロントエンドは React/TypeScript で実装し、CDN の React UMD 版 + `/static/app.js` を読み込むだけで動作します。
 
 ## 5. 使い方（ゲーム内）
 

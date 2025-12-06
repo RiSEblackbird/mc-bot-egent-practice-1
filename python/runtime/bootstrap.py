@@ -21,6 +21,7 @@ from runtime.websocket_server import AgentWebSocketServer
 from runtime.minedojo import run_minedojo_self_dialogue
 from agent import AgentOrchestrator
 from agent_lifecycle import create_agent_orchestrator
+from dashboard import DashboardServer
 
 logger = setup_logger("agent.bootstrap")
 
@@ -55,6 +56,22 @@ async def main() -> None:
         config=config,
     )
     ws_server = AgentWebSocketServer(orchestrator)
+    dashboard_server: DashboardServer | None = None
+    if config.dashboard.enabled:
+        try:
+            dashboard_server = DashboardServer(
+                orchestrator,
+                host=config.dashboard.host,
+                port=config.dashboard.port,
+                access_token=config.dashboard.access_token,
+            )
+            await dashboard_server.start()
+        except Exception:
+            logger.exception(
+                "failed to start dashboard server host=%s port=%s",
+                config.dashboard.host,
+                config.dashboard.port,
+            )
     await orchestrator.start_bridge_event_listener()
 
     worker_task = asyncio.create_task(orchestrator.worker(), name="agent-worker")
@@ -70,6 +87,8 @@ async def main() -> None:
             with contextlib.suppress(Exception):
                 await worker_task
             await orchestrator.stop_bridge_event_listener()
+            if dashboard_server:
+                await dashboard_server.stop()
 
 
 __all__ = [

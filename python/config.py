@@ -31,6 +31,8 @@ _DEFAULT_AGENT_QUEUE_MAX_SIZE = 20
 _DEFAULT_WORKER_TASK_TIMEOUT_SECONDS = 300.0
 _DEFAULT_LANGSMITH_API_URL = "https://api.smith.langchain.com"
 _DEFAULT_LANGSMITH_PROJECT = "mc-bot"
+_DEFAULT_DASHBOARD_HOST = "127.0.0.1"
+_DEFAULT_DASHBOARD_PORT = 9100
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,16 @@ class LangSmithConfig:
 
 
 @dataclass(frozen=True)
+class DashboardConfig:
+    """ダッシュボード HTTP サーバーのバインド設定。"""
+
+    enabled: bool
+    host: str
+    port: int
+    access_token: str | None
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     """エージェント本体が参照する設定値の集合。"""
 
@@ -73,6 +85,7 @@ class AgentConfig:
     llm_timeout_seconds: float  # Responses API 呼び出しを強制終了するまでの猶予秒数
     queue_max_size: int  # チャットキューの上限。0 なら無制限
     worker_task_timeout_seconds: float  # 単一チャット処理のタイムアウト猶予
+    dashboard: DashboardConfig  # HTTP ダッシュボードのバインド設定
 
 
 @dataclass(frozen=True)
@@ -225,6 +238,17 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
         for token in langsmith_tags_raw.split(",")
         if token.strip()
     )
+    dashboard_enabled = _parse_bool(source.get("DASHBOARD_ENABLED"), True)
+    dashboard_host_raw = source.get("DASHBOARD_HOST", _DEFAULT_DASHBOARD_HOST)
+    dashboard_port, dashboard_port_warnings = _parse_port(
+        source.get("DASHBOARD_PORT"), _DEFAULT_DASHBOARD_PORT
+    )
+    dashboard_token_raw = source.get("DASHBOARD_ACCESS_TOKEN")
+    dashboard_token = (
+        dashboard_token_raw.strip()
+        if dashboard_token_raw and dashboard_token_raw.strip()
+        else None
+    )
 
     minedojo_cache_dir = minedojo_cache_dir_raw.strip() or _DEFAULT_MINEDOJO_CACHE_DIR
     minedojo_dataset = (
@@ -242,6 +266,7 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     _collect_warnings(warnings, worker_timeout_warnings)
     _collect_warnings(warnings, sim_seed_warnings)
     _collect_warnings(warnings, sim_step_warnings)
+    _collect_warnings(warnings, dashboard_port_warnings)
 
     config = AgentConfig(
         ws_url=ws_url,
@@ -272,6 +297,12 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
         llm_timeout_seconds=llm_timeout_seconds,
         queue_max_size=queue_max_size,
         worker_task_timeout_seconds=worker_task_timeout_seconds,
+        dashboard=DashboardConfig(
+            enabled=dashboard_enabled,
+            host=dashboard_host_raw.strip() or _DEFAULT_DASHBOARD_HOST,
+            port=dashboard_port,
+            access_token=dashboard_token,
+        ),
     )
 
     for warning in warnings:
