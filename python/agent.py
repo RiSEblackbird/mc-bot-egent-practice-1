@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
-from agent_bootstrap import AgentInitialization, initialize_agent_runtime
 from chat_pipeline import ChatPipeline
-from orchestrator import OrchestratorDependencies, PlanRuntimeContext
 from orchestrator.action_analyzer import ActionAnalyzer
 from orchestrator.directive_utils import (
     build_directive_meta,
@@ -29,13 +26,6 @@ from orchestrator.skill_detection import SkillDetectionCoordinator
 from orchestrator.task_router import TaskRouter
 from orchestrator.plan_executor import PlanExecutor
 from orchestrator.role_perception_adapter import RolePerceptionAdapter
-from agent_settings import (
-    AgentRuntimeSettings,
-    DEFAULT_AGENT_RUNTIME_SETTINGS,
-)
-from config import AgentConfig
-from services.minedojo_client import MineDojoClient
-from services.skill_repository import SkillRepository
 from actions import Actions
 from memory import Memory
 from planner import (
@@ -47,16 +37,14 @@ from planner import (
 )
 from utils import log_structured_event, setup_logger
 from runtime.action_graph import ChatTask
-from runtime.inventory_sync import InventorySynchronizer
 from runtime.reflection_prompt import build_reflection_prompt
 from runtime.hybrid_directive import HybridDirectivePayload
 from services.movement_service import MovementService
+from runtime.inventory_sync import InventorySynchronizer
+
+if TYPE_CHECKING:  # pragma: no cover - 型チェック専用
+    from agent_lifecycle import AgentOrchestratorWiring
 logger = setup_logger("agent")
-
-# --- 設定の読み込み --------------------------------------------------------
-
-RUNTIME_SETTINGS = DEFAULT_AGENT_RUNTIME_SETTINGS
-AGENT_CONFIG: AgentConfig = RUNTIME_SETTINGS.config
 
 
 class AgentOrchestrator:
@@ -88,40 +76,21 @@ class AgentOrchestrator:
     # 装備ステップのキーワード解析ルールは runtime.rules.EQUIP_KEYWORD_RULES を利用する。
     # 採掘に必要なツルハシランクの対応表は runtime.rules へ切り出して共有する。
 
-    def __init__(
-        self,
-        actions: Actions,
-        memory: Memory,
-        *,
-        skill_repository: SkillRepository | None = None,
-        config: AgentConfig | None = None,
-        runtime_settings: AgentRuntimeSettings | None = None,
-        minedojo_client: MineDojoClient | None = None,
-        inventory_sync: InventorySynchronizer | None = None,
-    ) -> None:
-        self.actions = actions
-        self.memory = memory
-        # 初期化手順を専用ファクトリへ集約し、設定値と依存注入の経路を明示する。
-        bootstrap: AgentInitialization = initialize_agent_runtime(
-            owner=self,
-            actions=actions,
-            memory=memory,
-            skill_repository=skill_repository,
-            config=config,
-            runtime_settings=runtime_settings,
-            minedojo_client=minedojo_client,
-            inventory_sync=inventory_sync,
-        )
-        self.settings = bootstrap.settings
-        self.config = bootstrap.config
+    def __init__(self, wiring: "AgentOrchestratorWiring") -> None:
+        """受け取った依存を保持するだけのシンプルなコンストラクタ。"""
+
+        self.actions = wiring.actions
+        self.memory = wiring.memory
+        self.settings = wiring.settings
+        self.config = wiring.config
         # 設定値をローカル変数へコピーしておくことで、テスト時に差し込まれた構成も尊重する。
-        self.default_move_target = bootstrap.default_move_target
-        self.logger = bootstrap.logger
+        self.default_move_target = wiring.default_move_target
+        self.logger = wiring.logger
         # LangGraph 側での意思決定に活用する閾値や履歴上限をまとめて保持する。
         self.low_food_threshold = self.settings.low_food_threshold
         self.structured_event_history_limit = self.settings.structured_event_history_limit
         self.perception_history_limit = self.settings.perception_history_limit
-        dependencies = bootstrap.dependencies
+        dependencies = wiring.dependencies
         self.skill_repository = dependencies.skill_repository
         self._tracer = dependencies.tracer
         self.inventory_sync = dependencies.inventory_sync
@@ -131,17 +100,19 @@ class AgentOrchestrator:
         self.minedojo_client = dependencies.minedojo_client
         self.minedojo_handler = dependencies.minedojo_handler
         self._hybrid_handler = dependencies.hybrid_handler
-        self._chat_pipeline = bootstrap.chat_pipeline
-        self._role_perception = bootstrap.role_perception
+        self._chat_pipeline = wiring.chat_pipeline
+        self._role_perception = wiring.role_perception
+        # 役割イベント系の副作用はプロキシにまとめ、キュー処理ロジックと明確に分離する。
+        self._role_listener = wiring.role_listener
         self._bridge_roles = self._role_perception.bridge_roles
         self._perception = self._role_perception.perception
-        self.movement_service = bootstrap.movement_service
-        self._plan_runtime = bootstrap.plan_runtime
-        self._action_analyzer = bootstrap.action_analyzer
-        self._skill_detection = bootstrap.skill_detection
-        self.task_router = bootstrap.task_router
-        self._dependencies = bootstrap.orchestrator_dependencies
-        self._plan_executor = bootstrap.plan_executor
+        self.movement_service = wiring.movement_service
+        self._plan_runtime = wiring.plan_runtime
+        self._action_analyzer = wiring.action_analyzer
+        self._skill_detection = wiring.skill_detection
+        self.task_router = wiring.task_router
+        self._dependencies = wiring.orchestrator_dependencies
+        self._plan_executor = wiring.plan_executor
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""
@@ -168,17 +139,17 @@ class AgentOrchestrator:
     async def start_bridge_event_listener(self) -> None:
         """AgentBridge のイベントストリーム購読タスクを起動する。"""
 
-        await self._role_perception.start_bridge_listener()
+        await self._role_listener.start_bridge_event_listener()
 
     async def stop_bridge_event_listener(self) -> None:
         """イベント購読タスクを停止し、スレッドセーフに後始末する。"""
 
-        await self._role_perception.stop_bridge_listener()
+        await self._role_listener.stop_bridge_event_listener()
 
     async def handle_agent_event(self, args: Dict[str, Any]) -> None:
         """Node 側から届いたマルチエージェントイベントを解析して記憶する。"""
 
-        await self._role_perception.handle_agent_event(args)
+        await self._role_listener.handle_agent_event(args)
 
     def request_role_switch(self, role_id: str, *, reason: Optional[str] = None) -> None:
         """LangGraph ノードからの役割切替要求をキューへ記録する。"""

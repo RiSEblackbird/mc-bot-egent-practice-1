@@ -20,6 +20,7 @@ from utils import setup_logger
 from runtime.websocket_server import AgentWebSocketServer
 from runtime.minedojo import run_minedojo_self_dialogue
 from agent import AgentOrchestrator
+from agent_lifecycle import create_agent_orchestrator
 
 logger = setup_logger("agent.bootstrap")
 
@@ -47,7 +48,12 @@ async def main() -> None:
 
     config = load_runtime_config()
     _, actions, memory, skill_repo = build_dependencies(config)
-    orchestrator = AgentOrchestrator(actions, memory, skill_repository=skill_repo, config=config)
+    orchestrator = create_agent_orchestrator(
+        actions,
+        memory,
+        skill_repository=skill_repo,
+        config=config,
+    )
     ws_server = AgentWebSocketServer(orchestrator)
     await orchestrator.start_bridge_event_listener()
 
@@ -68,6 +74,7 @@ async def main() -> None:
 
 __all__ = [
     "AgentOrchestrator",
+    "create_agent_orchestrator",
     "main",
     "load_runtime_config",
     "run_minedojo_self_dialogue",
