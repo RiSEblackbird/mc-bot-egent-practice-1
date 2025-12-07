@@ -149,6 +149,8 @@ ChatPipeline は初期化ファクトリでエージェントへ事前バイン�
 防ぎます。チャット処理経路の必須依存は `agent_bootstrap.py` と `agent.py` の 2 箇所で
 明示的に検証される設計です。`ActionAnalyzer` も初期化時にエージェントへ束縛し、チャット
 キューのコールバックが早期に呼ばれても座標抽出などの解析処理が欠落しないようにしています。
+MineDojo 連携は初期化時に `minedojo_handler` / `minedojo_client` をエージェントへ先行バインドし、
+チャットワーカー起動直後でも自動リカバリ判定やコンテキスト付与が安全に動作するようにしました。
 移動および障壁通知については `services/movement_service.py` に委譲し、`AgentOrchestrator`
 のプライベートメソッドを廃止しました。`MovementService` は Actions 依存を明示的に
 受け取り、移動成功時の `Memory.last_destination` 更新と構造化ログ出力をセットで実施

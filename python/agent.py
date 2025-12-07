@@ -123,6 +123,8 @@ class AgentOrchestrator:
             missing.append("chat_pipeline")
         if getattr(self, "_action_analyzer", None) is None:
             missing.append("action_analyzer")
+        if getattr(self, "minedojo_handler", None) is None:
+            missing.append("minedojo_handler")
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(

@@ -116,15 +116,6 @@ def build_agent_dependencies(
         perception_history_limit=settings.perception_history_limit,
     )
 
-    chat_queue = ChatQueue(
-        process_task=owner._process_chat,
-        say=owner._safe_say,
-        queue_max_size=config.queue_max_size,
-        task_timeout_seconds=config.worker_task_timeout_seconds,
-        timeout_retry_limit=owner._MAX_TASK_TIMEOUT_RETRY,
-        logger=logger,
-    )
-
     action_graph = ActionGraph(owner)
     minedojo_client_obj = minedojo_client or MineDojoClient(config.minedojo)
     minedojo_handler = MineDojoHandler(
@@ -134,6 +125,18 @@ def build_agent_dependencies(
         minedojo_client=minedojo_client_obj,
         tracer=tracer,
         config=config,
+        logger=logger,
+    )
+    # ChatQueue のコールバックが __init__ より前に走っても安全なように、必須依存を先行で束縛する。
+    owner.minedojo_handler = minedojo_handler
+    owner.minedojo_client = minedojo_client_obj
+
+    chat_queue = ChatQueue(
+        process_task=owner._process_chat,
+        say=owner._safe_say,
+        queue_max_size=config.queue_max_size,
+        task_timeout_seconds=config.worker_task_timeout_seconds,
+        timeout_retry_limit=owner._MAX_TASK_TIMEOUT_RETRY,
         logger=logger,
     )
 
