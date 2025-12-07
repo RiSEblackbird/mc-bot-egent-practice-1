@@ -88,6 +88,7 @@ paper-*.jar
 bridge-plugin/.gradle/
 bridge-plugin/build/
 bridge-plugin/libs/*.jar
+bridge-plugin/bin/
 # Paper 実行環境で生成される AgentBridge 設定（API キーを含むため除外）
 plugins/AgentBridge/
 # AgentBridge のローカル上書き設定（LangGraph エンドポイントやシークレットを含むため除外）
