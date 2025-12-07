@@ -357,6 +357,7 @@ Paper サーバーごとコンテナ化したい場合は、同梱の `docker-co
 3. `.env` を更新: `MC_HOST=bridge`、`BRIDGE_URL=http://bridge:19071`（デフォルト値もこの組み合わせに合わせてあります）。
 4. 起動: プロジェクトルートで `docker compose up --build`。初回起動時に `bridge-data/plugins/AgentBridge/config.yml` が生成されるので、`api_key` を `.env` の `BRIDGE_API_KEY` と揃える。
 5. データ永続化: `bridge-data/` にワールドとプラグイン設定が保持されます（`.gitignore` 済み）。
+6. ホストからワールドへ直接入らない場合は 25565 ポート公開を外しています。外部から接続したい場合は `docker-compose.yml` の `bridge` サービスで `ports` に `25566:25565` などのマッピングを追加してください（25565 が埋まっている環境が多いためホスト側をずらす運用を推奨）。
 
 ### 3.5 継続採掘モード CLI
 
