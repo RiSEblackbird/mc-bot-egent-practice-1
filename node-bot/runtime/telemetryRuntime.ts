@@ -12,7 +12,7 @@ import {
 } from '@opentelemetry/api';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
-import { Resource } from '@opentelemetry/resources';
+import { resourceFromAttributes } from '@opentelemetry/resources';
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
@@ -45,7 +45,7 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
     metricReader: new PeriodicExportingMetricReader({
       exporter: new OTLPMetricExporter({ url: `${baseEndpoint}/v1/metrics` }),
     }),
-    resource: new Resource({
+    resource: resourceFromAttributes({
       [SemanticResourceAttributes.SERVICE_NAME]: config.serviceName,
       [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: config.environment,
       [SemanticResourceAttributes.SERVICE_NAMESPACE]: 'mineflayer-agent',

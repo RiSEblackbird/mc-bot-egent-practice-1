@@ -55,7 +55,7 @@ def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
     return hints
 
 
-def _compose_pre_action_follow_up(
+async def _compose_pre_action_follow_up(
     plan_out: PlanOut,
     reason: str,
     *,
