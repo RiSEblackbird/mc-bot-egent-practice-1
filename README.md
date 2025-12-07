@@ -370,6 +370,7 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
    - `BRIDGE_URL`: Paper へ到達可能な URL（Docker→ホストなら `http://host.docker.internal:19071`）。
    - `BRIDGE_API_KEY`: `config.yml` の `api_key` と同じ値。
    - Bridge をまだ使わない場合は `BRIDGE_EVENT_STREAM_ENABLED=false` にしておく。
+   - **Docker Compose 利用時に api_key を入れ忘れると Paper 起動ログに上記エラーが出て AgentBridge が自動停止する。`bridge-data/plugins/AgentBridge/config.yml` の `api_key` を `.env` の `BRIDGE_API_KEY` と一致させて再起動すれば解消する。**
 
 #### 3.4.2 Docker Compose で AgentBridge を立ち上げる
 
