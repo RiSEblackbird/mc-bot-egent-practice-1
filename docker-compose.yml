@@ -14,8 +14,8 @@ services:
       JVM_OPTS: ${BRIDGE_JVM_OPTS:-}
     volumes:
       - ./bridge-data:/data
-      - ./bridge-plugin/build/libs:/plugins:ro
-      - ./bridge-plugin/libs/CoreProtect-22.0.jar:/plugins/CoreProtect-22.0.jar:ro
+      - ./bridge-plugin/build/libs:/data/plugins:ro
+      - ./bridge-plugin/libs/CoreProtect-22.0.jar:/data/plugins/CoreProtect-22.0.jar:ro
     ports:
       # 外部から Paper へ直接入る必要がある場合のみ 25565 を開ける。
       # - "25566:25565"  # ホスト側ポートをずらす例
