@@ -189,6 +189,8 @@ def initialize_agent_runtime(
     owner.status_service = dependencies.status_service
 
     role_perception = RolePerceptionAdapter(owner)
+    # PlanExecutor などが __init__ 前にフォールバックアクセスするため、最低限の属性を先に付与しておく。
+    owner._role_perception = role_perception  # noqa: SLF001
     chat_pipeline = ChatPipeline(owner)
     movement_service = MovementService(
         actions=actions,
