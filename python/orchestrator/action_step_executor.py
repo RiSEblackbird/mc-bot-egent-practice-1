@@ -95,7 +95,7 @@ class ActionStepExecutor:
             "plan_step classified as action_task category=%s",
             action_category,
         )
-        explicit_coords = directive_coords if action_category == "move" else None
+        explicit_coords = directive_coords if action_category in ("move", "move_to_player") else None
         with directive_scope(self._actions, directive_meta):
             handled, updated_target, failure_detail = await self._task_router.handle_action_task(
                 action_category,
@@ -106,13 +106,14 @@ class ActionStepExecutor:
             )
 
         if handled:
-            if action_category == "move":
+            if action_category in ("move", "move_to_player"):
                 destination = updated_target or self._default_move_target
-                observation_text = (
-                    f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
-                    if destination
-                    else "移動に成功しました。"
-                )
+                if destination:
+                    observation_text = (
+                        f"移動成功: X={destination[0]} / Y={destination[1]} / Z={destination[2]}"
+                    )
+                else:
+                    observation_text = "移動に成功しました。"
             else:
                 observation_text = f"{action_category} タスクを完了しました。"
             return ActionStepResult(
@@ -121,6 +122,7 @@ class ActionStepExecutor:
                 status="completed",
                 event_level="progress",
                 last_target_coords=updated_target,
+                should_halt=action_category == "move_to_player",
             )
 
         observation_text = (

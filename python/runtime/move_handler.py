@@ -23,6 +23,15 @@ async def handle_move(
     weather = recent_perception.get("weather")
     category = state.get("category", "")
     target_player = (state.get("target_player") or "").strip()
+    current_pos = None
+    if isinstance(recent_perception, dict):
+        pos = recent_perception.get("position")
+        if isinstance(pos, dict):
+            x = pos.get("x")
+            y = pos.get("y")
+            z = pos.get("z")
+            if all(isinstance(v, (int, float)) for v in (x, y, z)):
+                current_pos = (int(x), int(y), int(z))
 
     # move_to_player はプレイヤー名が分かれば追従コマンドを優先する。
     if category == "move_to_player" and target_player:
@@ -45,7 +54,7 @@ async def handle_move(
             )
             return {
                 "handled": True,
-                "updated_target": last_target,
+                "updated_target": current_pos or last_target,
                 "failure_detail": None,
             }
 
