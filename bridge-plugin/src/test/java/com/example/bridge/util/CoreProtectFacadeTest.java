@@ -36,7 +36,7 @@ final class CoreProtectFacadeTest {
 
     @Test
     void lookupBulkReturnsPlayerNameWhenPlaced() throws Exception {
-        injectApi(new FakeCoreProtectApi(List.of(new String[] {"1", "TestPlayer"})));
+        injectApi(new FakeCoreProtectApi(List.<String[]>of(new String[] {"1", "TestPlayer"})));
 
         List<CoreProtectFacade.Result> results =
                 facade.lookupBulk(world, List.of(BlockVector3.at(1, 2, 3)), 60);
@@ -49,7 +49,7 @@ final class CoreProtectFacadeTest {
 
     @Test
     void lookupBulkReturnsEmptyWhenPlayerNameMissing() throws Exception {
-        injectApi(new FakeCoreProtectApi(List.of(new String[] {"1", null})));
+        injectApi(new FakeCoreProtectApi(List.<String[]>of(new String[] {"1", null})));
 
         List<CoreProtectFacade.Result> results =
                 facade.lookupBulk(world, List.of(BlockVector3.at(4, 5, 6)), 120);
