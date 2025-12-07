@@ -54,10 +54,10 @@ services:
       - bash
       - -lc
       - |
-        pip install --no-cache-dir -r requirements.txt \
-        && cd python \
         # watchfiles CLI ではコマンド全体を 1 引数として渡さないと Python が対話モードで起動してしまい、
         # エージェントがポートをリッスンしないため明示的にクォートする。
-        && watchfiles --filter python --ignore-paths .venv -- "python agent.py"
+        pip install --no-cache-dir -r requirements.txt && \
+        cd python && \
+        watchfiles --filter python --ignore-paths .venv -- "python agent.py"
     stdin_open: true
     tty: true
