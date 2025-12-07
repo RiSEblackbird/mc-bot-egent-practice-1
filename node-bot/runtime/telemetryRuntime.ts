@@ -60,7 +60,7 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
     traceSampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(config.samplerRatio) }),
   });
 
-  telemetryStartPromise ??= sdk.start().catch((error) => {
+  telemetryStartPromise ??= Promise.resolve(sdk.start()).catch((error) => {
     console.error('[Telemetry] failed to start OpenTelemetry SDK', error);
   });
 
