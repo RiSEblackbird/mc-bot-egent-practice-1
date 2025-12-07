@@ -326,8 +326,16 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
 1. 必要なダウンロード
    - **Java 21 JDK**（Adoptium など公式配布物）。
    - **Paper サーバー jar**（あなたのサーバーバージョンに合うもの。例: 1.21.1）。Paper 配下に `plugins/` フォルダを作成しておく。
+   - **WorldEdit jar**（WorldGuard の前提プラグイン）。https://enginehub.org/worldedit から「Bukkit (1.14+)」版をダウンロードし、Paper の `plugins/` へ配置。例: `worldedit-bukkit-7.3.x.jar`。
+   - **WorldGuard jar**（リージョン保護機能を提供）。https://enginehub.org/worldguard から「Bukkit」版をダウンロードし、Paper の `plugins/` へ配置。例: `worldguard-bukkit-7.0.x.jar`。
    - **CoreProtect jar**（例: `CoreProtect-22.0.jar` を公式配布ページから取得し、`bridge-plugin/libs/` へ配置）。`build.gradle.kts` はこのファイル名を参照するためリネームしない。
    - **Gradle 本体**（Wrapper は同梱していないため、手元にインストールが必要。Gradle 9 以降を推奨 ― Shadow 9.x と組み合わせると `shadowJar` が安定します。Windows なら winget/choco、macOS なら brew、Linux なら各ディストリのパッケージか公式 ZIP を展開）。
+
+   > **バージョン互換性の目安（2024年12月時点）**
+   > | Minecraft | WorldEdit | WorldGuard |
+   > |-----------|-----------|------------|
+   > | 1.21.x    | 7.3.x     | 7.0.x      |
+   > | 1.20.x    | 7.2.x     | 7.0.x      |
 2. ビルド（AgentBridge jar を作る）
    - `cd bridge-plugin`
    - `gradle shadowJar`
