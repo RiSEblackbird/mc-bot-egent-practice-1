@@ -376,11 +376,12 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
 Paper サーバーごとコンテナ化したい場合は、同梱の `docker-compose.yml` に `bridge` サービスを追加しています。以下の手順で利用できます。
 
 1. CoreProtect の jar を `bridge-plugin/libs/CoreProtect-22.0.jar` に配置する。
-2. AgentBridge をビルド: `cd bridge-plugin && gradle shadowJar`。ビルド時に `CoreProtect-22.0.jar` も `build/libs/` へ自動コピーされ、コンテナ起動時に `/plugins` から `/data/plugins` へ Paper がコピーする（リマップ用に `/data/plugins` は書き込み可のまま保持する）。
-3. `.env` を更新: `MC_HOST=bridge`、`BRIDGE_URL=http://bridge:19071`（デフォルト値もこの組み合わせに合わせてあります）。
-4. 起動: プロジェクトルートで `docker compose up --build`。初回起動時に `bridge-data/plugins/AgentBridge/config.yml` が生成されるので、`api_key` を `.env` の `BRIDGE_API_KEY` と揃える。
-5. データ永続化: `bridge-data/` にワールドとプラグイン設定が保持されます（`.gitignore` 済み）。
-6. ホストからワールドへ直接入らない場合は 25565 ポート公開を外しています。外部から接続したい場合は `docker-compose.yml` の `bridge` サービスで `ports` に `25566:25565` などのマッピングを追加してください（25565 が埋まっている環境が多いためホスト側をずらす運用を推奨）。
+2. WorldEdit / WorldGuard の jar（例: `worldedit-bukkit-7.3.9.jar`, `worldguard-bukkit-7.0.12-dist.jar`）を `bridge-plugin/libs/` に配置する。
+3. AgentBridge をビルド: `cd bridge-plugin && gradle shadowJar`。ビルド時に `libs/` 配下の依存（CoreProtect / WorldEdit / WorldGuard）が `build/libs/` へ自動コピーされ、コンテナ起動時に `/plugins` から `/data/plugins` へ Paper がコピーする（リマップ用に `/data/plugins` は書き込み可のまま保持する）。
+4. `.env` を更新: `MC_HOST=bridge`、`BRIDGE_URL=http://bridge:19071`（デフォルト値もこの組み合わせに合わせてあります）。
+5. 起動: プロジェクトルートで `docker compose up --build`。初回起動時に `bridge-data/plugins/AgentBridge/config.yml` が生成されるので、`api_key` を `.env` の `BRIDGE_API_KEY` と揃える。
+6. データ永続化: `bridge-data/` にワールドとプラグイン設定が保持されます（`.gitignore` 済み）。
+7. ホストからワールドへ直接入らない場合は 25565 ポート公開を外しています。外部から接続したい場合は `docker-compose.yml` の `bridge` サービスで `ports` に `25566:25565` などのマッピングを追加してください（25565 が埋まっている環境が多いためホスト側をずらす運用を推奨）。
 
 ### 3.5 継続採掘モード CLI
 

@@ -23,13 +23,15 @@ repositories {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
-    compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.9")
+    compileOnly("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
+    compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
+    compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.1")
     compileOnly(files("libs/CoreProtect-22.0.jar"))
-    testImplementation("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
-    testImplementation("com.sk89q.worldguard:worldguard-bukkit:7.0.9")
+    testImplementation("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
+    testImplementation("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
+    testImplementation("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("org.mockito:mockito-core:5.11.0")
 }
@@ -43,12 +45,13 @@ val shadowJar = tasks.named<ShadowJar>("shadowJar") {
     archiveClassifier.set("")
     mergeServiceFiles()
     minimize()
-    // Docker Compose 環境向けに CoreProtect を build/libs へコピーする。
-    // 単一ファイルマウントは Windows Docker Desktop で問題を起こすため、
-    // ビルド成果物と同じディレクトリに配置して一括マウントで済むようにする。
+    // Docker Compose 環境向けにプラグイン依存（CoreProtect / WorldGuard / WorldEdit）を
+    // build/libs へまとめてコピーする。単一ファイルマウントは Windows Docker Desktop で
+    // 問題を起こすため、ビルド成果物と同じディレクトリに配置して一括マウントで済むようにする。
     doLast {
         copy {
-            from("libs/CoreProtect-22.0.jar")
+            from("libs")
+            include("*.jar")
             into(layout.buildDirectory.dir("libs"))
         }
     }
