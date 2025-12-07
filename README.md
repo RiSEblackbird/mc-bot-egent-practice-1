@@ -371,6 +371,11 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
    - `BRIDGE_API_KEY`: `config.yml` の `api_key` と同じ値。
    - Bridge をまだ使わない場合は `BRIDGE_EVENT_STREAM_ENABLED=false` にしておく。
    - **Docker Compose 利用時に api_key を入れ忘れると Paper 起動ログに上記エラーが出て AgentBridge が自動停止する。`bridge-data/plugins/AgentBridge/config.yml` の `api_key` を `.env` の `BRIDGE_API_KEY` と一致させて再起動すれば解消する。**
+7. ホストで Paper を動かしつつボットを繋ぐ場合のチェックリスト（Docker 併用時）
+   - `plugins/AgentBridge/config.yml`: `bind: 0.0.0.0` / `port: 19071` / `api_key` を `.env` の `BRIDGE_API_KEY` と同一にする。Windows ファイアウォールで 19071 と 25565 を許可。
+   - `.env`: `MC_HOST=host.docker.internal`、`MC_PORT=25565`、`BRIDGE_URL=http://host.docker.internal:19071`、`BRIDGE_API_KEY` を上記と一致させる。
+   - ボット起動: `docker compose up`（bridge サービスが不要ならポート競合を避けるため無効化する）または `cd node-bot && npm run dev` / `python -m python` で直接起動。
+   - 接続確認: Paper コンソールに `[Not Secure] <HelperBot> 起動しました。（Mineflayer）` が出るか、`/list`/Tab に HelperBot が表示されることを確認。
 
 #### 3.4.2 Docker Compose で AgentBridge を立ち上げる
 
