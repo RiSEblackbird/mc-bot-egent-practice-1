@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ReActStep(BaseModel):
@@ -48,6 +48,20 @@ class PlanArguments(BaseModel):
         default_factory=list,
         description="入力に含まれるモダリティ（例: text, image）。",
     )
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _coerce_notes(cls, value: Any) -> Dict[str, Any]:
+        """LLM から文字列で返ってきた場合も辞書へ正規化する。"""
+
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            return {"text": value}
+        # その他の型はそのまま文字列表現で退避する
+        return {"raw": str(value)}
 
 
 class ConstraintSpec(BaseModel):

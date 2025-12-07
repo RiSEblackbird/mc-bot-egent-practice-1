@@ -81,6 +81,11 @@ def _normalize_plan_json(content: str) -> str:
                 arguments["coordinates"] = normalized_coords
             else:
                 arguments.pop("coordinates", None)
+        notes = arguments.get("notes")
+        if isinstance(notes, str):
+            arguments["notes"] = {"text": notes}
+        elif notes is None:
+            arguments["notes"] = {}
         data["arguments"] = arguments
 
     constraints = data.get("constraints")
@@ -280,6 +285,29 @@ def build_plan_graph(
                     inputs={"content_preview": raw_content[:120]},
                     outputs={"priority": priority},
                     error=str(exc),
+                )
+            )
+            return result
+
+        # LLM 出力が空配列の場合は実行フェーズで詰まるため、ここでチャット確認に切り替える。
+        if not plan_data.plan:
+            fallback_message = plan_data.resp.strip() or "手順が生成できませんでした。もう少し具体的に指示してください。"
+            plan_data.blocking = True
+            plan_data.next_action = "chat"
+            plan_data.clarification_needed = "data_gap"
+            plan_data.resp = fallback_message
+            plan_data.backlog = plan_data.backlog or []
+            plan_data.backlog.append(
+                {"type": "plan", "summary": "手順が生成されませんでした", "label": "plan_empty"}
+            )
+            priority = await manager.mark_failure()
+            result = {"plan_out": plan_data, "priority": priority, "plan_empty": True}
+            result.update(
+                record_structured_step(
+                    state,
+                    step_label="parse_plan",
+                    inputs={"content_preview": raw_content[:120]},
+                    outputs={"priority": priority, "plan_empty": True},
                 )
             )
             return result

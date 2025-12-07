@@ -138,7 +138,15 @@ class PerceptionCoordinator:
             context = agent.status_service.build_context_snapshot(
                 current_role_id=current_role
             )
-            context.update({"queue_backlog": agent.chat_queue.backlog_size})
+            backlog_size = 0
+            chat_queue = getattr(agent, "chat_queue", None)
+            if chat_queue is not None:
+                backlog_size = getattr(chat_queue, "backlog_size", 0) or 0
+            else:
+                agent.logger.warning(
+                    "chat_queue is unavailable while composing barrier message; using backlog_size=0"
+                )
+            context.update({"queue_backlog": backlog_size})
             llm_message = await compose_barrier_notification(step, reason, context)
             if llm_message:
                 agent.logger.info(

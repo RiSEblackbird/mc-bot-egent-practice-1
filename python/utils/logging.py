@@ -72,7 +72,10 @@ def _configure_tracer_provider(service_name: str) -> TracerProvider:
     if _TRACER_PROVIDER:
         return _TRACER_PROVIDER
 
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    enabled_raw = os.getenv("OTEL_EXPORTER_OTLP_ENABLED", "1")
+    enabled = str(enabled_raw).strip().lower() not in ("0", "false", "no", "off", "")
+
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318").strip()
     sampler_ratio_raw = os.getenv("OTEL_TRACES_SAMPLER_RATIO", "1.0")
     try:
         sampler_ratio = max(0.0, min(1.0, float(sampler_ratio_raw)))
@@ -83,9 +86,10 @@ def _configure_tracer_provider(service_name: str) -> TracerProvider:
         resource=Resource.create({"service.name": service_name}),
         sampler=ParentBased(TraceIdRatioBased(sampler_ratio)),
     )
-    exporter = OTLPSpanExporter(endpoint=endpoint)
-    processor = BatchSpanProcessor(exporter)
-    provider.add_span_processor(processor)
+    if enabled and endpoint:
+        exporter = OTLPSpanExporter(endpoint=endpoint)
+        processor = BatchSpanProcessor(exporter)
+        provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
     _TRACER_PROVIDER = provider
     return provider

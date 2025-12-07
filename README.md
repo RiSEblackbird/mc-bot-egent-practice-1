@@ -314,7 +314,7 @@ docker compose up --build
 * Node.js サービス用コンテナは `node:22` を採用し、最新の Mineflayer 系ライブラリが要求するエンジン条件を満たして `minecraft-protocol` の PartialReadError（`entity_equipment` の VarInt 解析失敗）を防止します。
 * Python エージェントが `AGENT_WS_PORT` をリッスンし、Node 側が `AGENT_WS_URL` で指定した経路からチャットを転送します。Docker Compose では既定で `ws://python-agent:9000` に接続します。
 
-* `.env` に `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ENVIRONMENT` を指定すると、Node/Python 双方が Collector へ span/metric を送信します。Collector をホスト OS で動かす場合は既定値 `http://host.docker.internal:4318` をそのまま利用できます。
+* `.env` に `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ENVIRONMENT` を指定すると、Node/Python 双方が Collector へ span/metric を送信します。Collector をホスト OS で動かす場合は既定値 `http://host.docker.internal:4318` をそのまま利用できます。Collector が無い環境では `OTEL_EXPORTER_OTLP_ENABLED=false` とすると送信を無効化できます。
 #### 3.3.1 1.21.x の PartialReadError 追加対策
 
 - Paper / Vanilla 1.21.4 以降では ItemStack (Slot 型) に optional NBT が 2 セクション追加され、旧定義のままでは `entity_equipment` パケットで 2 バイトの読み残しが発生します。
