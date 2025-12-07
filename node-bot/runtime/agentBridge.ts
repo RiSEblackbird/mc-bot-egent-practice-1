@@ -59,6 +59,13 @@ export class AgentBridge {
     }
 
     this.state = 'connecting';
+    this.logger('info', 'agent-bridge.connect.start', {
+      url: this.config.url,
+      reason,
+      connectTimeoutMs: this.config.connectTimeoutMs,
+      queueSize: this.getQueueSize(),
+      state: this.state,
+    });
     const session = this.createWebSocket(this.config.url);
     this.socket = session;
 
@@ -66,6 +73,7 @@ export class AgentBridge {
       this.logger('warn', 'agent-bridge.connect.timeout', {
         timeoutMs: this.config.connectTimeoutMs,
         url: this.config.url,
+        queueSize: this.getQueueSize(),
       });
       session.terminate();
     }, this.config.connectTimeoutMs);
@@ -89,6 +97,8 @@ export class AgentBridge {
         code,
         reason: rawReason?.toString() ?? 'unknown',
         url: this.config.url,
+        queueSize: this.getQueueSize(),
+        lastPongAt: this.lastPongAt,
       });
       this.scheduleReconnect('closed');
     });
@@ -97,6 +107,9 @@ export class AgentBridge {
       clearTimeout(connectTimeout);
       this.logger('error', 'agent-bridge.error', {
         message: error instanceof Error ? error.message : String(error),
+        url: this.config.url,
+        state: this.state,
+        queueSize: this.getQueueSize(),
       });
       this.cleanupSession(session);
       this.scheduleReconnect('error');

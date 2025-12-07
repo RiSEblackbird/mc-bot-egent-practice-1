@@ -70,6 +70,7 @@ graph TD
 ```
 
 補足: Node→Python の WebSocket は変数の役割が異なります。`AGENT_WS_HOST` / `AGENT_WS_PORT` は Python 側の待受設定で、Node 側は `AGENT_WS_URL` を接続先として利用します。`0.0.0.0` は待受専用のため、接続先には `python-agent`（Docker Compose）や `host.docker.internal` / `127.0.0.1` など到達可能なホストを指定してください。
+補足2: AgentBridge のログは接続開始・タイムアウト・エラー時の URL やキューサイズを含めて出力されるため、疎通トラブル時に背景情報を追いやすくなっています。
 
 ### 7.6 Orchestrator Bootstrap（初期化フローの単一化）
 
