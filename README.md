@@ -321,6 +321,33 @@ HTTP サーバーは `config.yml` の `bind` / `port` で調整でき、`GET /v1
 `events.stream_enabled` を `true` にすると、`/v1/events/stream` で SSE によるイベント配信を有効化します。ジョブ開始・フロンティア更新・WorldGuard リージョン削除の進捗に加え、採掘領域内の液体検知や機能ブロック接近を `event_level` / `region` / `block_pos` 付きで push します。SSE も通常の HTTP API と同様に `X-API-Key` が必須で、`keepalive_seconds` 間隔で `event: keepalive` が送信されます。
 Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購読し、受信イベントを `detection_reports` として記憶・再計画プロンプトへ統合します。`.env` の `BRIDGE_EVENT_STREAM_PATH` や `BRIDGE_EVENT_STREAM_RECONNECT_DELAY` で経路とリトライ間隔を調整できます。
 
+#### 3.4.1 Bridge 準備手順（ダウンロード～起動まで）
+
+1. 必要なダウンロード
+   - **Java 21 JDK**（Adoptium など公式配布物）。
+   - **Paper サーバー jar**（あなたのサーバーバージョンに合うもの。例: 1.21.1）。Paper 配下に `plugins/` フォルダを作成しておく。
+   - **CoreProtect jar**（例: `CoreProtect-22.0.jar` を公式配布ページから取得し、`bridge-plugin/libs/` へ配置）。`build.gradle.kts` はこのファイル名を参照するためリネームしない。
+   - **Gradle 本体**（Wrapper は同梱していないため、手元にインストールが必要。Windows なら winget/choco、macOS なら brew、Linux なら各ディストリのパッケージか公式 ZIP を展開）。
+2. ビルド（AgentBridge jar を作る）
+   - `cd bridge-plugin`
+   - `gradle shadowJar`
+   - 成果物: `bridge-plugin/build/libs/AgentBridge-*.jar`
+3. 配置
+   - 生成した `AgentBridge-*.jar` を Paper サーバーの `plugins/` にコピー。
+   - Paper 自体は通常どおり起動できる場所に jar と `server.properties` などを置いておく。
+4. Paper 起動と設定
+   - Paper を起動すると `plugins/AgentBridge/config.yml` が生成される。
+   - `api_key` に十分長いランダム値を入れ、`.env` の `BRIDGE_API_KEY` と同じ値にする。空や `CHANGE_ME` のままでは HTTP サーバーが起動しない。
+   - Docker からホスト OS 上の Paper へ繋ぐ場合は `bind: 0.0.0.0` / `port: 19071` を推奨し、`.env` の `BRIDGE_URL` は `http://host.docker.internal:19071` にする（Paper が別ホストならその IP/ホスト名に置き換える）。
+   - SSE を使わない場合は `events.stream_enabled: false`、Python 側も `.env` で `BRIDGE_EVENT_STREAM_ENABLED=false` にしておくと接続リトライのログを抑制できる。
+5. 動作確認
+   - Paper コンソールに AgentBridge 起動ログが出ていることを確認。
+   - 健康チェック: `curl -H "X-API-Key: <BRIDGE_API_KEY>" http://<bridge-host>:19071/v1/health` が 200 を返す。
+6. Python 側環境変数（`.env`）
+   - `BRIDGE_URL`: Paper へ到達可能な URL（Docker→ホストなら `http://host.docker.internal:19071`）。
+   - `BRIDGE_API_KEY`: `config.yml` の `api_key` と同じ値。
+   - Bridge をまだ使わない場合は `BRIDGE_EVENT_STREAM_ENABLED=false` にしておく。
+
 ### 3.5 継続採掘モード CLI
 
 Python 側に `python/cli.py` を追加し、継続採掘ジョブを CLI から起動できるようにしました。
