@@ -18,6 +18,8 @@ java {
 repositories {
     mavenCentral()
     maven("https://repo.papermc.io/repository/maven-public/")
+    // WorldGuard / WorldEdit 系ライブラリ用
+    maven("https://maven.enginehub.org/repo/")
 }
 
 dependencies {
@@ -25,7 +27,7 @@ dependencies {
     compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.9")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.1")
-    compileOnly(files("libs/CoreProtect.jar"))
+    compileOnly(files("libs/CoreProtect-22.0.jar"))
     testImplementation("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("org.mockito:mockito-core:5.11.0")

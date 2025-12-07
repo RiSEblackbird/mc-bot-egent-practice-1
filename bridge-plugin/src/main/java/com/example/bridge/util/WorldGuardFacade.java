@@ -47,13 +47,12 @@ public final class WorldGuardFacade {
             upsertRegion(job, regionName);
             return;
         }
-        if (region instanceof ProtectedCuboidRegion cuboid) {
-            cuboid.setMaximum(frontier.max());
-            cuboid.setMinimum(frontier.min());
-        } else {
-            manager.removeRegion(regionName);
-            manager.addRegion(new ProtectedCuboidRegion(regionName, frontier.min(), frontier.max()));
-        }
+        int priority = region.getPriority();
+        manager.removeRegion(regionName);
+        ProtectedCuboidRegion updatedRegion =
+                new ProtectedCuboidRegion(regionName, frontier.min(), frontier.max());
+        updatedRegion.setPriority(priority);
+        manager.addRegion(updatedRegion);
         manager.save();
     }
 

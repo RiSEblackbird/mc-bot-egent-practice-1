@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.sk89q.worldedit.math.BlockVector3;
+import com.sk89q.worldguard.bukkit.util.Materials;
 import com.sun.net.httpserver.HttpExchange;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -95,7 +96,7 @@ public final class BulkEvalHandler extends BaseHandler {
             Material type = block.getType();
             String blockId = type.getKey().toString();
             boolean isAir = type.isAir();
-            boolean isLiquid = type.isLiquid();
+            boolean isLiquid = Materials.isLiquid(type);
             boolean nearFunctional = functionalInspector.isNearFunctional(
                     world, pos.getBlockX(), pos.getBlockY(), pos.getBlockZ(), config().safety().functionalNearRadius());
             boolean inRegion = region != null && contains(region, pos);
