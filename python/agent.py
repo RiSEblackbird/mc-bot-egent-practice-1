@@ -113,6 +113,29 @@ class AgentOrchestrator:
         self.task_router = wiring.task_router
         self._dependencies = wiring.orchestrator_dependencies
         self._plan_executor = wiring.plan_executor
+        self._validate_dependencies()
+
+    def _validate_dependencies(self) -> None:
+        """必須依存が欠落していないかを初期化時に検証する。"""
+
+        missing = []
+        if getattr(self, "_chat_pipeline", None) is None:
+            missing.append("chat_pipeline")
+        if missing:
+            joined = ", ".join(missing)
+            raise RuntimeError(
+                f"AgentOrchestrator is missing required dependencies: {joined}"
+            )
+
+    def _get_chat_pipeline(self) -> ChatPipeline:
+        """チャット処理パイプラインを安全に取得する。"""
+
+        pipeline = getattr(self, "_chat_pipeline", None)
+        if pipeline is None:
+            raise RuntimeError(
+                "chat pipeline is not initialized; check AgentOrchestrator wiring"
+            )
+        return pipeline
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""
@@ -199,7 +222,8 @@ class AgentOrchestrator:
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
-        await self._chat_pipeline.run_chat_task(task)
+        pipeline = self._get_chat_pipeline()
+        await pipeline.run_chat_task(task)
 
     def _format_position_payload(self, payload: Dict[str, Any]) -> Optional[str]:
         """位置イベントからコンテキスト表示用の文字列を生成する。"""

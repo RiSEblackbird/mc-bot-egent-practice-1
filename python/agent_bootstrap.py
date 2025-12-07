@@ -192,6 +192,9 @@ def initialize_agent_runtime(
     # PlanExecutor などが __init__ 前にフォールバックアクセスするため、最低限の属性を先に付与しておく。
     owner._role_perception = role_perception  # noqa: SLF001
     chat_pipeline = ChatPipeline(owner)
+    # ChatQueue のコールバックが __init__ 後の遅延評価でも必ずパイプラインへアクセスできるよう、
+    # 生成直後にエージェントへ束縛しておく。
+    owner._chat_pipeline = chat_pipeline  # noqa: SLF001
     movement_service = MovementService(
         actions=actions,
         memory=memory,
