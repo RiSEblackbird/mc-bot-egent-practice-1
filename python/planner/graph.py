@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Callable, Dict, List
 
 from langgraph.graph import END, START, StateGraph
@@ -41,6 +42,68 @@ from .state import UnifiedPlanState, record_recovery_hints, record_structured_st
 # 以前の公開 API を維持するためのエイリアス
 _build_responses_input = build_responses_input
 _extract_output_text = extract_output_text
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    """座標値として扱える整数へ変換し、不可なら None を返す。"""
+
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except Exception:  # noqa: BLE001 - 任意入力のため幅広く許容
+            return None
+    return None
+
+
+def _normalize_plan_json(content: str) -> str:
+    """LLM 出力の揺れを吸収し、PlanOut で受け入れ可能な JSON へ整形する。"""
+
+    try:
+        data = json.loads(content)
+    except Exception:  # noqa: BLE001 - LLM 生出力は構造が不定のため無視
+        return content
+
+    if not isinstance(data, dict):
+        return content
+
+    arguments = data.get("arguments")
+    if isinstance(arguments, dict):
+        coords = arguments.get("coordinates")
+        if isinstance(coords, dict):
+            normalized_coords: Dict[str, int] = {}
+            for key, value in coords.items():
+                parsed = _to_int_or_none(value)
+                if parsed is not None:
+                    normalized_coords[key] = parsed
+            if normalized_coords:
+                arguments["coordinates"] = normalized_coords
+            else:
+                arguments.pop("coordinates", None)
+        data["arguments"] = arguments
+
+    constraints = data.get("constraints")
+    if isinstance(constraints, list):
+        normalized_constraints: List[Dict[str, Any]] = []
+        for item in constraints:
+            if not isinstance(item, dict):
+                continue
+            severity = item.get("severity")
+            if isinstance(severity, str):
+                sev = severity.strip().lower()
+                if sev in ("hard", "soft"):
+                    item["severity"] = sev
+                elif sev in ("high",):
+                    item["severity"] = "hard"
+                elif sev in ("medium", "low"):
+                    item["severity"] = "soft"
+                else:
+                    item["severity"] = "soft"
+            normalized_constraints.append(item)
+        data["constraints"] = normalized_constraints
+
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
@@ -202,8 +265,10 @@ def build_plan_graph(
             )
             return result
 
+        raw_content = state.get("content") or ""
+        normalized_content = _normalize_plan_json(raw_content)
         try:
-            plan_data = PlanOut.model_validate_json(state.get("content") or "")
+            plan_data = PlanOut.model_validate_json(normalized_content)
         except Exception as exc:
             logger.exception("plan graph failed to parse JSON plan")
             priority = await manager.mark_failure()
@@ -212,7 +277,7 @@ def build_plan_graph(
                 record_structured_step(
                     state,
                     step_label="parse_plan",
-                    inputs={"content_preview": (state.get("content") or "")[:120]},
+                    inputs={"content_preview": raw_content[:120]},
                     outputs={"priority": priority},
                     error=str(exc),
                 )
