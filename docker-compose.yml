@@ -58,6 +58,6 @@ services:
         # エージェントがポートをリッスンしないため明示的にクォートする。
         pip install --no-cache-dir -r requirements.txt && \
         cd python && \
-        watchfiles --filter python --ignore-paths .venv -- "python agent.py"
+        watchfiles --filter python --ignore-paths .venv -- "python -m runtime.bootstrap"
     stdin_open: true
     tty: true

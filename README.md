@@ -94,7 +94,7 @@ python -m venv .venv
 pip install -r ../requirements.txt
 cp ../env.example ../.env
 # .env を編集（OpenAIキーや接続設定）
-python agent.py
+python -m runtime.bootstrap
 ```
 
 #### 3.2.1 動作確認済み環境と依存バージョン
@@ -105,7 +105,7 @@ python agent.py
 - Python 依存（固定版）: `openai==1.109.1` / `python-dotenv==1.0.1` / `websockets==12.0` / `httpx==0.27.2` / `pydantic==2.8.2` / `watchfiles==0.21.0` / `langgraph==0.1.16` / `opentelemetry-api==1.27.0` / `opentelemetry-sdk==1.27.0` / `opentelemetry-exporter-otlp-proto-http==1.27.0`
  / `langsmith==0.1.147`
 
-`pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/runtime/bootstrap.py` を経由したエージェント起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。`python -m python` でパッケージエントリポイントから起動できます。
+`pip install -r ../requirements.txt` で上記バージョンへ統一すると、`python/runtime/bootstrap.py` を経由したエージェント起動と Responses API 型の解決（`openai.types.responses`）がエラーなく通ることを確認済みです。`python -m runtime.bootstrap` で起動できます。
 
 #### 3.2.2 依存更新時のチェックリスト
 
@@ -290,8 +290,8 @@ docker compose up --build
 ```
 
 * Node サービスは `npm run dev`（`tsx` を利用）で TypeScript ソースの変更を検知し、自動的に再起動します。
-* Python サービスは `watchfiles` を用いて `.py` ファイルの変更を検知し、`agent.py` を再実行します。なお CLI の仕様上、
-  `watchfiles -- ...` に渡すコマンドは `"python agent.py"` のように 1 引数へクォートしておかないと、Python が
+* Python サービスは `watchfiles` を用いて `.py` ファイルの変更を検知し、`python -m runtime.bootstrap` を再実行します。なお CLI の仕様上、
+  `watchfiles -- ...` に渡すコマンドは `"python -m runtime.bootstrap"` のように 1 引数へクォートしておかないと、Python が
   対話モードで起動してポートをリッスンしない（Node からの接続が `ECONNREFUSED` になる）点に注意してください。
 * ホットリロード環境では依存ライブラリをコンテナ起動時に自動インストールするため、初回起動時は少し時間がかかります。
 * Docker Compose は `host.docker.internal` をコンテナの hosts に追加しています。Windows / WSL / macOS から Paper サーバーを起動している場合でも、ボットがホスト OS 上の `25565` ポートへ接続できます。
