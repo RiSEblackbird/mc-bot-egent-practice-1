@@ -290,8 +290,8 @@ docker compose up --build
 ```
 
 * Node サービスは `npm run dev`（`tsx` を利用）で TypeScript ソースの変更を検知し、自動的に再起動します。
-* Python サービスは `watchfiles` を用いて `.py` ファイルの変更を検知し、`python -m runtime.bootstrap` を再実行します。なお CLI の仕様上、
-  `watchfiles -- ...` に渡すコマンドは `"python -m runtime.bootstrap"` のように 1 引数へクォートしておかないと、Python が
+* Python サービスは `watchfiles` を用いて `.py` ファイルの変更を検知し、`python -m python` を再実行します。なお CLI の仕様上、
+  `watchfiles -- ...` に渡すコマンドは `"python -m python"` のように 1 引数へクォートしておかないと、Python が
   対話モードで起動してポートをリッスンしない（Node からの接続が `ECONNREFUSED` になる）点に注意してください。
 * ホットリロード環境では依存ライブラリをコンテナ起動時に自動インストールするため、初回起動時は少し時間がかかります。
 * Docker Compose は `host.docker.internal` をコンテナの hosts に追加しています。Windows / WSL / macOS から Paper サーバーを起動している場合でも、ボットがホスト OS 上の `25565` ポートへ接続できます。
