@@ -56,6 +56,14 @@ class ActionGraphBuilder:
         async def seek_skill(state: _ActionState) -> Dict[str, Any]:
             category = state.get("category", "")
             step = state["step"]
+            if category == "move_to_player":
+                return with_metadata(
+                    state,
+                    step_label="seek_skill",
+                    base={"skill_status": "none"},
+                    inputs={"category": category, "step": step},
+                    outputs={"skill_status": "none"},
+                )
             if not category:
                 return with_metadata(
                     state,
@@ -207,7 +215,23 @@ class ActionGraphBuilder:
             )
 
         async def handle_move_node(state: _ActionState) -> Dict[str, Any]:
-            return await handle_move(state, orchestrator)
+            result = await handle_move(state, orchestrator)
+            return with_metadata(
+                state,
+                step_label="handle_move",
+                base=result,
+                inputs={
+                    "step": state.get("step"),
+                    "explicit_coords": state.get("explicit_coords"),
+                    "target_player": state.get("target_player"),
+                },
+                outputs={
+                    "handled": result.get("handled"),
+                    "failure_detail": result.get("failure_detail"),
+                    "updated_target": result.get("updated_target"),
+                },
+                error=result.get("failure_detail"),
+            )
 
         async def handle_equip(state: _ActionState) -> Dict[str, Any]:
             step = state["step"]

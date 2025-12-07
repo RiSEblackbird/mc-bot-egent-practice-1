@@ -24,6 +24,7 @@ class ChatPipeline:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""
 
         agent = self._agent
+        agent.memory.set("last_requester", task.username)
         failures = await agent.status_service.prime_status_for_planning()
         if failures:
             await agent.movement_service.report_execution_barrier(
@@ -97,6 +98,7 @@ class ChatPipeline:
             return False, last_target_coords, None
 
         structured_event_history, perception_history = agent._collect_recent_mineflayer_context()
+        target_player = agent.memory.get("last_requester")
         agent.logger.info(
             "delegating action category=%s step='%s' to langgraph module=%s",
             category,
@@ -113,6 +115,7 @@ class ChatPipeline:
             explicit_coords=explicit_coords,
             structured_event_history=structured_event_history,
             perception_history=perception_history,
+            target_player=target_player if isinstance(target_player, str) else None,
         )
         return handled, updated_target, failure_detail
 

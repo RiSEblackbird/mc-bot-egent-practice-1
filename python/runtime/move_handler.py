@@ -21,6 +21,42 @@ async def handle_move(
     recent_perception = perception_history[-1] if perception_history else {}
     hunger_level = recent_perception.get("food_level")
     weather = recent_perception.get("weather")
+    category = state.get("category", "")
+    target_player = (state.get("target_player") or "").strip()
+
+    # move_to_player はプレイヤー名が分かれば追従コマンドを優先する。
+    if category == "move_to_player" and target_player:
+        follow_resp = await orchestrator.actions.follow_player(target_player)  # type: ignore[attr-defined]
+        if follow_resp.get("ok"):
+            pos_detail = orchestrator.memory.get("player_pos_detail")  # type: ignore[attr-defined]
+            position = None
+            if isinstance(pos_detail, dict):
+                position = pos_detail.get("position") or pos_detail
+            arrived = ""
+            if isinstance(position, dict):
+                x = position.get("x")
+                y = position.get("y")
+                z = position.get("z")
+                dimension = position.get("dimension") or "unknown"
+                if all(isinstance(v, (int, float)) for v in (x, y, z)):
+                    arrived = f" 現在位置 X={int(x)} / Y={int(y)} / Z={int(z)}（{dimension}）"
+            await orchestrator.actions.say(  # type: ignore[attr-defined]
+                f"{target_player} さんに合流しました。{arrived}".strip()
+            )
+            return {
+                "handled": True,
+                "updated_target": last_target,
+                "failure_detail": None,
+            }
+
+        error_detail = follow_resp.get("error") or "プレイヤー追従に失敗しました"
+        await orchestrator.movement_service.report_execution_barrier(step, error_detail)  # type: ignore[attr-defined]
+        return {
+            "handled": False,
+            "updated_target": last_target,
+            "failure_detail": error_detail,
+        }
+
     target = explicit_coords or orchestrator._extract_coordinates(step)  # type: ignore[attr-defined]
     if target is None:
         target = last_target
@@ -52,6 +88,12 @@ async def handle_move(
             "updated_target": last_target,
             "failure_detail": error_detail,
         }
+
+    if category == "move_to_player":
+        x, y, z = move_result.destination
+        await orchestrator.actions.say(  # type: ignore[attr-defined]
+            f"プレイヤー付近へ到着しました。現在位置は X={x} / Y={y} / Z={z} です。"
+        )
 
     if isinstance(hunger_level, (int, float)) and hunger_level <= orchestrator.low_food_threshold:  # type: ignore[attr-defined]
         # LangGraph の後続ノードへ空腹度情報を渡し、食料補給のフォローアップを促す。

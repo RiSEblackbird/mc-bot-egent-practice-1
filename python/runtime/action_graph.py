@@ -67,6 +67,7 @@ class ActionGraph:
         explicit_coords: Optional[Tuple[int, int, int]] = None,
         structured_event_history: Optional[List[Dict[str, Any]]] = None,
         perception_history: Optional[List[Dict[str, Any]]] = None,
+        target_player: Optional[str] = None,
     ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
         """LangGraph を実行し、処理結果を元のインターフェースへ変換する。"""
 
@@ -80,6 +81,7 @@ class ActionGraph:
             "rule_implemented": rule.implemented,
             "active_role": self._orchestrator.current_role,
             "role_transitioned": False,
+            "target_player": target_player,
             "structured_events": [],
             "structured_event_history": list(structured_event_history or []),
             "perception_history": list(perception_history or []),
