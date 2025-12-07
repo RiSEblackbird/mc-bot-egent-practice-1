@@ -115,6 +115,7 @@ python agent.py
 4. **破壊的変更のサイン検知**: `client.responses.create` 呼び出しシグネチャや `EasyInputMessageParam` のフィールドに差分が出ていないかを確認し、変更があれば `python/planner/__init__.py`・`python/llm/client.py`・`python/planner_config.py` で一元化したペイロード生成ロジックと設定読込を追従させる。
 
 Python エージェントは `AGENT_WS_HOST` / `AGENT_WS_PORT` で指定したポートに WebSocket サーバーを公開します。
+Node 側が接続に使うのは `AGENT_WS_URL` です。`0.0.0.0` は待受専用のため接続先には `python-agent`（Docker Compose）や `host.docker.internal` / `127.0.0.1` など、実際に到達可能なホスト名を指定してください。接続拒否が出る場合は Python エージェントの起動と `AGENT_WS_URL` の解決可否を確認します。
 Mineflayer 側（Node.js）がチャットを受信すると、自動的にこのサーバーへ `type=chat` の JSON を送信し、
 Python 側で LLM プランニングとアクション実行が行われます。`DEFAULT_MOVE_TARGET` を変更すると、
 「移動」系のステップで座標が指定されなかった場合のフォールバック座標を調整できます。なお Python エージェント

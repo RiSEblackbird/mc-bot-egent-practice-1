@@ -140,6 +140,13 @@ export class BotLifecycleService {
   }
 
   /**
+   * AgentBridge へのアクセサ。イベント配送・ブロードキャストで共有する。
+   */
+  getAgentBridge(): AgentBridge {
+    return this.agentBridge;
+  }
+
+  /**
    * 再接続を予約し、同一のタイマーが重複しないようガードする。
    */
   scheduleReconnect(reason: string = 'unknown'): void {
