@@ -54,6 +54,38 @@ class DummyOrchestrator:
         return _StubMovementService()
 
 
+class MemoryStub:
+    def __init__(self, data: Optional[Dict[str, Any]] = None) -> None:
+        self._data = data or {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+
+class FollowOrchestrator(DummyOrchestrator):
+    """追従コマンド経由で move_to_player を検証するスタブ。"""
+
+    def __init__(self):
+        super().__init__()
+        self.memory = MemoryStub({"last_requester": "targetUser"})
+        self.follow_calls = []
+        self.say_messages = []
+
+        class _Actions:
+            def __init__(self, outer: "FollowOrchestrator") -> None:
+                self._outer = outer
+
+            async def follow_player(self, target_name: str) -> Dict[str, Any]:
+                self._outer.follow_calls.append(target_name)
+                return {"ok": True}
+
+            async def say(self, message: str) -> Dict[str, Any]:
+                self._outer.say_messages.append(message)
+                return {"ok": True}
+
+        self.actions = _Actions(self)
+
+
 def test_handle_move_uses_explicit_coordinates():
     orchestrator = DummyOrchestrator()
     state: Dict[str, Any] = {
@@ -139,3 +171,22 @@ def test_handle_move_returns_failure_when_move_rejected():
     assert result["handled"] is False
     assert result["updated_target"] == (7, 7, 7)
     assert "blocked" in result["failure_detail"]
+
+
+def test_handle_move_follows_last_requester_when_state_missing_target():
+    orchestrator = FollowOrchestrator()
+    state: Dict[str, Any] = {
+        "step": "ここに来て",
+        "category": "move_to_player",
+        "explicit_coords": (99, 99, 99),  # 明示座標があっても follow を優先する
+        "last_target_coords": None,
+        "backlog": [],
+        "role_transitioned": False,
+        "perception_history": [{"position": {"x": 0, "y": 64, "z": 0}}],
+    }
+
+    result = asyncio.run(handle_move(state, orchestrator))
+
+    assert result == {"handled": True, "updated_target": (0, 64, 0), "failure_detail": None}
+    assert orchestrator.follow_calls == ["targetUser"]
+    assert orchestrator._move_requests == tuple()

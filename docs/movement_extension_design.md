@@ -9,6 +9,7 @@
 - **行動ディスパッチ層**: `node-bot/bot.ts` の移動関連メソッドは、受け取った座標や経路設定をそのまま mineflayer へ委譲する薄いラッパーにとどめます。新規の移動コマンドを追加する場合も、バリデーションとロギングをラッパーで完結させ、mineflayer への依存はサービス層に閉じ込めてください。
 - **Python 側の計画生成**: `python/planner/graph.py` と `python/runtime/action_graph.py` では、移動ステップの生成と executor 選択（mineflayer / minedojo / chat）を分離しています。移動カテゴリを増やす場合は DSL の `ActionDirective` 拡張と合わせてグラフノードを調整し、Mineflayer に渡す前段で責務が分割されていることを確認してください。
 - **移動カテゴリの正規化**: `move_to_player` のような派生カテゴリも `runtime/rules.py` の `ACTION_TASK_RULES` に登録し、`route_module` で `move` モジュールへ正規化してから `handle_move` に渡します。未登録のカテゴリは backlog に落ちるため、追加時は必ずルールとルーティングをセットで更新してください。
+- **追従先の決定**: `move_to_player` はチャット送信者（`last_requester`）を追従対象として解決し、取得できない場合は障壁として報告して自己座標への誤移動を防ぎます。
 
 ## 2. `forcedMove` リトライ設計
 

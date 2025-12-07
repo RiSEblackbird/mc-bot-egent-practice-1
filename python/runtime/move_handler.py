@@ -23,6 +23,22 @@ async def handle_move(
     weather = recent_perception.get("weather")
     category = state.get("category", "")
     target_player = (state.get("target_player") or "").strip()
+    if category == "move_to_player" and not target_player:
+        memory = getattr(orchestrator, "memory", None)
+        if memory and hasattr(memory, "get"):
+            fallback_player = memory.get("last_requester")
+            if isinstance(fallback_player, str):
+                target_player = fallback_player.strip()
+        if not target_player:
+            await orchestrator.movement_service.report_execution_barrier(  # type: ignore[attr-defined]
+                step,
+                "チャット送信者を特定できず、追従先を決定できませんでした。もう一度呼びかけてください。",
+            )
+            return {
+                "handled": False,
+                "updated_target": last_target,
+                "failure_detail": "追従対象のプレイヤー名が不明です。",
+            }
     current_pos = None
     if isinstance(recent_perception, dict):
         pos = recent_perception.get("position")
