@@ -43,6 +43,15 @@ val shadowJar = tasks.named<ShadowJar>("shadowJar") {
     archiveClassifier.set("")
     mergeServiceFiles()
     minimize()
+    // Docker Compose 環境向けに CoreProtect を build/libs へコピーする。
+    // 単一ファイルマウントは Windows Docker Desktop で問題を起こすため、
+    // ビルド成果物と同じディレクトリに配置して一括マウントで済むようにする。
+    doLast {
+        copy {
+            from("libs/CoreProtect-22.0.jar")
+            into(layout.buildDirectory.dir("libs"))
+        }
+    }
 }
 
 tasks.named("build") {

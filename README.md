@@ -376,7 +376,7 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
 Paper サーバーごとコンテナ化したい場合は、同梱の `docker-compose.yml` に `bridge` サービスを追加しています。以下の手順で利用できます。
 
 1. CoreProtect の jar を `bridge-plugin/libs/CoreProtect-22.0.jar` に配置する。
-2. AgentBridge をビルド: `cd bridge-plugin && gradle shadowJar`。生成物 `build/libs/AgentBridge-*.jar` は自動でコンテナの `/data/plugins` にマウントされる。
+2. AgentBridge をビルド: `cd bridge-plugin && gradle shadowJar`。ビルド時に `CoreProtect-22.0.jar` も `build/libs/` へ自動コピーされ、コンテナの `/data/plugins` にまとめてマウントされる。
 3. `.env` を更新: `MC_HOST=bridge`、`BRIDGE_URL=http://bridge:19071`（デフォルト値もこの組み合わせに合わせてあります）。
 4. 起動: プロジェクトルートで `docker compose up --build`。初回起動時に `bridge-data/plugins/AgentBridge/config.yml` が生成されるので、`api_key` を `.env` の `BRIDGE_API_KEY` と揃える。
 5. データ永続化: `bridge-data/` にワールドとプラグイン設定が保持されます（`.gitignore` 済み）。

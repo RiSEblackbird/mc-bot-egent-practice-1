@@ -14,8 +14,9 @@ services:
       JVM_OPTS: ${BRIDGE_JVM_OPTS:-}
     volumes:
       - ./bridge-data:/data
+      # AgentBridge と CoreProtect は shadowJar 実行時に build/libs へ集約されるため、
+      # 個別ファイルマウントは不要。Windows Docker Desktop での read-only file system エラーを回避する。
       - ./bridge-plugin/build/libs:/data/plugins:ro
-      - ./bridge-plugin/libs/CoreProtect-22.0.jar:/data/plugins/CoreProtect-22.0.jar:ro
     ports:
       # 外部から Paper へ直接入る必要がある場合のみ 25565 を開ける。
       # - "25566:25565"  # ホスト側ポートをずらす例
