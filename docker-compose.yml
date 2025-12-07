@@ -21,7 +21,9 @@ services:
     ports:
       # 外部から Paper へ直接入る必要がある場合のみ 25565 を開ける。
       # - "25566:25565"  # ホスト側ポートをずらす例
-      - "19071:19071"
+      # - "19071:19071"
+      # ホストで Paper を使い続けたい場合は、Compose 側の公開ポートをずらす（例: "19072:19071"）か、bridge サービスを起動しない運用に切り替えてください。
+      - "19072:19071"
     extra_hosts:
       - "host.docker.internal:host-gateway" # Paper 側からホストの追加リソースへアクセスする場合に利用
     restart: unless-stopped
