@@ -55,9 +55,9 @@ services:
       - -lc
       - |
         # watchfiles CLI ではコマンド全体を 1 引数として渡さないと Python が対話モードで起動してしまい、
-        # エージェントがポートをリッスンしないため明示的にクォートする。
+        # エージェントがポートをリッスンしないため明示的にクォートする。プロジェクトルートのまま
+        # python 配下を監視し、モジュール検索パスを /app に残して ModuleNotFound エラーを防ぐ。
         pip install --no-cache-dir -r requirements.txt && \
-        cd python && \
-        watchfiles --filter python --ignore-paths .venv -- "python -m python"
+        watchfiles --filter python --ignore-paths .venv python -- "python -m python"
     stdin_open: true
     tty: true
