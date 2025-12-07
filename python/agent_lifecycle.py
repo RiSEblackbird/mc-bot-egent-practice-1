@@ -88,16 +88,21 @@ def assemble_agent_wiring(
     minedojo_client: Optional[MineDojoClient] = None,
     inventory_sync: Optional[InventorySynchronizer] = None,
     logger: Optional[logging.Logger] = None,
+    agent: Optional[AgentOrchestrator] = None,
 ) -> AgentOrchestratorWiring:
-    """AgentOrchestrator.__init__ に渡す依存セットを生成するファクトリ。"""
+    """AgentOrchestrator.__init__ に渡す依存セットを生成するファクトリ。
 
-    agent = AgentOrchestrator.__new__(AgentOrchestrator)
+    1インスタンスのみを終始利用することで、初期化前コールバックが
+    別インスタンスを参照する不具合を防ぐ。
+    """
+
+    orchestrator = agent or AgentOrchestrator.__new__(AgentOrchestrator)
     # エージェントのメソッドが依存を参照できるよう、最低限の属性を先行で付与する。
-    agent.actions = actions
-    agent.memory = memory
+    orchestrator.actions = actions
+    orchestrator.memory = memory
 
     bootstrap = _build_initialization(
-        agent,
+        orchestrator,
         actions=actions,
         memory=memory,
         skill_repository=skill_repository,
@@ -143,6 +148,7 @@ def create_agent_orchestrator(
 ) -> AgentOrchestrator:
     """完成済みの配線情報を持つ AgentOrchestrator を返すファクトリ。"""
 
+    agent = AgentOrchestrator.__new__(AgentOrchestrator)
     wiring = assemble_agent_wiring(
         actions,
         memory,
@@ -152,8 +158,8 @@ def create_agent_orchestrator(
         minedojo_client=minedojo_client,
         inventory_sync=inventory_sync,
         logger=logger,
+        agent=agent,
     )
-    agent = AgentOrchestrator.__new__(AgentOrchestrator)
     AgentOrchestrator.__init__(agent, wiring)
     return agent
 

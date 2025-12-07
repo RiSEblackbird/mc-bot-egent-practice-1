@@ -53,6 +53,27 @@ ACTION_TASK_RULES: Dict[str, ActionTaskRule] = {
         implemented=True,
         priority=15,
     ),
+    "move_to_player": ActionTaskRule(
+        keywords=(
+            "移動",
+            "向かう",
+            "歩く",
+            "到達",
+            "合流",
+            "向かいます",
+        ),
+        hints=(
+            "段差",
+            "足場",
+            "明るさ",
+            "湧き",
+            "経路",
+            "迂回",
+        ),
+        label="プレイヤー座標への移動",
+        implemented=True,
+        priority=16,
+    ),
     "mine": ActionTaskRule(
         keywords=(
             "採掘",

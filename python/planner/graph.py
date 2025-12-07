@@ -60,6 +60,16 @@ def _to_int_or_none(value: Any) -> int | None:
 def _normalize_plan_json(content: str) -> str:
     """LLM 出力の揺れを吸収し、PlanOut で受け入れ可能な JSON へ整形する。"""
 
+    def _coerce_clarification(value: Any) -> str:
+        """許可されたリテラルへ丸める。"""
+
+        if not isinstance(value, str):
+            return "none"
+        lowered = value.strip().lower()
+        if lowered in ("none", "confirmation", "data_gap"):
+            return lowered
+        return "data_gap"
+
     try:
         data = json.loads(content)
     except Exception:  # noqa: BLE001 - LLM 生出力は構造が不定のため無視
@@ -86,6 +96,9 @@ def _normalize_plan_json(content: str) -> str:
             arguments["notes"] = {"text": notes}
         elif notes is None:
             arguments["notes"] = {}
+        clarification = arguments.get("clarification_needed")
+        if clarification is not None:
+            arguments["clarification_needed"] = _coerce_clarification(clarification)
         data["arguments"] = arguments
 
     constraints = data.get("constraints")
@@ -107,6 +120,22 @@ def _normalize_plan_json(content: str) -> str:
                     item["severity"] = "soft"
             normalized_constraints.append(item)
         data["constraints"] = normalized_constraints
+
+    backlog = data.get("backlog")
+    if isinstance(backlog, list):
+        normalized_backlog: List[Dict[str, Any]] = []
+        for entry in backlog:
+            if isinstance(entry, dict):
+                normalized_backlog.append(entry)
+                continue
+            label = str(entry or "").strip()
+            if label:
+                normalized_backlog.append({"type": "plan", "label": label[:120]})
+        data["backlog"] = normalized_backlog
+
+    clarification_needed = data.get("clarification_needed")
+    if clarification_needed is not None:
+        data["clarification_needed"] = _coerce_clarification(clarification_needed)
 
     return json.dumps(data, ensure_ascii=False)
 

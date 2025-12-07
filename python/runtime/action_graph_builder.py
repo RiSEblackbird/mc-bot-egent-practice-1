@@ -161,7 +161,7 @@ class ActionGraphBuilder:
                 module = "building"
             elif category == "fight":
                 module = "defense"
-            elif category == "move":
+            elif category in ("move", "move_to_player"):
                 module = "move"
             elif category == "equip":
                 module = "equip"
