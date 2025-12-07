@@ -249,6 +249,8 @@ def initialize_agent_runtime(
     plan_executor = PlanExecutor(
         agent=owner, dependencies=orchestrator_dependencies, runtime=plan_runtime
     )
+    # ChatQueue が早期に _process_chat を呼び出しても計画実行の依存が欠落しないよう先行で束縛する。
+    owner._plan_executor = plan_executor  # noqa: SLF001
 
     return AgentInitialization(
         settings=settings,

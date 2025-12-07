@@ -154,6 +154,8 @@ MineDojo 連携は初期化時に `minedojo_handler` / `minedojo_client` をエ�
 プラン JSON は `planner/graph.py` で LLM 出力を正規化してから `PlanOut` にバリデーションし、
 座標の文字列混入や制約 severity の表記揺れ（high/medium→hard/soft）を吸収します。これにより
 `PlanOut` の型スキーマに合わない出力でも、運用上許容できる範囲は自動補正されます。
+PlanExecutor も初期化ファクトリでエージェントに事前バインドされ、チャットキューが早期に
+`_process_chat` を呼び出しても計画実行の依存が欠落しないようにしています。
 移動および障壁通知については `services/movement_service.py` に委譲し、`AgentOrchestrator`
 のプライベートメソッドを廃止しました。`MovementService` は Actions 依存を明示的に
 受け取り、移動成功時の `Memory.last_destination` 更新と構造化ログ出力をセットで実施
