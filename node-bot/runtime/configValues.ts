@@ -83,6 +83,11 @@ export function loadConfigValues(
     `[Movement] parkour=${movement.pathfinder.allowParkour} sprint=${movement.pathfinder.allowSprinting} digCost=${movement.pathfinder.digCost.enabled}/${movement.pathfinder.digCost.disabled} forcedMoveWindow=${movement.forcedMove.retryWindowMs}ms retries=${movement.forcedMove.maxRetries} delay=${movement.forcedMove.retryDelayMs}ms`,
   );
 
+  const agent = config.agentBridge;
+  logger.info(
+    `[AgentBridge] url=${agent.url} host=${agent.host} port=${agent.port} connectTimeoutMs=${agent.connectTimeoutMs} sendTimeoutMs=${agent.sendTimeoutMs} healthcheckIntervalMs=${agent.healthcheckIntervalMs} reconnectDelayMs=${agent.reconnectDelayMs} maxRetries=${agent.maxRetries}`,
+  );
+
   return {
     runtime: config,
     control: controlValues,
