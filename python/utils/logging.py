@@ -150,15 +150,37 @@ def _serialize_context(value: Any) -> Any:
     return repr(value)
 
 
-def setup_logger(name: str = "agent", level: int = logging.INFO) -> logging.Logger:
+def _resolve_log_level(raw_value: str | None, fallback: int = logging.INFO) -> int:
+    """環境変数からログレベルを解決する。未設定や未知の値はフォールバックを返す。"""
+
+    if not raw_value:
+        return fallback
+
+    normalized = raw_value.strip().upper()
+    mapping = {
+        "CRITICAL": logging.CRITICAL,
+        "ERROR": logging.ERROR,
+        "WARN": logging.WARNING,
+        "WARNING": logging.WARNING,
+        "INFO": logging.INFO,
+        "DEBUG": logging.DEBUG,
+    }
+    return mapping.get(normalized, fallback)
+
+
+def setup_logger(name: str = "agent", level: int | None = None) -> logging.Logger:
     """LangGraph メタデータを付与する JSON ロガーを構築する。"""
 
     _configure_tracer_provider(service_name=name)
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+
+    env_level = _resolve_log_level(os.getenv("AGENT_LOG_LEVEL"), fallback=logging.INFO)
+    effective_level = level if level is not None else env_level
+
+    logger.setLevel(effective_level)
     if not any(isinstance(handler.formatter, StructuredLogFormatter) for handler in logger.handlers):
         handler = logging.StreamHandler()
-        handler.setLevel(level)
+        handler.setLevel(effective_level)
         handler.setFormatter(StructuredLogFormatter(datefmt="%Y-%m-%dT%H:%M:%S"))
         logger.addHandler(handler)
     # logger から tracer へすぐにアクセスできるよう、属性として紐付けておく。
