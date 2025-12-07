@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Iterable, TYPE_CHECKING
 
 from chat_pipeline import ChatPipeline
 from orchestrator.action_analyzer import ActionAnalyzer
@@ -224,6 +224,37 @@ class AgentOrchestrator:
         """Bridge から近傍ブロックの情報を収集し、危険度の概略をメモリへ保持する。"""
 
         await self._role_perception.collect_block_evaluations()
+
+    async def _handle_action_task(
+        self,
+        category: str,
+        step: str,
+        *,
+        last_target_coords: Optional[Tuple[int, int, int]],
+        backlog: List[Dict[str, str]],
+        explicit_coords: Optional[Tuple[int, int, int]] = None,
+    ) -> Tuple[bool, Optional[Tuple[int, int, int]], Optional[str]]:
+        """PlanExecutor/DirectiveExecutor からの互換呼び出し用アダプタ。"""
+
+        pipeline = self._get_chat_pipeline()
+        return await pipeline.handle_action_task(
+            category,
+            step,
+            last_target_coords=last_target_coords,
+            backlog=backlog,
+            explicit_coords=explicit_coords,
+        )
+
+    async def _handle_action_backlog(
+        self,
+        backlog: Iterable[Dict[str, str]],
+        *,
+        already_responded: bool,
+    ) -> None:
+        """未実装アクション backlog を PlanExecutor 互換で処理するアダプタ。"""
+
+        pipeline = self._get_chat_pipeline()
+        await pipeline.handle_action_backlog(backlog, already_responded=already_responded)
 
     async def _process_chat(self, task: ChatTask) -> None:
         """単一のチャット指示に対して LLM 計画とアクション実行を行う。"""

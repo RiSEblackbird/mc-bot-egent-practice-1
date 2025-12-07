@@ -156,6 +156,9 @@ MineDojo 連携は初期化時に `minedojo_handler` / `minedojo_client` をエ�
 `PlanOut` の型スキーマに合わない出力でも、運用上許容できる範囲は自動補正されます。
 PlanExecutor も初期化ファクトリでエージェントに事前バインドされ、チャットキューが早期に
 `_process_chat` を呼び出しても計画実行の依存が欠落しないようにしています。
+PlanExecutor/DirectiveExecutor からの後方互換呼び出しのため、`AgentOrchestrator` が
+`_handle_action_task` / `_handle_action_backlog` をラップし、`ChatPipeline` の実装へ委譲します。
+これにより既存のタスク実行経路と LangGraph 経路で同じバックログ・座標処理ロジックを共有します。
 移動および障壁通知については `services/movement_service.py` に委譲し、`AgentOrchestrator`
 のプライベートメソッドを廃止しました。`MovementService` は Actions 依存を明示的に
 受け取り、移動成功時の `Memory.last_destination` 更新と構造化ログ出力をセットで実施
