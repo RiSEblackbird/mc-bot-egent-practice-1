@@ -20,6 +20,9 @@ import { ParentBasedSampler, TraceIdRatioBasedSampler } from '@opentelemetry/sdk
 
 import type { TelemetryResolution } from './env.js';
 
+let telemetryContext: TelemetryContext | null = null;
+let telemetryStartPromise: Promise<void> | null = null;
+
 export interface TelemetryContext {
   tracer: Tracer;
   commandDurationMs: Histogram;
@@ -39,6 +42,10 @@ function sanitizeEndpoint(endpoint: string): string {
  * OpenTelemetry SDK を初期化し、トレースとメトリクスの共通部品を提供する。
  */
 export function initializeTelemetry(config: TelemetryResolution): TelemetryContext {
+  if (telemetryContext) {
+    return telemetryContext;
+  }
+
   const baseEndpoint = sanitizeEndpoint(config.endpoint);
   const sdk = new NodeSDK({
     traceExporter: new OTLPTraceExporter({ url: `${baseEndpoint}/v1/traces` }),
@@ -53,7 +60,7 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
     traceSampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(config.samplerRatio) }),
   });
 
-  sdk.start().catch((error) => {
+  telemetryStartPromise ??= sdk.start().catch((error) => {
     console.error('[Telemetry] failed to start OpenTelemetry SDK', error);
   });
 
@@ -93,7 +100,7 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 
-  return {
+  telemetryContext = {
     tracer,
     commandDurationMs,
     agentBridgeEventCounter,
@@ -103,6 +110,8 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
     perceptionErrorCounter,
     sdk,
   };
+
+  return telemetryContext;
 }
 
 /**

@@ -77,7 +77,11 @@ async def _compose_pre_action_follow_up(
         if text:
             return text
     except Exception as exc:  # pragma: no cover - LLM 障害はログのみに留める
-        logger.warning("pre_action_review compose failed: %s", exc)
+        logger.warning(
+            "pre_action_review compose failed (%s): %s",
+            exc.__class__.__name__,
+            exc,
+        )
     return "作業内容に不確実な点があるため、追加の指示をいただけますか？"
 
 
