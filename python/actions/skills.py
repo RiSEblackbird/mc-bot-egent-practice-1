@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """スキル登録・呼び出しに関するアクションモジュール。"""
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import ActionModule
 

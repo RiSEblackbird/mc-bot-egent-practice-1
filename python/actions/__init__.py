@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """LLM からの高レベル指示をカテゴリ別に委譲する Actions ファサード。"""
 
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from bridge_ws import BotBridge
 

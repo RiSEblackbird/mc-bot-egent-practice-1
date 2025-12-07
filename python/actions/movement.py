@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """移動・追従・戦闘に関するアクションモジュール。"""
 
-from typing import Dict
+from typing import Any, Dict
 
 from .base import ActionModule
 from .errors import ActionValidationError

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """採掘系アクションをまとめたモジュール。"""
 
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from .base import ActionModule
 from .errors import ActionValidationError

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """VPT 実行とフォールバック制御を扱うハイブリッドアクションモジュール。"""
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import logging
 
 from utils import log_structured_event

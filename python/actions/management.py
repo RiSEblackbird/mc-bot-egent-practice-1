@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ステータス取得やロール切替などの管理系アクションモジュール。"""
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .base import ActionModule
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """チャット関連のアクションモジュール。"""
 
-from typing import Dict
+from typing import Any, Dict
 
 from .base import ActionModule
 from .validators import _require_non_empty_text
