@@ -345,7 +345,22 @@ Python 側では `BRIDGE_EVENT_STREAM_ENABLED` が `true` の場合に自動購�
    - Paper 自体は通常どおり起動できる場所に jar と `server.properties` などを置いておく。
 4. Paper 起動と設定
    - Paper を起動すると `plugins/AgentBridge/config.yml` が生成される。
-   - `api_key` に十分長いランダム値を入れ、`.env` の `BRIDGE_API_KEY` と同じ値にする。空や `CHANGE_ME` のままでは HTTP サーバーが起動しない。
+   - **api_key が未設定または `CHANGE_ME` のままの場合、以下のエラーが出てプラグインが無効化される**（セキュリティ上の意図的な設計）:
+     ```
+     [WARN]: [AgentBridge] config.yml の api_key が未設定または CHANGE_ME のままです。AgentBridge を無効化します。
+     [ERROR]: java.lang.IllegalStateException: AgentBridge HTTP server requires a non-empty api_key
+     ```
+   - `api_key` に十分長いランダム値（32文字以上推奨）を設定し、`.env` の `BRIDGE_API_KEY` と同じ値にする。
+   - **APIキー生成例（PowerShell）**:
+     ```powershell
+     -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | % {[char]$_})
+     ```
+   - **config.yml の設定例**:
+     ```yaml
+     api_key: "YourSecureRandomApiKey32CharsOrMore"
+     bind: "0.0.0.0"
+     port: 19071
+     ```
    - Docker からホスト OS 上の Paper へ繋ぐ場合は `bind: 0.0.0.0` / `port: 19071` を推奨し、`.env` の `BRIDGE_URL` は `http://host.docker.internal:19071` にする（Paper が別ホストならその IP/ホスト名に置き換える）。
    - SSE を使わない場合は `events.stream_enabled: false`、Python 側も `.env` で `BRIDGE_EVENT_STREAM_ENABLED=false` にしておくと接続リトライのログを抑制できる。
 5. 動作確認
