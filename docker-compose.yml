@@ -51,6 +51,7 @@ services:
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-mc-node-bot}
       OTEL_RESOURCE_ENVIRONMENT: ${OTEL_RESOURCE_ENVIRONMENT:-development}
       OTEL_TRACES_SAMPLER_RATIO: ${OTEL_TRACES_SAMPLER_RATIO:-1.0}
+      AGENT_BRIDGE_LOG_LEVEL: ${AGENT_BRIDGE_LOG_LEVEL:-warn}
     command:
       - bash
       - -lc

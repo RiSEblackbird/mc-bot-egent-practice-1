@@ -437,6 +437,8 @@ python -m python.cli agentbridge jobs watch --danger-only --format text
   Mineflayer から Python への接続維持ポリシー。
 - `AGENT_EVENT_BATCH_INTERVAL_MS`, `AGENT_EVENT_BATCH_MAX_SIZE`, `AGENT_EVENT_QUEUE_MAX_SIZE`  
   Node 側で multi-agent イベントをまとめて送信する際のバッチング設定。
+- `AGENT_BRIDGE_LOG_LEVEL`  
+  AgentBridge の構造化ログ出力閾値（`info` / `warn` / `error`）。平時は `warn` にすると配送成功ログを抑え、警告・エラーのみを残せます。
 - `AGENT_QUEUE_MAX_SIZE`, `WORKER_TASK_TIMEOUT_SECONDS`  
   Python 側のチャット処理キューの上限と、1 タスクあたりの最大処理時間。
 - `DEFAULT_MOVE_TARGET`  

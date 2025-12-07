@@ -359,13 +359,39 @@ export type AgentBridgeLogger = (
   context: Record<string, unknown>,
 ) => void;
 
+const LOG_LEVEL_PRIORITY: Record<StructuredLogLevel, number> = {
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
+function resolveLogLevelThreshold(rawValue: string | undefined): StructuredLogLevel {
+  if (!rawValue) {
+    return 'info';
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === 'warn' || normalized === 'error' || normalized === 'info') {
+    return normalized;
+  }
+
+  return 'info';
+}
+
 function wait(durationMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
 function createDefaultAgentBridgeLogger(): AgentBridgeLogger {
+  const thresholdLevel = resolveLogLevelThreshold(process.env.AGENT_BRIDGE_LOG_LEVEL);
+  const thresholdPriority = LOG_LEVEL_PRIORITY[thresholdLevel];
   return (level: StructuredLogLevel, event: string, context: Record<string, unknown>) => {
-    console.log(
+    if (LOG_LEVEL_PRIORITY[level] < thresholdPriority) {
+      return;
+    }
+
+    const writer = level === 'warn' ? console.warn : level === 'error' ? console.error : console.log;
+    writer(
       JSON.stringify({
         level,
         event,
