@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """設置/クラフト系アクションをまとめたモジュール。"""
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .base import ActionModule
 from .errors import ActionValidationError

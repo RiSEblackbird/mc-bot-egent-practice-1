@@ -1,7 +1,9 @@
 import type { Bot } from 'mineflayer';
-import { goals } from 'mineflayer-pathfinder';
+import mineflayerPathfinder from 'mineflayer-pathfinder';
 import type { Movements as MovementsClass } from 'mineflayer-pathfinder';
 import type { CommandResponse } from './types.js';
+
+const { goals } = mineflayerPathfinder as typeof import('mineflayer-pathfinder');
 
 /**
  * Mineflayer の移動系処理を集約し、bot.ts のコンテキストサイズを抑制するコントローラー。
