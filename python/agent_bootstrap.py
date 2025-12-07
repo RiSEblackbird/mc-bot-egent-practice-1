@@ -208,6 +208,8 @@ def initialize_agent_runtime(
         perception_history_limit=settings.perception_history_limit,
     )
     action_analyzer = ActionAnalyzer()
+    # ChatQueue 側のコールバックが初期化順序に依存しないよう、解析系の依存も先行して束縛する。
+    owner._action_analyzer = action_analyzer  # noqa: SLF001
     skill_detection = SkillDetectionCoordinator(
         actions=actions,
         memory=memory,
