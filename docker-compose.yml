@@ -58,6 +58,6 @@ services:
         # エージェントがポートをリッスンしないため明示的にクォートする。プロジェクトルートのまま
         # python 配下を監視し、モジュール検索パスを /app に残して ModuleNotFound エラーを防ぐ。
         pip install --no-cache-dir -r requirements.txt && \
-        watchfiles --filter python --ignore-paths .venv python -- "python -m python"
+        watchfiles --filter python --ignore-paths .venv -- "python -m python"
     stdin_open: true
     tty: true

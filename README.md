@@ -290,7 +290,7 @@ docker compose up --build
 ```
 
 * Node サービスは `npm run dev`（`tsx` を利用）で TypeScript ソースの変更を検知し、自動的に再起動します。
-* Python サービスはプロジェクトルートから `watchfiles` で `python` 配下のみを監視し、`python -m python` を再実行します。`cd python` して実行すると `ModuleNotFoundError: No module named python` が発生し、WebSocket の待受が起動しません。
+* Python サービスはプロジェクトルートから `watchfiles --filter python --ignore-paths .venv -- "python -m python"` を実行します。`cd python` して実行すると `ModuleNotFoundError: No module named python` が発生し、WebSocket の待受が起動しません。
 * 起動時にカレントディレクトリ・`sys.path`・`AGENT_WS_*` / `WS_URL` を JSON ログとして出力するので、モジュール解決や接続先が意図どおりかを最初に確認してください。
 * CLI の仕様上、`watchfiles -- ...` に渡すコマンドは `"python -m python"` のように 1 引数へクォートしてください。クォート漏れは対話モード起動となりポートをリッスンせず、Node 側が `ECONNREFUSED` を出します。
 * ホットリロード環境では依存ライブラリをコンテナ起動時に自動インストールするため、初回起動時は少し時間がかかります。
