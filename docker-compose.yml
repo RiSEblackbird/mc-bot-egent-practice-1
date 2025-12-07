@@ -50,6 +50,7 @@ services:
       AGENT_WS_HOST: ${AGENT_WS_HOST:-0.0.0.0}
       AGENT_WS_PORT: ${AGENT_WS_PORT:-9000}
       WATCHFILES_FORCE_POLLING: "true"
+      PYTHONPATH: ${PYTHONPATH:-/app:/app/python}
     command:
       - bash
       - -lc
