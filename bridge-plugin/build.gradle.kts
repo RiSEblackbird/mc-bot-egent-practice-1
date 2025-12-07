@@ -38,7 +38,7 @@ dependencies {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
-    options.release.set(17)
+    options.release.set(21)
 }
 
 val shadowJar = tasks.named<ShadowJar>("shadowJar") {
