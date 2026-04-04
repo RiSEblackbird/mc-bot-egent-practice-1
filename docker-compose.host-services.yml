@@ -1,0 +1,12 @@
+services:
+  bridge:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  node-bot:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  python-agent:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

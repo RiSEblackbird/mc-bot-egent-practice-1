@@ -2,9 +2,6 @@
 node_modules/
 node-bot/dist/
 node-bot/*.tsbuildinfo
-node-bot/.env
-node-bot/.env.local
-node-bot/.env.*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -56,11 +53,8 @@ python/.python_history
 
 # Environment and secret files
 .env
-.env.local
-.env.development
-.env.production
-.env.staging
-.env.test
+.env.*
+!.env.example
 .envrc
 .npmrc
 .yarnrc
@@ -69,6 +63,8 @@ python/.python_history
 python/.env
 python/.env.*
 python/.envrc
+node-bot/.env
+node-bot/.env.*
 # runtime 配下で個別検証する際のローカル秘密設定を誤コミットしないための除外ルール
 python/runtime/.env*
 python/runtime/.secrets/
@@ -88,6 +84,7 @@ bridge-data/
 paper.jar
 paper-*.jar
 bridge-plugin/.gradle/
+bridge-plugin/.kotlin/
 bridge-plugin/build/
 bridge-plugin/libs/*.jar
 bridge-plugin/bin/

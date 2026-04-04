@@ -24,8 +24,6 @@ services:
       # - "19071:19071"
       # ホストで Paper を使い続けたい場合は、Compose 側の公開ポートをずらす（例: "19072:19071"）か、bridge サービスを起動しない運用に切り替えてください。
       - "19072:19071"
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # Paper 側からホストの追加リソースへアクセスする場合に利用
     restart: unless-stopped
 
   node-bot:
@@ -37,16 +35,15 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # Windows/macOS/WSL 環境から Paper サーバーへ接続するための名前解決
     env_file:
       - .env
     environment:
       # Mineflayer が Paper と揃った既定バージョンで起動するよう docker-compose 側でもフォールバックを指定する。
       MC_VERSION: ${MC_VERSION:-1.21.1}
+      MC_HOST: ${COMPOSE_MC_HOST:-bridge}
       WS_HOST: ${WS_HOST:-0.0.0.0}
       WS_PORT: ${WS_PORT:-8765}
-      AGENT_WS_URL: ${AGENT_WS_URL:-ws://python-agent:${AGENT_WS_PORT:-9000}}
+      AGENT_WS_URL: ${COMPOSE_AGENT_WS_URL:-ws://python-agent:${AGENT_WS_PORT:-9000}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-mc-node-bot}
       OTEL_RESOURCE_ENVIRONMENT: ${OTEL_RESOURCE_ENVIRONMENT:-development}
@@ -69,19 +66,18 @@ services:
 
   python-agent:
     # Python エージェントを watchfiles で自動再実行する開発用サービス
-    image: python:3.11
+    image: python:3.12
     working_dir: /app
     volumes:
       - ./:/app
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # Python 側が Paper と通信する可能性に備え、同様に名前解決を登録
     env_file:
       - .env
     environment:
       # Node 側が公開する WebSocket ポートを 1 箇所で可変化し、複数環境での疎通設定を単純化する。
-      WS_URL: ${WS_URL:-ws://node-bot:${WS_PORT:-8765}}
+      WS_URL: ${COMPOSE_WS_URL:-ws://node-bot:${WS_PORT:-8765}}
       AGENT_WS_HOST: ${AGENT_WS_HOST:-0.0.0.0}
       AGENT_WS_PORT: ${AGENT_WS_PORT:-9000}
+      BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://bridge:19071}
       WATCHFILES_FORCE_POLLING: "true"
       PYTHONPATH: ${PYTHONPATH:-/app:/app/python}
     command:
