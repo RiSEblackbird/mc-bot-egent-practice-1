@@ -4,6 +4,39 @@
 
 - このファイルの指示は、より深い階層に別の `AGENTS.md` がない限り、リポジトリ全体に適用する。
 
+## ネストされた AGENTS.md
+
+- より深い階層の `AGENTS.md` がある場合は、そのスコープではそちらを優先する。
+- 現在の詳細スコープは `python/`、`python/dashboard/`、`node-bot/`、`bridge-plugin/`、`tests/` に分ける。
+- 複数の技術境界をまたぐ変更では、共通ルールはこのファイルに従い、実装の細部は各サブディレクトリの `AGENTS.md` に従う。
+
+## リポジトリ概要
+
+- `python/`: OpenAI Responses API と LangGraph を用いたプランニング、オーケストレーション、ランタイム制御の中枢。
+- `node-bot/`: Mineflayer ベースの実ゲーム操作、WebSocket サーバー、TypeScript/Vitest 実装。
+- `bridge-plugin/`: Paper プラグイン。保護領域判定、継続採掘評価、SSE などの HTTP ブリッジを提供する。
+- `tests/`: Python 側の unit / integration / e2e テストとスタブ。
+- `docs/`: 設計メモ、技術スタック図、拡張設計の補助文書。
+- `scripts/` と `Makefile`: セットアップ、起動、ビルド、テストの共通入口。
+
+## リポジトリ運用
+
+- Python planner、Node bot、Bridge HTTP API の契約を変更する場合は、片側だけを直さず関連する相手側、テスト、ドキュメントを同じ変更で揃える。
+- 環境変数名と既定値の正本は実装コードと `env.example` に置き、追加や変更時は `README.md` と関連文書も同期する。
+- 起動、テスト、ビルドは ad hoc なワンライナーより `scripts/` と `Makefile` の既存入口を優先する。
+- 依存更新は目的を明確にして行い、互換性境界を越える変更では lockfile、設定、ドキュメント、テストをまとめて見直す。
+
+## ローカルコマンド参照
+
+- Python エージェント起動: `bash scripts/run-python-agent.sh`
+- Python 環境セットアップ: `bash scripts/setup-python-env.sh`
+- Python テスト実行: `python -m pytest tests`
+- Node bot 起動: `bash scripts/run-node-bot.sh start`
+- Node bot 開発モード: `bash scripts/run-node-bot.sh dev`
+- Node bot テスト: `bash scripts/run-node-bot.sh test`
+- Bridge plugin ビルド: `bash scripts/build-bridge-plugin.sh`
+- Compose 起動: `docker compose up --build`
+
 ## 正本
 
 - ドキュメント保守に関するエージェント向け指示の正本はこのファイルとする。
