@@ -39,6 +39,7 @@ from utils import log_structured_event, setup_logger
 from runtime.action_graph import ChatTask
 from runtime.reflection_prompt import build_reflection_prompt
 from runtime.hybrid_directive import HybridDirectivePayload
+from runtime.rules import ACTION_TASK_RULES
 from services.movement_service import MovementService
 from runtime.inventory_sync import InventorySynchronizer
 
@@ -60,6 +61,7 @@ class AgentOrchestrator:
     # 座標抽出パターンは runtime.rules.COORD_PATTERNS で一元管理する。
     # 行動カテゴリのルールセットは runtime.rules.ACTION_TASK_RULES として共有する。
     # 検出系タスクのキーワード分類は runtime.rules.DETECTION_TASK_KEYWORDS を参照する。
+    _ACTION_TASK_RULES = ACTION_TASK_RULES
     _DETECTION_LABELS = {
         "player_position": "現在位置の報告",
         "inventory_status": "所持品の確認",
@@ -76,8 +78,50 @@ class AgentOrchestrator:
     # 装備ステップのキーワード解析ルールは runtime.rules.EQUIP_KEYWORD_RULES を利用する。
     # 採掘に必要なツルハシランクの対応表は runtime.rules へ切り出して共有する。
 
-    def __init__(self, wiring: "AgentOrchestratorWiring") -> None:
-        """受け取った依存を保持するだけのシンプルなコンストラクタ。"""
+    def __init__(
+        self,
+        wiring: "AgentOrchestratorWiring | Actions",
+        memory: Optional[Memory] = None,
+        *,
+        skill_repository: Optional[Any] = None,
+        config: Optional[Any] = None,
+        runtime_settings: Optional[Any] = None,
+        minedojo_client: Optional[Any] = None,
+        inventory_sync: Optional[InventorySynchronizer] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
+        """配線済み依存または従来の直接注入形式から初期化する。
+
+        `AgentOrchestratorWiring` を直接受け取る経路を正本にしつつ、
+        既存テストと旧呼び出し側が `actions, memory, ...` 形式でも壊れないように
+        ここで互換配線へ寄せる。
+        """
+
+        from agent_lifecycle import AgentOrchestratorWiring, assemble_agent_wiring
+
+        if isinstance(wiring, AgentOrchestratorWiring):
+            resolved_wiring = wiring
+        else:
+            if memory is None:
+                raise TypeError(
+                    "memory is required when constructing AgentOrchestrator from actions"
+                )
+            resolved_wiring = assemble_agent_wiring(
+                wiring,
+                memory,
+                skill_repository=skill_repository,
+                config=config,
+                runtime_settings=runtime_settings,
+                minedojo_client=minedojo_client,
+                inventory_sync=inventory_sync,
+                logger=logger,
+                agent=self,
+            )
+
+        self._apply_wiring(resolved_wiring)
+
+    def _apply_wiring(self, wiring: "AgentOrchestratorWiring") -> None:
+        """配線済み依存をインスタンスへ反映する。"""
 
         self.actions = wiring.actions
         self.memory = wiring.memory
@@ -144,6 +188,23 @@ class AgentOrchestrator:
                 "chat pipeline is not initialized; check AgentOrchestrator wiring"
             )
         return pipeline
+
+    def _infer_equip_arguments(self, text: str) -> Optional[Dict[str, str]]:
+        """旧テスト互換のため、装備推論を TaskRouter 経由で公開する。"""
+
+        return self.task_router.infer_equip_arguments(text)
+
+    async def _find_skill_for_step(self, category: str, step: str) -> Optional[Any]:
+        """MineDojo スキル探索の従来エントリポイントを維持する。"""
+
+        return await self.task_router.find_skill_for_step(category, step)
+
+    async def _execute_skill_match(
+        self, match: Any, step: str
+    ) -> Tuple[bool, Optional[str]]:
+        """スキル実行を TaskRouter へ委譲する互換ラッパー。"""
+
+        return await self.task_router.execute_skill_match(match, step)
 
     async def enqueue_chat(self, username: str, message: str) -> None:
         """WebSocket から受け取ったチャットをワーカーに積むラッパー。"""

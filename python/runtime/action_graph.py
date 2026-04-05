@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from langgraph.graph.state import CompiledStateGraph
 
+from planner import plan
 from services.minedojo_client import MineDojoDemoMetadata
 
 from runtime.action_graph_builder import ActionGraphBuilder
@@ -116,4 +117,5 @@ __all__ = [
     "ActionTaskRule",
     "ChatTask",
     "UnifiedAgentGraph",
+    "plan",
 ]

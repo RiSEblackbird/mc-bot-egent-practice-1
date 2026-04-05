@@ -5,8 +5,9 @@ from typing import Any, Dict, Optional
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+import planner
 from langgraph_state import UnifiedPlanState, record_structured_step
-from planner import PlanOut, plan
+from planner import PlanOut
 
 
 class UnifiedAgentGraph:
@@ -37,8 +38,11 @@ class UnifiedAgentGraph:
     def _detect_intent(self, message: str) -> str:
         """簡易なキーワードマッチで意図カテゴリを推定する。"""
 
+        from runtime.rules import ACTION_TASK_RULES
+
         lowered = message.lower()
-        for category, rule in self._orchestrator._ACTION_TASK_RULES.items():  # type: ignore[attr-defined]
+        rules = getattr(self._orchestrator, "_ACTION_TASK_RULES", ACTION_TASK_RULES)
+        for category, rule in rules.items():
             for keyword in rule.keywords:
                 if keyword and keyword.lower() in lowered:
                     return category
@@ -64,7 +68,7 @@ class UnifiedAgentGraph:
 
         async def generate_plan(state: UnifiedPlanState) -> Dict[str, Any]:
             try:
-                plan_out = await plan(state.get("user_msg", ""), state.get("context", {}))
+                plan_out = await planner.plan(state.get("user_msg", ""), state.get("context", {}))
                 category = plan_out.intent or state.get("category") or "generic"
                 step_text = plan_out.plan[0] if plan_out.plan else state.get("step", "")
                 result: Dict[str, Any] = {

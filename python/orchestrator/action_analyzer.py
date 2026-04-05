@@ -17,6 +17,22 @@ from runtime.rules import (
 
 
 ArgumentsType = Union[PlanArguments, Dict[str, object], None]
+MOVE_TO_PLAYER_HINTS = (
+    "プレイヤー",
+    "あなた",
+    "きみ",
+    "君",
+    "こっち",
+    "こちら",
+    "そっち",
+    "そちら",
+    "待ち合わせ",
+    "迎え",
+    "追従",
+    "追いかけ",
+    "ついて",
+    "合流",
+)
 
 
 @dataclass
@@ -29,6 +45,8 @@ class ActionAnalyzer:
         best_score: Optional[Tuple[int, int, int, int]] = None
 
         for order_index, (category, rule) in enumerate(ACTION_TASK_RULES.items()):
+            if category == "move_to_player" and not self._has_move_to_player_intent(segments):
+                continue
             matched_keywords = set()
             longest_keyword = 0
 
@@ -150,6 +168,15 @@ class ActionAnalyzer:
             "scan_radius": scan_radius,
             "max_targets": max_targets,
         }
+
+    def _has_move_to_player_intent(self, segments: Tuple[str, ...]) -> bool:
+        """一般移動とプレイヤー追従を誤分類しないための追加判定。"""
+
+        compact_segments = tuple(segment.replace(" ", "").replace("　", "").lower() for segment in segments)
+        for segment in compact_segments:
+            if any(hint.lower() in segment for hint in MOVE_TO_PLAYER_HINTS):
+                return True
+        return False
 
     def _split_action_segments(self, text: str) -> Tuple[str, ...]:
         separators = r"[、。,，,\n]+"
