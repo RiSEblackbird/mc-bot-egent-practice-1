@@ -18,8 +18,8 @@ class MockWebSocket extends EventEmitter {
     this.terminated = true;
   }
 
-  removeAllListeners(): void {
-    super.removeAllListeners();
+  removeAllListeners(eventName?: string | symbol): this {
+    return super.removeAllListeners(eventName);
   }
 
   close(): void {

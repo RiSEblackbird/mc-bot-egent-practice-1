@@ -27,6 +27,13 @@ export interface ChatBridgeConfig {
   currentPositionKeywords: string[];
 }
 
+function summarizeCommandResponse(response: CommandResponse): Record<string, unknown> {
+  return {
+    ok: response.ok,
+    ...(response.error ? { error: response.error } : {}),
+  };
+}
+
 /**
  * Mineflayer Bot のチャット入出力を束ね、位置報告や Python エージェントへの転送を担うサービス。
  *
@@ -97,20 +104,25 @@ export class ChatBridge {
    * Python 側の LangGraph 共有メモリへチャットを転送する。接続が確立できない場合でも Bot の処理をブロックしない。
    */
   private async forwardChatToAgent(username: string, message: string): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise<void>((resolve) => {
       const payload = {
         type: 'chat',
         args: { username, message },
       } satisfies CommandPayload;
 
       const ws = this.createWebSocket(this.config.agentControlWebsocketUrl);
+      let settled = false;
       const timeout = setTimeout(() => {
         this.logger('warn', '[ChatBridge] agent did not respond within 10s');
         ws.terminate();
-        resolve();
+        cleanup();
       }, 10_000);
 
-      const cleanup = () => {
+      const cleanup = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
         clearTimeout(timeout);
         ws.removeAllListeners();
         resolve();
@@ -126,7 +138,7 @@ export class ChatBridge {
         try {
           const parsed = JSON.parse(text) as CommandResponse;
           if (!parsed.ok) {
-            this.logger('warn', '[ChatBridge] agent reported failure', parsed);
+            this.logger('warn', '[ChatBridge] agent reported failure', summarizeCommandResponse(parsed));
           }
         } catch (error) {
           this.logger('warn', '[ChatBridge] failed to parse agent response', { message: error instanceof Error ? error.message : String(error) });

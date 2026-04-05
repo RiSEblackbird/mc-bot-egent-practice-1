@@ -27,6 +27,7 @@ import {
 } from './runtime/services/telemetryBroadcast.js';
 import { BotLifecycleService } from './runtime/services/lifecycleService.js';
 import { BotChatMessenger } from './runtime/services/chatBridge.js';
+import type { PerceptionSnapshot } from './runtime/snapshots.js';
 import type { CommandPayload, CommandResponse, MultiAgentEventPayload } from './runtime/types.js';
 
 // 型情報を維持するため、実体の分割代入時にモジュール全体の型定義を参照させる。
@@ -121,7 +122,7 @@ async function emitAgentEvent(event: MultiAgentEventPayload): Promise<void> {
   await lifecycleService.emitAgentEvent(event);
 }
 
-let perceptionSnapshotBuilder: (() => Promise<unknown>) | null = null;
+let perceptionSnapshotBuilder: ((targetBot: Bot, reason: string) => PerceptionSnapshot | null) | null = null;
 
 const { registerBotEventHandlers } = createBotEventHandlers({
   agentControlWebsocketUrl,

@@ -1,4 +1,5 @@
 import type { Bot } from 'mineflayer';
+import type { ControlState } from 'mineflayer';
 
 import type {
   GeneralStatusSnapshot,
@@ -33,6 +34,14 @@ const SUPPORTED_VPT_CONTROLS: readonly VptControlName[] = [
   'use',
 ] as const;
 const SUPPORTED_VPT_CONTROLS_SET = new Set<string>(SUPPORTED_VPT_CONTROLS);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isMineflayerControlState(control: VptControlName): control is ControlState {
+  return control !== 'attack' && control !== 'use';
+}
 
 /**
  * VPT 系コマンドをまとめ、依存注入でテストしやすい構造にしたハンドラ集約。
@@ -139,7 +148,7 @@ export function createVptCommandHandlers(context: VptCommandContext) {
       return { ok: false, error: 'Another VPT playback is already in progress' };
     }
 
-    const metadata = typeof args.metadata === 'object' && args.metadata !== null ? args.metadata : undefined;
+    const metadata = isRecord(args.metadata) ? args.metadata : undefined;
 
     try {
       isVptPlaybackActive = true;
@@ -235,7 +244,7 @@ export function createVptCommandHandlers(context: VptCommandContext) {
 
     targetBot.clearControlStates();
 
-    const pressedControls = new Set<VptControlName>();
+    const pressedControls = new Set<ControlState>();
 
     console.log('[VPT] playback start', {
       actionCount: actions.length,
@@ -246,11 +255,21 @@ export function createVptCommandHandlers(context: VptCommandContext) {
       for (const action of actions) {
         switch (action.kind) {
           case 'control': {
-            targetBot.setControlState(action.control, action.state);
-            if (action.state) {
-              pressedControls.add(action.control);
-            } else {
-              pressedControls.delete(action.control);
+            if (isMineflayerControlState(action.control)) {
+              targetBot.setControlState(action.control, action.state);
+              if (action.state) {
+                pressedControls.add(action.control);
+              } else {
+                pressedControls.delete(action.control);
+              }
+            } else if (action.control === 'use') {
+              if (action.state) {
+                targetBot.activateItem();
+              } else {
+                targetBot.deactivateItem();
+              }
+            } else if (action.control === 'attack' && action.state) {
+              targetBot.swingArm('right', true);
             }
             await waitTicks(action.durationTicks);
             break;

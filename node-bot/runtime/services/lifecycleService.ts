@@ -18,7 +18,7 @@ export interface LifecycleServiceConfig {
     host: string;
     port: number;
     username: string;
-    authMode: string;
+    authMode: 'offline' | 'microsoft' | 'mojang';
     version?: string;
     reconnectDelayMs: number;
   };
@@ -75,6 +75,7 @@ export class BotLifecycleService {
       console.error('[LifecycleService] registerBotEventHandlers is not provided.');
       return;
     }
+    const registerHandlers = this.registerHandlers;
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -108,7 +109,7 @@ export class BotLifecycleService {
 
           this.bot = nextBot;
           nextBot.loadPlugin(this.pathfinderPlugin);
-          this.registerHandlers(nextBot);
+          registerHandlers(nextBot);
         } catch (error) {
           span.setStatus({
             code: SpanStatusCode.ERROR,

@@ -8,6 +8,7 @@ import {
   HostResolutionResult,
   MoveGoalToleranceResolution,
   PerceptionResolution,
+  TelemetryResolution,
   VptPlaybackResolution,
   MovementResolution,
   detectDockerRuntime,
@@ -120,6 +121,7 @@ export interface BotRuntimeConfig {
     serviceName: string;
     environment: string;
     samplerRatio: number;
+    warnings: string[];
   };
   control: {
     mode: 'command' | 'vpt' | 'hybrid';
@@ -217,12 +219,7 @@ export function loadBotRuntimeConfig(
       historyPath: skillHistoryPath,
     },
     movement: movementResolution,
-    telemetry: {
-      endpoint: telemetryResolution.endpoint,
-      serviceName: telemetryResolution.serviceName,
-      environment: telemetryResolution.environment,
-      samplerRatio: telemetryResolution.samplerRatio,
-    },
+    telemetry: telemetryResolution satisfies TelemetryResolution,
     control: {
       mode: controlModeResolution.mode,
       modeResolution: controlModeResolution,

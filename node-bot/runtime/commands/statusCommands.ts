@@ -1,7 +1,7 @@
 import type { Counter, Histogram } from '@opentelemetry/api';
 import type { Bot } from 'mineflayer';
 import type { Item } from 'prismarine-item';
-import Vec3, { Vec3 as Vec3Type } from 'vec3';
+import { Vec3, type Vec3 as Vec3Type } from 'vec3';
 
 import type { AgentBridge } from '../agentBridge.js';
 import type { NavigationController } from '../navigationController.js';
@@ -56,6 +56,23 @@ interface EnchantmentInfo {
   id: string;
   level: number;
 }
+
+type ItemWithDurability = Item & {
+  maxDurability?: unknown;
+  durabilityUsed?: unknown;
+  durability?: unknown;
+};
+
+type BotWithSnapshotExtras = Bot & {
+  maxHealth?: unknown;
+  rainLevel?: unknown;
+  thunderLevel?: unknown;
+  isRaining?: unknown;
+  world?: {
+    getSkyLight?: (position: Vec3Type) => number;
+    getBlockLight?: (position: Vec3Type) => number;
+  };
+};
 
 const ENCHANT_NAME_MAP: Record<string, string> = {
   efficiency: '効率強化',
@@ -169,9 +186,10 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
   }
 
   function createInventoryItemSnapshot(item: Item): InventoryItemSnapshot {
-    const maxDurability = resolveDurabilityValue((item as Record<string, unknown>).maxDurability);
-    const durabilityUsed = resolveDurabilityValue((item as Record<string, unknown>).durabilityUsed);
-    const directDurability = resolveDurabilityValue((item as Record<string, unknown>).durability);
+    const durabilityAwareItem = item as ItemWithDurability;
+    const maxDurability = resolveDurabilityValue(durabilityAwareItem.maxDurability);
+    const durabilityUsed = resolveDurabilityValue(durabilityAwareItem.durabilityUsed);
+    const directDurability = resolveDurabilityValue(durabilityAwareItem.durability);
     const durability =
       directDurability ??
       (maxDurability !== null && durabilityUsed !== null ? Math.max(0, maxDurability - durabilityUsed) : null);
@@ -193,8 +211,9 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
   }
 
   function buildGeneralStatusSnapshot(targetBot: Bot): GeneralStatusSnapshot {
+    const snapshotBot = targetBot as BotWithSnapshotExtras;
     const health = Math.round(targetBot.health);
-    const rawMaxHealth = Number((targetBot as Record<string, unknown>).maxHealth ?? 20);
+    const rawMaxHealth = Number(snapshotBot.maxHealth ?? 20);
     const maxHealth = Number.isFinite(rawMaxHealth) ? rawMaxHealth : 20;
     const food = Math.round(targetBot.food);
     const rawSaturation = Number(targetBot.foodSaturation ?? 0);
@@ -291,9 +310,10 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
   }
 
   function resolveWeatherSummary(targetBot: Bot): WeatherSummary {
-    const rainLevel = Number((targetBot as Record<string, unknown>).rainLevel ?? 0);
-    const thunderLevel = Number((targetBot as Record<string, unknown>).thunderLevel ?? 0);
-    const isRainingFlag = Boolean((targetBot as Record<string, unknown>).isRaining ?? rainLevel > 0);
+    const snapshotBot = targetBot as BotWithSnapshotExtras;
+    const rainLevel = Number(snapshotBot.rainLevel ?? 0);
+    const thunderLevel = Number(snapshotBot.thunderLevel ?? 0);
+    const isRainingFlag = Boolean(snapshotBot.isRaining ?? rainLevel > 0);
     const label = isRainingFlag ? (thunderLevel > 0 ? 'thunder' : 'rain') : 'clear';
     return {
       isRaining: isRainingFlag,
@@ -318,7 +338,7 @@ export function createStatusCommandHandlers(context: StatusCommandContext) {
   }
 
   function resolveLightingSummary(targetBot: Bot, position: Vec3Type): LightingSummary {
-    const world = (targetBot as Record<string, any>).world;
+    const world = (targetBot as BotWithSnapshotExtras).world;
     const readLevel = (method: 'getSkyLight' | 'getBlockLight'): number | null => {
       if (world && typeof world[method] === 'function') {
         try {

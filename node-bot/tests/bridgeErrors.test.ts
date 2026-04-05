@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isLiquidConflict, type BridgeStopPayload } from '../runtime/bridgeErrors';
+import { isLiquidConflict, type BridgeStopPayload } from '../runtime/bridgeErrors.js';
 
 describe('isLiquidConflict', () => {
   it('returns true for liquid 409 payloads', () => {

@@ -5,6 +5,8 @@ import {
   metrics,
   trace,
   SpanStatusCode,
+  type Attributes,
+  type AttributeValue,
   type Counter,
   type Histogram,
   type Span,
@@ -38,6 +40,22 @@ function sanitizeEndpoint(endpoint: string): string {
   return endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
 }
 
+function toTelemetryAttributes(attributes: Record<string, unknown>): Attributes {
+  return Object.fromEntries(
+    Object.entries(attributes).flatMap(([key, value]) => {
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        value === undefined
+      ) {
+        return [[key, value as AttributeValue]];
+      }
+      return [[key, String(value)]];
+    }),
+  );
+}
+
 /**
  * OpenTelemetry SDK を初期化し、トレースとメトリクスの共通部品を提供する。
  */
@@ -57,7 +75,7 @@ export function initializeTelemetry(config: TelemetryResolution): TelemetryConte
       [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: config.environment,
       [SemanticResourceAttributes.SERVICE_NAMESPACE]: 'mineflayer-agent',
     }),
-    traceSampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(config.samplerRatio) }),
+    sampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(config.samplerRatio) }),
   });
 
   telemetryStartPromise ??= Promise.resolve(sdk.start()).catch((error) => {
@@ -133,7 +151,7 @@ export async function runWithSpan<T>(
   handler: (span: Span) => Promise<T> | T,
 ): Promise<T> {
   return tracer.startActiveSpan(name, async (span) => {
-    span.setAttributes(attributes);
+    span.setAttributes(toTelemetryAttributes(attributes));
 
     try {
       const result = await handler(span);

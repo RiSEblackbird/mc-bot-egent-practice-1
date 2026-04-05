@@ -4,7 +4,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { SustainabilityService } from '../runtime/services/sustainabilityService.js';
 
 describe('SustainabilityService', () => {
-  const chatMessenger = { sendChat: vi.fn<boolean, [string]>() };
+  const chatMessenger = { sendChat: vi.fn<(message: string) => boolean>() };
   const config = { starvationFoodLevel: 0, hungerWarningCooldownMs: 30_000 };
   let service: SustainabilityService;
 

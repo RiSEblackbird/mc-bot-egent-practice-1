@@ -9,6 +9,14 @@ export type PerceptionBroadcastState = {
   lastBroadcastAt: number;
 };
 
+type BotWithMaxHealth = Bot & {
+  maxHealth?: unknown;
+};
+
+function toEventPayload(value: PerceptionSnapshot): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
 /**
  * 知覚情報のキャッシュ状態を初期化するためのヘルパー。
  * Bot のライフサイクルと紐づくため、呼び出し元で 1 インスタンスを共有することを前提としている。
@@ -33,7 +41,7 @@ export async function broadcastAgentStatus(params: {
 }): Promise<void> {
   const { targetBot, agentBridge, primaryAgentId, getActiveAgentRole, extraPayload = {} } = params;
   const health = Math.round(targetBot.health);
-  const rawMaxHealth = Number((targetBot as Record<string, unknown>).maxHealth ?? 20);
+  const rawMaxHealth = Number((targetBot as BotWithMaxHealth).maxHealth ?? 20);
   const maxHealth = Number.isFinite(rawMaxHealth) ? rawMaxHealth : 20;
   const food = Math.round(targetBot.food);
   const saturation = Number.isFinite(targetBot.foodSaturation)
@@ -96,6 +104,6 @@ export async function broadcastAgentPerception(params: {
     event: 'perception',
     agentId: primaryAgentId,
     timestamp: Date.now(),
-    payload: snapshot,
+    payload: toEventPayload(snapshot),
   });
 }

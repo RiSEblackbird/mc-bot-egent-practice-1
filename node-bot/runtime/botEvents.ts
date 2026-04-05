@@ -12,6 +12,7 @@ import {
 import type { BotLifecycleService } from './services/lifecycleService.js';
 import type { AgentRoleDescriptor } from './roles.js';
 import type { NavigationController } from './navigationController.js';
+import type { FoodDictionary, PerceptionSnapshot } from './snapshots.js';
 
 type MovementConstructor = new (bot: Bot, data: ReturnType<typeof minecraftData>) => MovementsClass;
 
@@ -28,7 +29,7 @@ export interface BotEventDependencies {
   movementConstructor: MovementConstructor;
   minecraftReconnectDelayMs: number;
   getActiveAgentRole: () => AgentRoleDescriptor;
-  getPerceptionSnapshot: () => (() => Promise<unknown>) | null | undefined;
+  getPerceptionSnapshot: () => ((targetBot: Bot, reason: string) => PerceptionSnapshot | null) | null | undefined;
 }
 
 interface BroadcastDeps {
@@ -38,7 +39,7 @@ interface BroadcastDeps {
   perceptionBroadcastState: PerceptionBroadcastState;
   perceptionBroadcastIntervalMs: number;
   getActiveAgentRole: () => AgentRoleDescriptor;
-  getPerceptionSnapshot: () => (() => Promise<unknown>) | null | undefined;
+  getPerceptionSnapshot: () => ((targetBot: Bot, reason: string) => PerceptionSnapshot | null) | null | undefined;
 }
 
 function createBroadcasters(
@@ -151,7 +152,7 @@ export function createBotEventHandlers(deps: BotEventDependencies) {
 
     targetBot.once('spawn', () => {
       const mcData = minecraftData(targetBot.version);
-      const foodsByName = ((mcData as unknown as { foodsByName?: Record<string, unknown> }).foodsByName) ?? {};
+      const foodsByName = ((mcData as { foodsByName?: FoodDictionary }).foodsByName) ?? {};
       sustainabilityService.updateFoodDictionary(foodsByName);
 
       const MovementsWithData = deps.movementConstructor;
