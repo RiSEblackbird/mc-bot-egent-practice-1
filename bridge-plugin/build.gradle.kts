@@ -2,7 +2,7 @@ import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 
 plugins {
     java
-    id("com.gradleup.shadow") version "8.3.3"
+    id("com.gradleup.shadow") version "9.4.1"
 }
 
 group = "com.example.bridge"
@@ -26,14 +26,14 @@ dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
     compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
     compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.21.2")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.21.2")
     compileOnly(files("libs/CoreProtect-22.0.jar"))
     testImplementation("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
     testImplementation("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
     testImplementation("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
-    testImplementation("org.mockito:mockito-core:5.11.0")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    testImplementation("org.mockito:mockito-core:5.23.0")
 }
 
 tasks.withType<JavaCompile>().configureEach {
