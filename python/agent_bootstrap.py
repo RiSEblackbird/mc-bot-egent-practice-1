@@ -92,13 +92,13 @@ def build_agent_dependencies(
             seed_path=str(seed_path),
         )
 
-    langsmith_cfg = config.langsmith
+    langfuse_cfg = config.langfuse
     tracer = ThoughtActionObservationTracer(
-        api_url=langsmith_cfg.api_url,
-        api_key=langsmith_cfg.api_key,
-        project=langsmith_cfg.project,
-        default_tags=langsmith_cfg.tags,
-        enabled=langsmith_cfg.enabled,
+        host=langfuse_cfg.host,
+        public_key=langfuse_cfg.public_key,
+        secret_key=langfuse_cfg.secret_key,
+        default_tags=langfuse_cfg.tags,
+        enabled=langfuse_cfg.enabled,
     )
 
     inv_sync = inventory_sync or InventorySynchronizer(

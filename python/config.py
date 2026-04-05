@@ -29,8 +29,7 @@ _DEFAULT_MINEDOJO_SIM_MAX_STEPS = 120
 _DEFAULT_LLM_TIMEOUT_SECONDS = 30.0
 _DEFAULT_AGENT_QUEUE_MAX_SIZE = 20
 _DEFAULT_WORKER_TASK_TIMEOUT_SECONDS = 300.0
-_DEFAULT_LANGSMITH_API_URL = "https://api.smith.langchain.com"
-_DEFAULT_LANGSMITH_PROJECT = "mc-bot"
+_DEFAULT_LANGFUSE_HOST = "https://cloud.langfuse.com"
 _DEFAULT_DASHBOARD_HOST = "127.0.0.1"
 _DEFAULT_DASHBOARD_PORT = 9100
 
@@ -50,12 +49,12 @@ class MineDojoConfig:
 
 
 @dataclass(frozen=True)
-class LangSmithConfig:
-    """LangSmith 連携で利用する接続設定とタグの集合。"""
+class LangfuseConfig:
+    """Langfuse 連携で利用する接続設定とタグの集合。"""
 
-    api_url: str
-    api_key: str | None
-    project: str | None
+    host: str
+    public_key: str | None
+    secret_key: str | None
     enabled: bool
     tags: Tuple[str, ...]
 
@@ -81,7 +80,7 @@ class AgentConfig:
     default_move_target_raw: str
     skill_library_path: str
     minedojo: MineDojoConfig
-    langsmith: LangSmithConfig
+    langfuse: LangfuseConfig
     llm_timeout_seconds: float  # Responses API 呼び出しを強制終了するまでの猶予秒数
     queue_max_size: int  # チャットキューの上限。0 なら無制限
     worker_task_timeout_seconds: float  # 単一チャット処理のタイムアウト猶予
@@ -228,14 +227,14 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
     worker_task_timeout_seconds, worker_timeout_warnings = _parse_positive_float(
         source.get("WORKER_TASK_TIMEOUT_SECONDS"), _DEFAULT_WORKER_TASK_TIMEOUT_SECONDS
     )
-    langsmith_api_url = source.get("LANGSMITH_API_URL", _DEFAULT_LANGSMITH_API_URL)
-    langsmith_api_key = source.get("LANGSMITH_API_KEY")
-    langsmith_project = source.get("LANGSMITH_PROJECT", _DEFAULT_LANGSMITH_PROJECT)
-    langsmith_enabled = _parse_bool(source.get("LANGSMITH_ENABLED"), False)
-    langsmith_tags_raw = source.get("LANGSMITH_TAGS", "")
-    langsmith_tags: Tuple[str, ...] = tuple(
+    langfuse_host = source.get("LANGFUSE_HOST", _DEFAULT_LANGFUSE_HOST)
+    langfuse_public_key = source.get("LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key = source.get("LANGFUSE_SECRET_KEY")
+    langfuse_enabled = _parse_bool(source.get("LANGFUSE_ENABLED"), False)
+    langfuse_tags_raw = source.get("LANGFUSE_TAGS", "")
+    langfuse_tags: Tuple[str, ...] = tuple(
         token.strip()
-        for token in langsmith_tags_raw.split(",")
+        for token in langfuse_tags_raw.split(",")
         if token.strip()
     )
     dashboard_enabled = _parse_bool(source.get("DASHBOARD_ENABLED"), True)
@@ -285,14 +284,20 @@ def load_agent_config(env: Mapping[str, str] | None = None) -> ConfigLoadResult:
             sim_seed=minedojo_sim_seed,
             sim_max_steps=minedojo_sim_max_steps,
         ),
-        langsmith=LangSmithConfig(
-            api_url=langsmith_api_url.strip() or _DEFAULT_LANGSMITH_API_URL,
-            api_key=(
-                langsmith_api_key.strip() if langsmith_api_key and langsmith_api_key.strip() else None
+        langfuse=LangfuseConfig(
+            host=langfuse_host.strip() or _DEFAULT_LANGFUSE_HOST,
+            public_key=(
+                langfuse_public_key.strip()
+                if langfuse_public_key and langfuse_public_key.strip()
+                else None
             ),
-            project=langsmith_project.strip() or _DEFAULT_LANGSMITH_PROJECT,
-            enabled=langsmith_enabled,
-            tags=langsmith_tags,
+            secret_key=(
+                langfuse_secret_key.strip()
+                if langfuse_secret_key and langfuse_secret_key.strip()
+                else None
+            ),
+            enabled=langfuse_enabled,
+            tags=langfuse_tags,
         ),
         llm_timeout_seconds=llm_timeout_seconds,
         queue_max_size=queue_max_size,

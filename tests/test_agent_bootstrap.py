@@ -15,7 +15,7 @@ if str(PYTHON_DIR) not in sys.path:
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from agent_settings import AgentRuntimeSettings  # type: ignore  # noqa: E402
-from config import AgentConfig, LangSmithConfig, MineDojoConfig  # type: ignore  # noqa: E402
+from config import AgentConfig, DashboardConfig, LangfuseConfig, MineDojoConfig  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from runtime.inventory_sync import InventorySynchronizer  # type: ignore  # noqa: E402
 
@@ -61,10 +61,10 @@ class MineDojoClientStub:
 def base_config(tmp_path: Path) -> AgentConfig:
     """テスト専用の AgentConfig を生成するヘルパー。"""
 
-    langsmith = LangSmithConfig(
-        api_url="https://example.invalid/api",
-        api_key="dummy",
-        project="test-project",
+    langfuse = LangfuseConfig(
+        host="https://example.invalid/api",
+        public_key="pk_test_dummy",
+        secret_key="sk_test_dummy",
         enabled=False,
         tags=("test",),
     )
@@ -86,10 +86,16 @@ def base_config(tmp_path: Path) -> AgentConfig:
         default_move_target_raw="1,2,3",
         skill_library_path=str(tmp_path / "skills.json"),
         minedojo=minedojo,
-        langsmith=langsmith,
+        langfuse=langfuse,
         llm_timeout_seconds=5.0,
         queue_max_size=5,
         worker_task_timeout_seconds=60.0,
+        dashboard=DashboardConfig(
+            enabled=False,
+            host="127.0.0.1",
+            port=9100,
+            access_token=None,
+        ),
     )
 
 

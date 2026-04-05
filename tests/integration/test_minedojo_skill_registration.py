@@ -24,7 +24,7 @@ async def test_minedojo_demo_registration_and_reuse(tmp_path: Path) -> None:
     pytest.importorskip("langgraph")
 
     from agent import AgentOrchestrator  # type: ignore  # noqa: E402
-    from config import AgentConfig, LangSmithConfig, MineDojoConfig  # type: ignore  # noqa: E402
+    from config import AgentConfig, DashboardConfig, LangfuseConfig, MineDojoConfig  # type: ignore  # noqa: E402
     from memory import Memory  # type: ignore  # noqa: E402
     from services.minedojo_client import (  # type: ignore  # noqa: E402
         MineDojoDemonstration,
@@ -120,16 +120,17 @@ async def test_minedojo_demo_registration_and_reuse(tmp_path: Path) -> None:
             sim_seed=0,
             sim_max_steps=0,
         ),
-        langsmith=LangSmithConfig(
-            api_url="",
-            api_key=None,
-            project=None,
+        langfuse=LangfuseConfig(
+            host="",
+            secret_key=None,
+            public_key=None,
             enabled=False,
             tags=(),
         ),
         llm_timeout_seconds=30.0,
         queue_max_size=10,
         worker_task_timeout_seconds=120.0,
+        dashboard=DashboardConfig(enabled=False, host="127.0.0.1", port=9100, access_token=None),
     )
 
     actions = StubActions()
