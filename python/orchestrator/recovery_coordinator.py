@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 PlanRunner = Callable[[PlanOut, Optional[Tuple[int, int, int]], int], Awaitable[None]]
+PlanBuilder = Callable[[str, Dict[str, Any]], Awaitable[PlanOut]]
 
 
 class RecoveryCoordinator:
@@ -39,6 +40,7 @@ class RecoveryCoordinator:
         status_service: "StatusService",
         task_router: "TaskRouter",
         logger: logging.Logger,
+        plan_builder: PlanBuilder = plan,
         plan_runner: PlanRunner,
         max_replan_depth: int,
     ) -> None:
@@ -49,6 +51,7 @@ class RecoveryCoordinator:
         self.status_service = status_service
         self.task_router = task_router
         self.logger = logger
+        self._plan_builder = plan_builder
         # PlanExecutor.run へ依存を明示するためのコールバック。
         self._plan_runner = plan_runner
         self._max_replan_depth = max_replan_depth
@@ -180,7 +183,7 @@ class RecoveryCoordinator:
             context,
         )
 
-        new_plan = await plan(replan_instruction, context)
+        new_plan = await self._plan_builder(replan_instruction, context)
 
         if new_plan.resp.strip():
             await self.actions.say(new_plan.resp)

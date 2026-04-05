@@ -15,7 +15,7 @@ from orchestrator.directive_utils import (
     resolve_directive_for_step,
 )
 from orchestrator.recovery_coordinator import RecoveryCoordinator
-from planner import ActionDirective, PlanOut, ReActStep
+from planner import ActionDirective, PlanOut, ReActStep, plan
 from runtime.rules import ACTION_TASK_RULES
 from utils import log_structured_event
 
@@ -62,6 +62,9 @@ class PlanExecutor:
             status_service=self.status_service,
             task_router=self.task_router,
             logger=self.logger,
+            # テストでは orchestrator.plan_executor.plan を monkeypatch するため、
+            # ここでは関数オブジェクトを固定せず毎回モジュール変数を参照する。
+            plan_builder=lambda message, context: plan(message, context),
             plan_runner=self.run,
             max_replan_depth=self._MAX_REPLAN_DEPTH,
         )
@@ -253,7 +256,7 @@ class PlanExecutor:
             "langgraph_node_id": "agent.react_loop",
             "context": context,
         }
-        self.logger.log(log_level, json.dumps(raw_payload, ensure_ascii=False))
+        logging.getLogger("agent").log(log_level, json.dumps(raw_payload, ensure_ascii=False))
         log_structured_event(
             self.logger,
             "react_step",

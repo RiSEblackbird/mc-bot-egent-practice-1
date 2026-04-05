@@ -33,6 +33,7 @@ dependencies {
     testImplementation("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
     testImplementation("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
     testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
     testImplementation("org.mockito:mockito-core:5.23.0")
 }
 

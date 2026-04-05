@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 from pathlib import Path
@@ -23,7 +22,8 @@ if str(STUB_DIR) not in sys.path:
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from bridge_client import BRIDGE_RETRY, BridgeClient, BridgeError  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
-from utils import log_structured_event, setup_logger  # type: ignore  # noqa: E402
+from utils import setup_logger  # type: ignore  # noqa: E402
+from utils.logging import StructuredLogFormatter  # type: ignore  # noqa: E402
 
 
 class PassiveActions:
@@ -73,21 +73,23 @@ def _run_build_node(
 
 def test_structured_log_outputs_json() -> None:
     logger = setup_logger("test.struct")
-    stream = io.StringIO()
-    for handler in logger.handlers:
-        if isinstance(handler, logging.StreamHandler):
-            handler.stream = stream
-    log_structured_event(
-        logger,
+    formatter = StructuredLogFormatter(datefmt="%Y-%m-%dT%H:%M:%S")
+    record = logger.makeRecord(
+        logger.name,
+        logging.INFO,
+        __file__,
+        0,
         "node processed",
-        langgraph_node_id="node:test",
-        checkpoint_id="cp-123",
-        event_level="progress",
-        context={"foo": "bar", "count": 2},
+        args=(),
+        exc_info=None,
+        extra={
+            "langgraph_node_id": "node:test",
+            "checkpoint_id": "cp-123",
+            "event_level": "progress",
+            "structured_context": {"foo": "bar", "count": 2},
+        },
     )
-    lines = [line for line in stream.getvalue().splitlines() if line.strip()]
-    assert lines, "ログが出力されていません"
-    payload = json.loads(lines[-1])
+    payload = json.loads(formatter.format(record))
     assert payload["langgraph_node_id"] == "node:test"
     assert payload["checkpoint_id"] == "cp-123"
     assert payload["event_level"] == "progress"

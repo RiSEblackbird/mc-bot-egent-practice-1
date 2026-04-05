@@ -9,3 +9,4 @@ opentelemetry-api==1.40.0
 opentelemetry-sdk==1.40.0
 opentelemetry-exporter-otlp-proto-http==1.40.0
 langfuse==4.0.6
+pytest==9.0.2

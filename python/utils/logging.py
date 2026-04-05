@@ -182,11 +182,20 @@ def setup_logger(name: str = "agent", level: int | None = None) -> logging.Logge
     effective_level = level if level is not None else env_level
 
     logger.setLevel(effective_level)
-    if not any(isinstance(handler.formatter, StructuredLogFormatter) for handler in logger.handlers):
-        handler = logging.StreamHandler()
-        handler.setLevel(effective_level)
-        handler.setFormatter(StructuredLogFormatter(datefmt="%Y-%m-%dT%H:%M:%S"))
-        logger.addHandler(handler)
+    stale_structured_handlers = [
+        handler
+        for handler in logger.handlers
+        if isinstance(handler, logging.StreamHandler)
+        and isinstance(handler.formatter, StructuredLogFormatter)
+    ]
+    for handler in stale_structured_handlers:
+        logger.removeHandler(handler)
+        handler.close()
+
+    handler = logging.StreamHandler()
+    handler.setLevel(effective_level)
+    handler.setFormatter(StructuredLogFormatter(datefmt="%Y-%m-%dT%H:%M:%S"))
+    logger.addHandler(handler)
     # logger から tracer へすぐにアクセスできるよう、属性として紐付けておく。
     if not hasattr(logger, "tracer"):
         logger.tracer = get_tracer(name)
