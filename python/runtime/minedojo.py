@@ -48,7 +48,7 @@ class MineDojoSelfDialogueExecutor:
         title: str,
         success: bool,
     ) -> None:
-        """ReAct ステップを LangSmith へ送信しつつスキル登録と使用実績を更新する。"""
+        """ReAct ステップを Langfuse へ送信しつつスキル登録と使用実績を更新する。"""
 
         mission = await self._client.fetch_mission(mission_id)
         demonstrations = await self._client.fetch_demonstrations(mission_id, limit=1)
@@ -151,11 +151,11 @@ async def run_minedojo_self_dialogue(
     )
     minedojo_client = MineDojoClient(cfg.minedojo)
     tracer = ThoughtActionObservationTracer(
-        api_url=cfg.langsmith.api_url,
-        api_key=cfg.langsmith.api_key,
-        project=cfg.langsmith.project,
-        default_tags=cfg.langsmith.tags,
-        enabled=cfg.langsmith.enabled,
+        host=cfg.langfuse.host,
+        public_key=cfg.langfuse.public_key,
+        secret_key=cfg.langfuse.secret_key,
+        default_tags=cfg.langfuse.tags,
+        enabled=cfg.langfuse.enabled,
     )
     executor = MineDojoSelfDialogueExecutor(
         actions=actions,

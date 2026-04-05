@@ -202,7 +202,8 @@ docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --bu
 ### 可観測性（任意）
 
 - **`OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_TRACES_SAMPLER_RATIO`**: OpenTelemetry
-- **`LANGSMITH_*`**: LangSmith
+- **`LANGFUSE_HOST` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`**: Langfuse 連携用の接続情報
+- **`LANGFUSE_ENABLED` / `LANGFUSE_TAGS`**: Langfuse 送信の有効化と既定タグ
 
 ## Paper 連携: AgentBridge（任意）
 
