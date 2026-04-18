@@ -8,7 +8,6 @@ import pytest
 from python.modes.tunnel import TunnelSection
 from python.modes.tunnel_direction import infer_tunnel_direction
 
-
 class DirectionBridgeStub:
     """Bridge stub that flags hazards based on axis direction."""
 
@@ -55,7 +54,6 @@ class DirectionBridgeStub:
             return "north"
         return "origin"
 
-
 def test_infer_direction_prefers_safe_axis():
     anchor = {"x": 0, "y": 64, "z": 0}
     # East contains liquid, North includes player-placed blocks. South/West are safe.
@@ -68,7 +66,6 @@ def test_infer_direction_prefers_safe_axis():
     assert result.direction in {(0, 0, 1), (-1, 0, 0)}
     assert result.score > 0
     assert "liquid" not in result.hazards
-
 
 def test_infer_direction_raises_when_all_hazardous():
     anchor = {"x": 0, "y": 64, "z": 0}

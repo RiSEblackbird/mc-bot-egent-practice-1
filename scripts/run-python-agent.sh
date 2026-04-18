@@ -36,6 +36,5 @@ if ! "$python_bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,
   exit 1
 fi
 
-export PYTHONPATH="$repo_root:$repo_root/python${PYTHONPATH:+:$PYTHONPATH}"
 cd "$repo_root"
-exec "$python_bin" -m python
+exec "$python_bin" -m mc_bot_agent_entrypoint

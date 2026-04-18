@@ -2,20 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-from pathlib import Path
 from typing import Any, List, Tuple
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 import bridge_ws  # noqa: E402  # isort:skip
 from bridge_ws import BotBridge  # type: ignore  # noqa: E402  # isort:skip
-
 
 class _RefusingConnector:
     """接続拒否を模倣し、呼び出し回数を数えるテスト専用コネクタ。"""
@@ -29,7 +21,6 @@ class _RefusingConnector:
 
     async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
         return None
-
 
 class _HangingWebSocket:
     """受信を意図的にタイムアウトさせるための擬似 WebSocket。"""
@@ -49,7 +40,6 @@ class _HangingWebSocket:
     async def recv(self) -> str:
         await asyncio.sleep(0.05)
         return "{}"
-
 
 @pytest.mark.anyio
 async def test_connect_retry_and_logging(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
@@ -91,7 +81,6 @@ async def test_connect_retry_and_logging(monkeypatch: pytest.MonkeyPatch, caplog
     assert notifications.count(("give_up", 2, "connect_refused")) == 1
     recorded_retries = [item for item in notifications if item[0] == "retry"]
     assert {item[1] for item in recorded_retries} == {1, 2}
-
 
 @pytest.mark.anyio
 async def test_receive_timeout_reports_fault(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:

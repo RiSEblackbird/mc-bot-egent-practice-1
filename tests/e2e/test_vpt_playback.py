@@ -1,22 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
-
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 
 from actions import Actions  # type: ignore  # noqa: E402
 from bridge_ws import BotBridge  # type: ignore  # noqa: E402
 from services import VPTController  # type: ignore  # noqa: E402
-
 
 class DummyBridge(BotBridge):
     """テスト用に WebSocket を実際には開かずに応答を差し込むスタブ。"""
@@ -30,7 +19,6 @@ class DummyBridge(BotBridge):
         self.requests.append(payload)
         return self.response
 
-
 class RecordingBridge(BotBridge):
     """送信内容だけを記録する簡易スタブ。"""
 
@@ -41,7 +29,6 @@ class RecordingBridge(BotBridge):
     async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:  # type: ignore[override]
         self.sent_payloads.append(payload)
         return {"ok": True, "echo": payload}
-
 
 def build_sample_observation() -> Mapping[str, Any]:
     return {
@@ -54,7 +41,6 @@ def build_sample_observation() -> Mapping[str, Any]:
         "hotbar": [{"count": 4}, {"count": 1}],
     }
 
-
 def test_vpt_controller_generates_alignment_actions() -> None:
     controller = VPTController(tick_interval_ms=50.0)
     observation = build_sample_observation()
@@ -65,7 +51,6 @@ def test_vpt_controller_generates_alignment_actions() -> None:
     assert actions[0]["relative"] is True
     assert actions[1]["kind"] == "control"
     assert actions[1]["control"] == "forward"
-
 
 def test_gather_observation_via_bridge() -> None:
     async def runner() -> None:
@@ -79,7 +64,6 @@ def test_gather_observation_via_bridge() -> None:
         assert bridge.requests[0]["type"] == "gatherVptObservation"
 
     asyncio.run(runner())
-
 
 def test_actions_dispatches_vpt_sequence() -> None:
     async def runner() -> None:

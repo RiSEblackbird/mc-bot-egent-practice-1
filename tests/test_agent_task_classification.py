@@ -3,24 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 import pytest
 
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
-
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from runtime.rules import ACTION_TASK_RULES  # type: ignore  # noqa: E402
-
 
 @dataclass
 class NullActions:
@@ -34,13 +23,11 @@ class NullActions:
 
         return _noop
 
-
 @pytest.fixture
 def orchestrator() -> AgentOrchestrator:
     """キーワード分類メソッドを検証するためのオーケストレータインスタンス。"""
 
     return AgentOrchestrator(NullActions(), Memory())
-
 
 def legacy_classify(orchestrator: AgentOrchestrator, text: str) -> Optional[str]:
     """旧ロジック（先着順の単純一致）を再現し、新旧差分を比較する。"""
@@ -50,7 +37,6 @@ def legacy_classify(orchestrator: AgentOrchestrator, text: str) -> Optional[str]
         if any(keyword and keyword in normalized for keyword in rule.keywords):
             return category
     return None
-
 
 @pytest.mark.parametrize(
     "text",
@@ -70,7 +56,6 @@ def test_classification_matches_legacy_for_single_category(
         orchestrator, text
     )
 
-
 def test_classification_prioritizes_equip_over_mine(
     orchestrator: AgentOrchestrator,
 ) -> None:
@@ -79,7 +64,6 @@ def test_classification_prioritizes_equip_over_mine(
     text = "採掘に行く前にツルハシを装備して採掘を開始"
     assert legacy_classify(orchestrator, text) == "mine"
     assert orchestrator.task_router.classify_action_task(text) == "equip"
-
 
 def test_classification_handles_punctuated_text(
     orchestrator: AgentOrchestrator,

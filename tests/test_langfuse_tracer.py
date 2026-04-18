@@ -1,12 +1,6 @@
 from pathlib import Path
-import sys
 
 import pytest
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
 
 from runtime.minedojo import MineDojoSelfDialogueExecutor  # type: ignore  # noqa: E402
 from planner import ReActStep  # type: ignore  # noqa: E402
@@ -16,7 +10,6 @@ from services.minedojo_client import (  # type: ignore  # noqa: E402
     MineDojoMission,
 )
 from utils.langfuse_tracer import ThoughtActionObservationTracer  # type: ignore  # noqa: E402
-
 
 class StubObservation:
     """Langfuse Observation の update/end を記録するテストダブル。"""
@@ -34,7 +27,6 @@ class StubObservation:
         self.ended = True
         return self
 
-
 class StubLangfuseClient:
     """Langfuse SDK 呼び出しを記録するシンプルなテストダブル。"""
 
@@ -50,7 +42,6 @@ class StubLangfuseClient:
     def flush(self) -> None:
         self.flushed = True
 
-
 class StubActions:
     """Mineflayer 連携の代わりに呼び出し内容を記録するダミー実装。"""
 
@@ -65,7 +56,6 @@ class StubActions:
     async def invoke_skill(self, skill_id: str, *, context: str | None = None):  # type: ignore[override]
         self.invoked.append({"skill_id": skill_id, "context": context})
         return {"ok": True, "skill_id": skill_id, "context": context}
-
 
 class StubMineDojoClient(MineDojoClient):
     """fetch 系のみスタブ化した MineDojo クライアント。"""
@@ -101,7 +91,6 @@ class StubMineDojoClient(MineDojoClient):
     async def record_mission_outcome(self, mission_id: str, *, outcome):  # type: ignore[override]
         return {"mission_id": mission_id, "outcome": outcome}
 
-
 def test_thought_action_observation_tracer_records_runs() -> None:
     client = StubLangfuseClient()
     tracer = ThoughtActionObservationTracer(
@@ -121,7 +110,6 @@ def test_thought_action_observation_tracer_records_runs() -> None:
     assert client.created_observations[0].payload["name"] == "demo"
     assert client.created_observations[0].updates, "Langfuse クライアントへ update が送信されていません"
     assert client.flushed is True
-
 
 @pytest.mark.anyio
 async def test_self_dialogue_executor_updates_skill_and_invokes(tmp_path: Path) -> None:

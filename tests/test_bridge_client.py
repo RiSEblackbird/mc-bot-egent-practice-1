@@ -4,16 +4,11 @@
 from __future__ import annotations
 
 import pathlib
-import sys
 import unittest
 
 import httpx
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT / "python"))
-
 from bridge_client import BridgeClient, BridgeError  # noqa: E402
-
 
 class BridgeClientTest(unittest.TestCase):
     def test_bridge_error_contains_payload_and_status(self) -> None:
@@ -33,7 +28,6 @@ class BridgeClientTest(unittest.TestCase):
         self.assertTrue(err.payload.get("stop"))
 
         client.close()
-
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

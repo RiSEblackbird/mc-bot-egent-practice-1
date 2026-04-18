@@ -1,24 +1,17 @@
 """initialize_agent_runtime の注入ロジックに関するテスト。"""
 
 from __future__ import annotations
+from pathlib import Path
 
 from dataclasses import dataclass
-from pathlib import Path
-import sys
 
 import pytest
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from agent_settings import AgentRuntimeSettings  # type: ignore  # noqa: E402
 from config import AgentConfig, DashboardConfig, LangfuseConfig, MineDojoConfig  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from runtime.inventory_sync import InventorySynchronizer  # type: ignore  # noqa: E402
-
 
 @dataclass
 class StubActions:
@@ -39,7 +32,6 @@ class StubActions:
         # status_service 側の呼び出しをモックしやすくするため、固定レスポンスを返す。
         return {"ok": True, "data": {"kind": kind}}
 
-
 class SkillRepositoryStub:
     """永続化を伴わないテスト用のスキルリポジトリスタブ。"""
 
@@ -49,13 +41,11 @@ class SkillRepositoryStub:
     async def record_usage(self, skill_id: str, *, success: bool) -> None:  # pragma: no cover - 呼び出しはテスト外
         self.recorded.append(skill_id)
 
-
 class MineDojoClientStub:
     """MineDojoClient の差し替え用にフィールドのみを持つ簡易スタブ。"""
 
     def __init__(self) -> None:
         self.used = False
-
 
 @pytest.fixture
 def base_config(tmp_path: Path) -> AgentConfig:
@@ -98,7 +88,6 @@ def base_config(tmp_path: Path) -> AgentConfig:
         ),
     )
 
-
 def test_initialize_agent_runtime_applies_custom_settings(base_config: AgentConfig) -> None:
     """カスタム設定が PlanRuntimeContext と依存セットに伝搬することを確認する。"""
 
@@ -131,7 +120,6 @@ def test_initialize_agent_runtime_applies_custom_settings(base_config: AgentConf
     assert orchestrator._plan_runtime.structured_event_history_limit == 42
     assert orchestrator._plan_runtime.perception_history_limit == 24
     assert orchestrator._dependencies.runtime_settings is runtime_settings
-
 
 def test_initialize_agent_runtime_respects_dependency_overrides(
     base_config: AgentConfig,

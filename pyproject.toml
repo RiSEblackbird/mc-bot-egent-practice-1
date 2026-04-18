@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mc-bot-agent"
+version = "0.1.0"
+description = "Minecraft bot orchestrator components"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+mc-bot-agent = "mc_bot_agent_entrypoint:run"
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+py-modules = [
+  "agent",
+  "agent_bootstrap",
+  "agent_lifecycle",
+  "agent_orchestrator",
+  "agent_settings",
+  "bridge_client",
+  "bridge_role_handler",
+  "bridge_ws",
+  "chat_pipeline",
+  "cli",
+  "config",
+  "langgraph_state",
+  "mc_bot_agent_entrypoint",
+  "memory",
+  "perception_service",
+  "planner_config",
+]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = [
+  "actions",
+  "dashboard",
+  "llm",
+  "modes",
+  "orchestrator",
+  "planner",
+  "runtime",
+  "services",
+  "skills",
+  "utils",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

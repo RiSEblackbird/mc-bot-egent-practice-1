@@ -1,0 +1,31 @@
+## Phase 2 完了報告
+- 変更概要:
+  - `pyproject.toml` を追加し、Python 実装を editable install 可能な installable package 構成へ移行。
+  - 既存の `sys.path`/`PYTHONPATH` 前提を削減するため、`mc_bot_agent_entrypoint` を導入し、起動スクリプトと CI の Python install フローを更新。
+  - `tests/` 配下の `sys.path` 挿入を除去し、パッケージインストール後の import 経路を正本化。
+  - README の Python セットアップ/ホットリロード実行例を新しい起動モジュールに同期。
+- 主な変更ファイル:
+  - `pyproject.toml`
+  - `python/mc_bot_agent_entrypoint.py`
+  - `python/__main__.py`
+  - `scripts/setup-python-env.sh`
+  - `scripts/run-python-agent.sh`
+  - `scripts/run-python-agent-watch.sh`
+  - `.github/workflows/ci.yml`
+  - `tests/*.py`, `tests/integration/*.py`, `tests/e2e/*.py`
+  - `README.md`
+  - `docs/refactor/progress.json`
+- 互換性影響:
+  - Python 実行は editable install (`pip install -e .`) 前提となる。
+  - `python -m python` 実行は内部的に `mc_bot_agent_entrypoint` へフォワードされ、既存利用者の挙動を維持。
+  - テストは `sys.path` 直接操作ではなく、インストール済みモジュール解決に依存する。
+- 実行したコマンド:
+  - `python -m pip install -e .`
+  - `python -m pytest tests/test_langgraph_scenarios.py`
+  - `python -m pytest tests`
+- テスト結果:
+  - すべて成功（88 passed）。
+  - OpenTelemetry span export はローカル collector 不在で警告が出るが、pytest 終了コードは成功。
+- 残課題:
+  - `src/` レイアウトへの再配置は未着手（既存 import 経路の後方互換を維持するため段階移行とする）。
+  - Compose の Python サービスで残る `PYTHONPATH`/起動時 install の整理は Phase 6 で実施する。

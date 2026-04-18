@@ -2,18 +2,10 @@
 """Reflexion メモリの永続化とサマリ生成ロジックのユニットテスト。"""
 
 from __future__ import annotations
-
 from pathlib import Path
-import sys
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
 
 from memory import Memory  # type: ignore  # noqa: E402
 from services.reflection_store import ReflectionStore  # type: ignore  # noqa: E402
-
 
 def test_reflection_memory_persistence(tmp_path: Path) -> None:
     """反省ログの保存と再読み込みが行えることを確認する。"""
@@ -47,7 +39,6 @@ def test_reflection_memory_persistence(tmp_path: Path) -> None:
 
     prompt_logs = reloaded.export_reflections_for_prompt(task_signature=signature, limit=1)
     assert prompt_logs[0]["improvement"] == prompt
-
 
 def test_reflection_signature_normalization(tmp_path: Path) -> None:
     """ステップ文字列の空白揺れが署名生成で吸収されることを確認する。"""

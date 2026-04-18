@@ -5,26 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
-import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-STUB_DIR = PROJECT_ROOT / "tests" / "stubs"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-if str(STUB_DIR) not in sys.path:
-    sys.path.insert(0, str(STUB_DIR))
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from bridge_client import BRIDGE_RETRY, BridgeClient, BridgeError  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from utils import setup_logger  # type: ignore  # noqa: E402
 from utils.logging import StructuredLogFormatter  # type: ignore  # noqa: E402
-
 
 class PassiveActions:
     """Mineflayer 呼び出しをスタブ化した受動的アクション群。"""
@@ -53,7 +42,6 @@ class PassiveActions:
     ) -> Dict[str, Any]:
         return {"ok": True, "ores": list(ore_names)}
 
-
 def _run_build_node(
     orchestrator: AgentOrchestrator,
     backlog: List[Dict[str, str]],
@@ -69,7 +57,6 @@ def _run_build_node(
         )
 
     return asyncio.run(runner())
-
 
 def test_structured_log_outputs_json() -> None:
     logger = setup_logger("test.struct")
@@ -95,7 +82,6 @@ def test_structured_log_outputs_json() -> None:
     assert payload["event_level"] == "progress"
     assert payload["context"]["foo"] == "bar"
     assert payload["context"]["count"] == 2
-
 
 def test_building_recovery_logs_recovery_event(caplog: pytest.LogCaptureFixture) -> None:
     actions = PassiveActions()
@@ -130,7 +116,6 @@ def test_building_recovery_logs_recovery_event(caplog: pytest.LogCaptureFixture)
     context = getattr(record, "structured_context", {})
     assert context.get("resumed") is True
     assert context.get("phase") in {"placement", "inspection"}
-
 
 def test_bridge_client_logs_fault_on_disconnect(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch

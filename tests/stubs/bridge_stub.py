@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List
 
-
 class BridgeStub:
     """TunnelMode の統合テストで利用する単純なスタブ実装。"""
 
@@ -56,6 +55,5 @@ class BridgeStub:
     def stop(self, job_id: str):
         self.stopped = True
         return {"ok": True}
-
 
 __all__ = ["BridgeStub"]

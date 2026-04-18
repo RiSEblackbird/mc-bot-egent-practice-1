@@ -1,20 +1,12 @@
 # -*- coding: utf-8 -*-
 """move_handler モジュールの単体テスト。"""
 import asyncio
-from pathlib import Path
-import sys
 from typing import Any, Dict, Optional, Tuple
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from services.movement_service import MovementResult
 from runtime.move_handler import handle_move
-
 
 class DummyOrchestrator:
     """移動ハンドラが参照する orchestrator API を最小限で模倣するテスト用スタブ。"""
@@ -53,14 +45,12 @@ class DummyOrchestrator:
 
         return _StubMovementService()
 
-
 class MemoryStub:
     def __init__(self, data: Optional[Dict[str, Any]] = None) -> None:
         self._data = data or {}
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
-
 
 class FollowOrchestrator(DummyOrchestrator):
     """追従コマンド経由で move_to_player を検証するスタブ。"""
@@ -85,7 +75,6 @@ class FollowOrchestrator(DummyOrchestrator):
 
         self.actions = _Actions(self)
 
-
 def test_handle_move_uses_explicit_coordinates():
     orchestrator = DummyOrchestrator()
     state: Dict[str, Any] = {
@@ -102,7 +91,6 @@ def test_handle_move_uses_explicit_coordinates():
     assert result == {"handled": True, "updated_target": (1, 2, 3), "failure_detail": None}
     assert orchestrator._move_requests == ((1, 2, 3),)
     assert orchestrator._reported == {}
-
 
 def test_handle_move_falls_back_to_default_and_reports_barrier():
     orchestrator = DummyOrchestrator()
@@ -124,7 +112,6 @@ def test_handle_move_falls_back_to_default_and_reports_barrier():
     assert orchestrator._move_requests == ((5, 5, 5),)
     assert "どこかへ移動" in orchestrator._reported
     assert "既定座標" in orchestrator._reported["どこかへ移動"]
-
 
 def test_handle_move_adds_backlog_when_hungry_and_role_changed():
     orchestrator = DummyOrchestrator()
@@ -152,7 +139,6 @@ def test_handle_move_adds_backlog_when_hungry_and_role_changed():
     role_entry = next(item for item in state["backlog"] if item["category"] == "role")
     assert role_entry["role"] == "builder"
 
-
 def test_handle_move_returns_failure_when_move_rejected():
     orchestrator = DummyOrchestrator()
     orchestrator._extracted = (0, 0, 0)
@@ -171,7 +157,6 @@ def test_handle_move_returns_failure_when_move_rejected():
     assert result["handled"] is False
     assert result["updated_target"] == (7, 7, 7)
     assert "blocked" in result["failure_detail"]
-
 
 def test_handle_move_follows_last_requester_when_state_missing_target():
     orchestrator = FollowOrchestrator()
