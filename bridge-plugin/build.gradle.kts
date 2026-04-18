@@ -22,16 +22,34 @@ repositories {
     maven("https://maven.enginehub.org/repo/")
 }
 
+
+configurations.configureEach {
+    exclude(group = "com.sk89q", module = "jchronic")
+    exclude(group = "com.sk89q.lib", module = "jlibnoise")
+}
+
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
-    compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
-    compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
+    compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.12") {
+        exclude(group = "io.papermc", module = "paperlib")
+    }
+    compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.3.9") {
+        exclude(group = "io.papermc", module = "paperlib")
+        exclude(group = "com.sk89q", module = "jchronic")
+        exclude(group = "com.sk89q.lib", module = "jlibnoise")
+    }
     implementation("com.fasterxml.jackson.core:jackson-databind:2.21.2")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.21.2")
     compileOnly(files("libs/CoreProtect-22.0.jar"))
     testImplementation("io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT")
-    testImplementation("com.sk89q.worldguard:worldguard-bukkit:7.0.12")
-    testImplementation("com.sk89q.worldedit:worldedit-bukkit:7.3.9")
+    testImplementation("com.sk89q.worldguard:worldguard-bukkit:7.0.12") {
+        exclude(group = "io.papermc", module = "paperlib")
+    }
+    testImplementation("com.sk89q.worldedit:worldedit-bukkit:7.3.9") {
+        exclude(group = "io.papermc", module = "paperlib")
+        exclude(group = "com.sk89q", module = "jchronic")
+        exclude(group = "com.sk89q.lib", module = "jlibnoise")
+    }
     testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
     testImplementation("org.mockito:mockito-core:5.23.0")
