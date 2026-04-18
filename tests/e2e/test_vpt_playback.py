@@ -4,15 +4,6 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
-
 from actions import Actions  # type: ignore  # noqa: E402
 from bridge_ws import BotBridge  # type: ignore  # noqa: E402
 from services import VPTController  # type: ignore  # noqa: E402

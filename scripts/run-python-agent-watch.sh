@@ -10,6 +10,5 @@ if [[ ! -x "$watchfiles_bin" || ! -x "$venv_python" ]]; then
   exit 1
 fi
 
-export PYTHONPATH="$repo_root:$repo_root/python${PYTHONPATH:+:$PYTHONPATH}"
 cd "$repo_root"
 exec "$watchfiles_bin" --filter python --ignore-paths .venv -- "$venv_python -m python"

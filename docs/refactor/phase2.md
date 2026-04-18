@@ -1,0 +1,29 @@
+## Phase 2 進捗報告（slice 1）
+- 変更概要:
+  - `pyproject.toml` を追加し、setuptools ベースで installable project の土台を作成。
+  - Python セットアップ/CI/Compose で `pip install --no-deps -e .` を追加し、editable install 経路を導入。
+  - `python/__main__.py` から `sys.path.insert()` を削除し、公開 `main()` エントリポイントを定義。
+  - `scripts/run-python-agent*.sh` から `PYTHONPATH` 注入を除去。
+  - `tests/` 側の `sys.path.insert()` を段階的に削除（主要ケース）。
+- 主な変更ファイル:
+  - `pyproject.toml`
+  - `python/__main__.py`
+  - `scripts/setup-python-env.sh`
+  - `scripts/run-python-agent.sh`
+  - `scripts/run-python-agent-watch.sh`
+  - `.github/workflows/ci.yml`
+  - `docker-compose.yml`
+  - `tests/**/*.py`
+  - `docs/refactor/progress.json`
+- 互換性影響:
+  - 起動コマンドは維持（`python -m python`）しつつ、editable install を追加した。
+  - 完全な `src/` レイアウト移行は次 slice で継続する。
+- 実行したコマンド:
+  - `python -m pytest tests`
+  - `cd bridge-plugin && gradle test`
+- テスト結果:
+  - Python test は成功。
+  - Bridge test は成功。
+- 残課題:
+  - package 名の最終整理（`src/mc_bot_agent/` への実体移動）。
+  - すべての import を package 参照へ統一。

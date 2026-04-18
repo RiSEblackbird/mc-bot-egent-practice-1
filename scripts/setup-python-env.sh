@@ -33,7 +33,8 @@ fi
 
 "$python_bin" -m venv "$venv_dir"
 "$venv_dir/bin/python" -m pip install --upgrade pip
-"$venv_dir/bin/python" -m pip install -r "$repo_root/requirements.txt"
+"$venv_dir/bin/python" -m pip install -r "$repo_root/requirements.txt" -c "$repo_root/constraints.txt"
+"$venv_dir/bin/python" -m pip install --no-deps -e "$repo_root"
 
 printf 'Python environment is ready at %s\n' "$venv_dir"
 printf 'Run the agent with: bash scripts/run-python-agent.sh\n'

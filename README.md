@@ -124,7 +124,7 @@ bash scripts/run-node-bot.sh dev
 ### 4) Python（LLM エージェント）起動
 
 ```bash
-bash scripts/setup-python-env.sh
+bash scripts/setup-python-env.sh  # requirements.txt + constraints.txt + editable install (pyproject.toml)
 bash scripts/run-python-agent.sh
 ```
 
@@ -135,6 +135,8 @@ bash scripts/run-python-agent-watch.sh
 ```
 
 > 補足: macOS では `python` が 3.7 系を指す環境があるため、README のコマンドは `python3` 優先で動くスクリプトへ寄せています。
+
+> 補足: Python 実行パッケージは `pyproject.toml` を正本として editable install できる構成です（`bash scripts/setup-python-env.sh` で自動実行）。
 
 ### 5) Minecraft でチャットする
 
@@ -159,7 +161,7 @@ cp env.example .env  # まだ .env が無い場合
 docker compose up --build
 ```
 
-- **Node**: `npm run dev`（`tsx`）で自動再起動
+- **Node**: `npm ci` 後に `npm run dev`（`tsx`）で自動再起動
 - **Python**: `watchfiles --filter python --ignore-paths .venv -- "python -m python"` で自動再起動
 
 Docker Desktop を使う macOS / Windows では上記のままで構いません。Linux で Compose コンテナからホスト上の Paper / OpenTelemetry Collector へ到達させたい場合は、`host-gateway` を追加する override を重ねて起動してください。

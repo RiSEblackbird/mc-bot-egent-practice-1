@@ -3,11 +3,6 @@ import sys
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from runtime.minedojo import MineDojoSelfDialogueExecutor  # type: ignore  # noqa: E402
 from planner import ReActStep  # type: ignore  # noqa: E402
 from services.minedojo_client import (  # type: ignore  # noqa: E402

@@ -6,19 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
-STUB_DIR = PROJECT_ROOT / "tests" / "stubs"
-if str(STUB_DIR) not in sys.path:
-    sys.path.insert(0, str(STUB_DIR))
-
-
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 

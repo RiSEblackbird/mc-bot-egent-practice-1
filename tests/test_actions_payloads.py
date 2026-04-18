@@ -7,11 +7,6 @@ from typing import Any, Dict, List, Sequence
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from actions import ActionValidationError, Actions  # type: ignore  # noqa: E402
 
 

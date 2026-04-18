@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mc-bot-agent"
+version = "0.1.0"
+description = "Minecraft autonomous bot agent runtime"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+include-package-data = true
+py-modules = [
+    "agent",
+    "agent_bootstrap",
+    "agent_lifecycle",
+    "agent_orchestrator",
+    "agent_settings",
+    "bridge_client",
+    "bridge_role_handler",
+    "bridge_ws",
+    "chat_pipeline",
+    "cli",
+    "config",
+    "langgraph_state",
+    "memory",
+    "perception_service",
+    "planner_config",
+]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "python",
+  "tests/stubs",
+]
