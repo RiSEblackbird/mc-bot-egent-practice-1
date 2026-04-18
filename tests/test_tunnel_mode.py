@@ -7,17 +7,12 @@ import asyncio
 import unittest
 
 import pathlib
-import sys
-
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT / "python"))
 
 from bridge_client import BridgeError
 from heuristics.artificial_filters import build_mining_mask
 from modes import tunnel
 from modes.tunnel import TunnelMode, TunnelSection
 from tests.stubs.bridge_stub import BridgeStub
-
 
 class FakeActions:
     """Actions の非同期メソッドを記録するテストダブル。"""
@@ -33,7 +28,6 @@ class FakeActions:
     async def place_torch(self, position):  # type: ignore[no-untyped-def]
         self.torches.append(dict(position))
         return {"ok": True}
-
 
 class MiningMaskTest(unittest.TestCase):
     def test_build_mining_mask_filters_conditions(self) -> None:
@@ -67,7 +61,6 @@ class MiningMaskTest(unittest.TestCase):
         ]
         mask = build_mining_mask(evaluations, cp_results)
         self.assertEqual(mask, [True, False, False])
-
 
 class TunnelModeTest(unittest.IsolatedAsyncioTestCase):
     async def test_tunnel_progress_and_torch(self) -> None:
@@ -122,7 +115,6 @@ class TunnelModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bridge.started)
         self.assertTrue(bridge.stopped)
         self.assertLessEqual(bridge.advanced_steps, 1)
-
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

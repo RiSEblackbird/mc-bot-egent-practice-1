@@ -3,18 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
-
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
@@ -25,7 +16,6 @@ from services import (  # type: ignore  # noqa: E402
     restore_checkpoint,
     rollback_building_state,
 )
-
 
 class PassiveActions:
     """Mineflayer 呼び出しをスタブ化したアクション群。"""
@@ -59,13 +49,11 @@ class PassiveActions:
     ) -> Dict[str, Any]:
         return {"ok": True, "ores": list(ore_names)}
 
-
 @pytest.fixture
 def building_orchestrator() -> AgentOrchestrator:
     actions = PassiveActions()
     memory = Memory()
     return AgentOrchestrator(actions, memory)
-
 
 def _run_build_node(
     orchestrator: AgentOrchestrator,
@@ -80,7 +68,6 @@ def _run_build_node(
         )
 
     return asyncio.run(runner())
-
 
 def test_checkpoint_restoration_and_procurement_plan(building_orchestrator: AgentOrchestrator) -> None:
     orchestrator = building_orchestrator
@@ -119,7 +106,6 @@ def test_checkpoint_restoration_and_procurement_plan(building_orchestrator: Agen
     assert "placement" in backlog[0]
     assert "glass:4" in backlog[0]["procurement"]
 
-
 def test_phase_transition_to_placement_and_inspection(building_orchestrator: AgentOrchestrator) -> None:
     orchestrator = building_orchestrator
     requirements = {"oak_planks": 3}
@@ -150,7 +136,6 @@ def test_phase_transition_to_placement_and_inspection(building_orchestrator: Age
     assert failure_second is None
     assert backlog_second[0]["phase"] == BuildingPhase.INSPECTION.value
     assert backlog_second[0]["placement"] == "なし"
-
 
 def test_rollback_restores_previous_phase(building_orchestrator: AgentOrchestrator) -> None:
     orchestrator = building_orchestrator

@@ -5,20 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-import sys
-
 pytest.importorskip("langgraph")
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
@@ -33,7 +25,6 @@ from planner import (  # type: ignore  # noqa: E402
 from runtime.action_graph import UnifiedAgentGraph  # type: ignore  # noqa: E402
 from langgraph_state import UnifiedPlanState  # type: ignore  # noqa: E402
 
-
 class MoveFailureActions:
     """移動アクションを常に失敗させるテスト用スタブ。"""
 
@@ -42,7 +33,6 @@ class MoveFailureActions:
 
     async def move_to(self, x: int, y: int, z: int) -> Dict[str, Any]:
         return {"ok": False, "error": "path blocked"}
-
 
 class NoOpActions:
     """行動系コマンドをすべて成功扱いで無視するスタブ。"""
@@ -79,20 +69,17 @@ class NoOpActions:
     ) -> Dict[str, Any]:
         return {"ok": True, "ores": list(ore_names)}
 
-
 @pytest.fixture
 def orchestrator_with_failure() -> AgentOrchestrator:
     actions = MoveFailureActions()
     memory = Memory()
     return AgentOrchestrator(actions, memory)
 
-
 @pytest.fixture
 def orchestrator_noop() -> AgentOrchestrator:
     actions = NoOpActions()
     memory = Memory()
     return AgentOrchestrator(actions, memory)
-
 
 def test_action_graph_reports_move_failure(orchestrator_with_failure: AgentOrchestrator) -> None:
     backlog: List[Dict[str, str]] = []
@@ -111,7 +98,6 @@ def test_action_graph_reports_move_failure(orchestrator_with_failure: AgentOrche
     assert updated is None
     assert failure is not None and "blocked" in failure
     assert backlog == []
-
 
 def test_action_graph_parallel_modules_do_not_share_backlog(orchestrator_noop: AgentOrchestrator) -> None:
     backlog: List[Dict[str, str]] = []
@@ -137,7 +123,6 @@ def test_action_graph_parallel_modules_do_not_share_backlog(orchestrator_noop: A
     modules = {entry.get("module") for entry in backlog}
     assert modules == {"building", "defense"}
     assert len(backlog) == 2
-
 
 def test_action_directive_overrides_category(
     monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator
@@ -175,7 +160,6 @@ def test_action_directive_overrides_category(
 
     assert recorded["category"] == "mine"
     assert recorded["explicit_coords"] == (5, 60, -3)
-
 
 def test_plan_graph_priority_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     class DummyResponse:
@@ -221,7 +205,6 @@ def test_plan_graph_priority_updates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert asyncio.run(get_plan_priority()) == "normal"
 
     asyncio.run(reset_plan_priority())
-
 
 def test_low_confidence_triggers_pre_action_review(monkeypatch: pytest.MonkeyPatch) -> None:
     class DummyResponse:
@@ -290,7 +273,6 @@ def test_low_confidence_triggers_pre_action_review(monkeypatch: pytest.MonkeyPat
     assert result.backlog
     assert result.backlog[-1]["label"] == "自動確認"
 
-
 def test_react_loop_logs_observations(
     caplog: pytest.LogCaptureFixture, orchestrator_noop: AgentOrchestrator
 ) -> None:
@@ -326,7 +308,6 @@ def test_react_loop_logs_observations(
     assert "X=" in react_logs[1]["observation"] or "報告" in react_logs[1]["observation"]
     assert plan_out.react_trace[0].observation.startswith("移動成功")
 
-
 def test_unified_graph_success(monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator) -> None:
     async def stub_plan(_: str, __: Dict[str, Any]) -> PlanOut:
         return PlanOut(plan=["南へ移動"], resp="了解しました。", intent="move")
@@ -344,7 +325,6 @@ def test_unified_graph_success(monkeypatch: pytest.MonkeyPatch, orchestrator_noo
     events = result.get("structured_events") or []
     labels = {event.get("step_label") for event in events}
     assert {"analyze_intent", "generate_plan", "dispatch_action", "mineflayer_node"}.issubset(labels)
-
 
 def test_unified_graph_plan_failure(monkeypatch: pytest.MonkeyPatch, orchestrator_noop: AgentOrchestrator) -> None:
     async def failing_plan(_: str, __: Dict[str, Any]) -> PlanOut:

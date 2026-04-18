@@ -1,19 +1,11 @@
 # -*- coding: utf-8 -*-
 """building_plan_processor モジュールの単体テスト。"""
 import logging
-from pathlib import Path
-import sys
 from typing import Any, Dict
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from runtime.building_plan_processor import BuildingPlanProcessor
-
 
 class DummyMemory:
     """BuildingPlanProcessor が利用する永続メモリを簡易的に模倣する。"""
@@ -27,14 +19,12 @@ class DummyMemory:
     def set(self, key: str, value: Any) -> None:
         self._store[key] = value
 
-
 class DummyOrchestrator:
     """建築計画用の orchestrator 依存を最小化したスタブ。"""
 
     def __init__(self):
         self.memory = DummyMemory()
         self.logger = logging.getLogger("building-plan-test")
-
 
 def _create_state(step: str) -> Dict[str, Any]:
     return {
@@ -44,7 +34,6 @@ def _create_state(step: str) -> Dict[str, Any]:
         "last_target_coords": (0, 0, 0),
         "active_role": "builder",
     }
-
 
 def test_process_creates_checkpoint_and_backlog_entries():
     orchestrator = DummyOrchestrator()
@@ -68,7 +57,6 @@ def test_process_creates_checkpoint_and_backlog_entries():
     assert state["backlog"][0]["module"] == "building"
     assert "procurement" in state["backlog"][0]
     assert orchestrator.memory.get("building_checkpoint_base_id").startswith("building:")
-
 
 def test_process_marks_resumed_and_updates_placement_snapshot():
     orchestrator = DummyOrchestrator()

@@ -13,7 +13,6 @@ END = "__end__"
 NodeCallable = Callable[[MutableMapping[str, Any]], Awaitable[Dict[str, Any]] | Dict[str, Any]]
 ResolverCallable = Callable[[MutableMapping[str, Any]], Any]
 
-
 class StateGraph:
     """LangGraph StateGraph の単純なスタブ実装。"""
 
@@ -39,6 +38,5 @@ class StateGraph:
 
     def compile(self) -> CompiledStateGraph:
         return CompiledStateGraph(self._nodes, self._edges, self._conditional)
-
 
 __all__ = ["START", "END", "StateGraph"]

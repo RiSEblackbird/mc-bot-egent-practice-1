@@ -8,17 +8,8 @@ import logging
 
 import pytest
 
-import sys
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from orchestrator.action_analyzer import ActionAnalyzer  # type: ignore  # noqa: E402
 from orchestrator.task_router import TaskRouter  # type: ignore  # noqa: E402
-
 
 @dataclass
 class StubChatPipeline:
@@ -65,7 +56,6 @@ class StubChatPipeline:
     ) -> None:
         self.detection_calls.append((list(reports), already_responded))
 
-
 @dataclass
 class StubSkillDetection:
     """SkillDetectionCoordinator を置き換える簡易スタブ。"""
@@ -102,7 +92,6 @@ class StubSkillDetection:
     ) -> Tuple[bool, Optional[str]]:
         return self.exploration_response
 
-
 @pytest.fixture()
 def task_router() -> TaskRouter:
     """ActionAnalyzer とスタブ依存から TaskRouter を構築する。"""
@@ -127,12 +116,10 @@ def task_router() -> TaskRouter:
     router._skill_detection = skill_detection  # type: ignore[attr-defined]
     return router
 
-
 def test_classify_detection_task_uses_keyword(task_router: TaskRouter) -> None:
     """キーワードに基づいて検出タスクが適切に分類されることを確認する。"""
 
     assert task_router.classify_detection_task("現在位置を教えて") == "player_position"
-
 
 @pytest.mark.anyio
 async def test_perform_detection_task_reports_barrier(task_router: TaskRouter) -> None:
@@ -145,7 +132,6 @@ async def test_perform_detection_task_reports_barrier(task_router: TaskRouter) -
     assert task_router._barrier_calls == [  # type: ignore[attr-defined]
         ("現在位置の確認", "ステータス取得に失敗しました（timeout）。")
     ]
-
 
 @pytest.mark.anyio
 async def test_handle_backlog_and_reports_delegate(task_router: TaskRouter) -> None:
@@ -163,7 +149,6 @@ async def test_handle_backlog_and_reports_delegate(task_router: TaskRouter) -> N
     assert task_router._chat_pipeline.detection_calls == [  # type: ignore[attr-defined]
         (reports, True)
     ]
-
 
 @pytest.mark.anyio
 async def test_skill_delegation_and_pickaxe_selection(task_router: TaskRouter) -> None:

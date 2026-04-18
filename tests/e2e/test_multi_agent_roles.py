@@ -1,27 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
-STUB_DIR = PROJECT_ROOT / "tests" / "stubs"
-if str(STUB_DIR) not in sys.path:
-    sys.path.insert(0, str(STUB_DIR))
-
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
-
 
 ROLE_LABELS = {
     "generalist": "汎用サポーター",
@@ -29,7 +15,6 @@ ROLE_LABELS = {
     "supplier": "補給調整",
     "scout": "先行偵察",
 }
-
 
 class RecordingActions:
     """テスト用にアクション呼び出しを記録する簡易スタブ。"""
@@ -68,7 +53,6 @@ class RecordingActions:
         label = ROLE_LABELS.get(role_id, role_id)
         return {"ok": True, "data": {"roleId": role_id, "label": label}}
 
-
 def test_defender_role_selected_when_threat_detected() -> None:
     async def runner() -> None:
         actions = RecordingActions()
@@ -104,7 +88,6 @@ def test_defender_role_selected_when_threat_detected() -> None:
         assert active_role.get("id") == "defender"
 
     asyncio.run(runner())
-
 
 def test_supplier_role_coordinates_replenishment_meetup() -> None:
     async def runner() -> None:

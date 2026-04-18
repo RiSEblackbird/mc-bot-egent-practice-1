@@ -1,19 +1,11 @@
 from __future__ import annotations
 
 import logging
-import sys
-from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from actions import ActionValidationError, Actions  # type: ignore  # noqa: E402
-
 
 class RecordingBridge:
     """テスト用に送信内容を記録する簡易 WebSocket ブリッジ。"""
@@ -25,7 +17,6 @@ class RecordingBridge:
     async def send(self, payload: Dict[str, Any], **_: Any) -> Dict[str, Any]:  # noqa: D401 - テスト用スタブ
         self.sent.append(payload)
         return self.response | {"echo": payload}
-
 
 class ScriptedBridge(RecordingBridge):
     """送信ごとに異なるレスポンスを返すブリッジ。"""
@@ -42,7 +33,6 @@ class ScriptedBridge(RecordingBridge):
             response = {"ok": True}
         return response | {"echo": payload}
 
-
 @pytest.mark.anyio
 async def test_mine_blocks_payload() -> None:
     bridge = RecordingBridge()
@@ -55,7 +45,6 @@ async def test_mine_blocks_payload() -> None:
         "args": {"positions": [{"x": 1, "y": 64, "z": -3}]},
     }
     assert result["ok"] is True
-
 
 @pytest.mark.anyio
 async def test_place_block_payload_with_face() -> None:
@@ -74,7 +63,6 @@ async def test_place_block_payload_with_face() -> None:
         },
     }
 
-
 @pytest.mark.anyio
 async def test_follow_player_payload() -> None:
     bridge = RecordingBridge()
@@ -87,7 +75,6 @@ async def test_follow_player_payload() -> None:
         "args": {"target": "Taishi", "stopDistance": 4, "maintainLineOfSight": False},
     }
 
-
 @pytest.mark.anyio
 async def test_attack_entity_mode_validation() -> None:
     bridge = RecordingBridge()
@@ -95,7 +82,6 @@ async def test_attack_entity_mode_validation() -> None:
 
     with pytest.raises(ActionValidationError):
         await actions.attack_entity("zombie", mode="invalid")
-
 
 @pytest.mark.anyio
 async def test_craft_item_payload() -> None:
@@ -108,7 +94,6 @@ async def test_craft_item_payload() -> None:
         "type": "craftItem",
         "args": {"item": "oak_planks", "amount": 3, "useCraftingTable": False},
     }
-
 
 @pytest.mark.anyio
 async def test_dispatch_outputs_structured_log(caplog: pytest.LogCaptureFixture) -> None:
@@ -124,7 +109,6 @@ async def test_dispatch_outputs_structured_log(caplog: pytest.LogCaptureFixture)
     assert progress, "dispatch prepared ログが出力されていません"
     assert completed, "dispatch completed ログが出力されていません"
 
-
 @pytest.mark.anyio
 async def test_validate_positions_rejects_empty() -> None:
     bridge = RecordingBridge()
@@ -132,7 +116,6 @@ async def test_validate_positions_rejects_empty() -> None:
 
     with pytest.raises(ActionValidationError):
         await actions.mine_blocks([])
-
 
 @pytest.mark.anyio
 async def test_execute_hybrid_action_uses_vpt_when_available() -> None:
@@ -147,7 +130,6 @@ async def test_execute_hybrid_action_uses_vpt_when_available() -> None:
 
     assert result["executor"] == "vpt"
     assert bridge.sent[-1]["type"] == "playVptActions"
-
 
 @pytest.mark.anyio
 async def test_execute_hybrid_action_falls_back_to_command() -> None:
@@ -167,7 +149,6 @@ async def test_execute_hybrid_action_falls_back_to_command() -> None:
     assert result["executor"] == "command"
     assert len(bridge.sent) == 2
     assert bridge.sent[-1]["type"] == "moveTo"
-
 
 @pytest.mark.anyio
 async def test_execute_hybrid_action_requires_payloads() -> None:

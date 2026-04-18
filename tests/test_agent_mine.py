@@ -3,24 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
-
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
 from skills import SkillMatch, SkillNode  # type: ignore  # noqa: E402
-
 
 class DummyActions:
     """採掘系テストで Mineflayer とのやり取りを記録するスタブ。"""
@@ -64,7 +53,6 @@ class DummyActions:
         )
         return {"ok": True}
 
-
 @pytest.fixture
 def orchestrator_fixture() -> Tuple[AgentOrchestrator, DummyActions, Memory]:
     """アクションとメモリを差し替えた Orchestrator のテスト用インスタンス。"""
@@ -73,7 +61,6 @@ def orchestrator_fixture() -> Tuple[AgentOrchestrator, DummyActions, Memory]:
     memory = Memory()
     orchestrator = AgentOrchestrator(actions, memory)
     return orchestrator, actions, memory
-
 
 def test_mine_skips_when_suitable_pickaxe_exists(
     orchestrator_fixture: Tuple[AgentOrchestrator, DummyActions, Memory]
@@ -115,7 +102,6 @@ def test_mine_skips_when_suitable_pickaxe_exists(
     assert actions.equip_calls == [
         {"tool_type": "pickaxe", "item_name": None, "destination": "hand"}
     ]
-
 
 def test_mine_continues_when_pickaxe_missing(
     orchestrator_fixture: Tuple[AgentOrchestrator, DummyActions, Memory]
@@ -160,7 +146,6 @@ def test_mine_continues_when_pickaxe_missing(
     ]
     assert actions.equip_calls == []
 
-
 def test_mine_treats_broken_pickaxe_as_missing(
     orchestrator_fixture: Tuple[AgentOrchestrator, DummyActions, Memory]
 ) -> None:
@@ -199,7 +184,6 @@ def test_mine_treats_broken_pickaxe_as_missing(
     assert backlog == []
     assert len(actions.mine_calls) == 1
     assert actions.equip_calls == []
-
 
 class SkillFallbackActions:
     """登録外スキル応答を模倣し、フォールバック処理を検証するためのスタブ。"""
@@ -240,7 +224,6 @@ class SkillFallbackActions:
     ) -> Dict[str, Any]:
         return {"ok": True, "tool_type": tool_type, "item_name": item_name, "destination": destination}
 
-
 class SkillRepositoryStub:
     """SkillMatch を固定で提供し、record_usage 呼び出しを観測するテスト専用リポジトリ。"""
 
@@ -260,7 +243,6 @@ class SkillRepositoryStub:
 
     async def record_usage(self, skill_id: str, *, success: bool) -> None:
         self.record_usage_calls.append((skill_id, success))
-
 
 def test_unregistered_skill_falls_back_to_mining_route() -> None:
     """Mineflayer 側で未登録エラーが返っても採掘ヒューリスティックへ進むことを確認する。"""

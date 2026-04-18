@@ -1,24 +1,13 @@
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock
 
-import sys
-
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
-
 pytestmark = pytest.mark.anyio
-
 
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
-
 
 async def test_minedojo_context_is_injected_into_actions_and_memory() -> None:
     pytest.importorskip("langgraph")

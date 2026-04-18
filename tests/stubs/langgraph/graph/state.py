@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Dict, Mapping, MutableMapping, Callable
 
-
 NodeCallable = Callable[[MutableMapping[str, Any]], Awaitable[Dict[str, Any]] | Dict[str, Any]]
 ResolverCallable = Callable[[MutableMapping[str, Any]], Any]
-
 
 class CompiledStateGraph:
     """StateGraph.compile() が返す簡易スタブ。"""
@@ -53,6 +51,5 @@ class CompiledStateGraph:
             current = node_name
 
         return state
-
 
 __all__ = ["CompiledStateGraph"]

@@ -2,19 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
-
-import sys
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PYTHON_DIR = PROJECT_ROOT / "python"
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 
 from agent import AgentOrchestrator  # type: ignore  # noqa: E402
 from memory import Memory  # type: ignore  # noqa: E402
@@ -24,7 +14,6 @@ from planner import (  # type: ignore  # noqa: E402
     plan,
     reset_plan_priority,
 )
-
 
 class ReplanActions:
     """Mineflayer とのやり取りを模したスタブで再計画フローを観察する。"""
@@ -85,7 +74,6 @@ class ReplanActions:
     async def move_to(self, x: int, y: int, z: int) -> Dict[str, bool]:
         return {"ok": True}
 
-
 class EquipFailureActions:
     """装備失敗シナリオを再現し、インベントリ更新フローを検証するスタブ。"""
 
@@ -131,7 +119,6 @@ class EquipFailureActions:
             "error": "Requested item is not available in inventory",
         }
 
-
 class AutoRecoveryActions:
     """MineDojo 自動リカバリー用の最小アクションスタブ。"""
 
@@ -141,7 +128,6 @@ class AutoRecoveryActions:
     async def say(self, text: str) -> Dict[str, bool]:
         self.say_messages.append(text)
         return {"ok": True}
-
 
 class DummySelfDialogueExecutor:
     def __init__(self) -> None:
@@ -165,7 +151,6 @@ class DummySelfDialogueExecutor:
                 "success": success,
             }
         )
-
 
 def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None:
     """採掘失敗時に障壁通知を挟んで再計画が走ることを統合テストする。"""
@@ -206,7 +191,6 @@ def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None
     assert actions.say_messages[0].startswith("障壁")
     assert any(msg == "代替プランで進めます。" for msg in actions.say_messages)
     assert replan_prompts and "失敗" in replan_prompts[0]
-
 
 def test_equip_failure_refreshes_inventory_and_requests_replan(
     monkeypatch: pytest.MonkeyPatch,
@@ -314,7 +298,6 @@ def test_plan_timeout_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert plan_out.resp == "了解しました。"
     assert priority == "high"
 
-
 def test_barrier_timeout_uses_short_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """障壁通知生成がタイムアウトしても短縮メッセージがチャットへ送信される。"""
 
@@ -361,7 +344,6 @@ def test_barrier_timeout_uses_short_message(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert actions.say_messages[0] == expected_message
 
-
 def test_minedojo_autorecovery_runs_for_empty_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     actions = AutoRecoveryActions()
     memory = Memory()
@@ -387,7 +369,6 @@ def test_minedojo_autorecovery_runs_for_empty_plan(monkeypatch: pytest.MonkeyPat
     assert actions.say_messages
     assert dummy_executor.calls
     assert dummy_executor.calls[0]["mission_id"] == "obtain_diamond"
-
 
 def test_minedojo_autorecovery_skips_without_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     actions = AutoRecoveryActions()

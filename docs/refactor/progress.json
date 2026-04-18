@@ -1,6 +1,6 @@
 {
   "updated_at": "2026-04-18",
-  "current_phase": 1,
+  "current_phase": 2,
   "phases": [
     {
       "phase": 0,
@@ -22,7 +22,12 @@
     {
       "phase": 2,
       "name": "Python package 化",
-      "status": "pending"
+      "status": "completed",
+      "artifacts": [
+        "pyproject.toml",
+        "python/mc_bot_agent_entrypoint.py",
+        "docs/refactor/phase2.md"
+      ]
     },
     {
       "phase": 3,
