@@ -1,0 +1,32 @@
+## Phase 1 完了報告
+- 変更概要:
+  - GitHub Actions の CI (`.github/workflows/ci.yml`) を追加し、Python / Node / Bridge の job を分離。
+  - Node の再現性向上として Compose の `npm install` を `npm ci` へ切替。
+  - Python 依存戦略を `requirements.txt` + `constraints.txt` に明示し、セットアップスクリプトと Compose の install コマンドへ反映。
+  - Bridge の testRuntime で発生していた依存解決失敗（403）に対応するため、WorldGuard / WorldEdit 由来の未取得依存（paperlib, jchronic, jlibnoise）を除外。
+- 主な変更ファイル:
+  - `.github/workflows/ci.yml`
+  - `constraints.txt`
+  - `scripts/setup-python-env.sh`
+  - `docker-compose.yml`
+  - `bridge-plugin/build.gradle.kts`
+  - `README.md`
+  - `docs/refactor/progress.json`
+- 互換性影響:
+  - ランタイム挙動変更は最小限。
+  - Compose 起動時の Node 依存解決は `npm ci` 前提になり lockfile 依存が強化される。
+  - Python の依存導入は constraints を経由するため再現性が向上。
+- 実行したコマンド:
+  - `python -m pytest tests`
+  - `bash scripts/run-node-bot.sh test`
+  - `bash scripts/run-node-bot.sh build`
+  - `cd bridge-plugin && gradle test`
+  - `docker compose config`
+- テスト結果:
+  - Python test は成功。
+  - Node test/build はローカル Node 20 のため失敗（Node 22 要件）。
+  - Bridge test は成功（transitive 依存解決失敗を回避）。
+  - `docker compose config` は docker コマンド未導入のため未実行。
+- 残課題:
+  - 本環境で Node 22 を有効化して Node 側コマンドを再確認する。
+  - CI 実行結果（GitHub Actions 実環境）で最終確認する。

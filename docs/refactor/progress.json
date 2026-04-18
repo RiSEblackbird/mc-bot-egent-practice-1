@@ -1,0 +1,58 @@
+{
+  "updated_at": "2026-04-18",
+  "current_phase": 1,
+  "phases": [
+    {
+      "phase": 0,
+      "name": "現状固定とベースライン採取",
+      "status": "completed",
+      "artifacts": [
+        "docs/refactor/baseline.md"
+      ]
+    },
+    {
+      "phase": 1,
+      "name": "CI / 依存再現性の確立",
+      "status": "completed",
+      "artifacts": [
+        ".github/workflows/ci.yml",
+        "constraints.txt"
+      ]
+    },
+    {
+      "phase": 2,
+      "name": "Python package 化",
+      "status": "pending"
+    },
+    {
+      "phase": 3,
+      "name": "設定分離と transport envelope 統一",
+      "status": "pending"
+    },
+    {
+      "phase": 4,
+      "name": "planner を Structured Outputs 化",
+      "status": "pending"
+    },
+    {
+      "phase": 5,
+      "name": "LangGraph persistence / interrupt 化",
+      "status": "pending"
+    },
+    {
+      "phase": 6,
+      "name": "Docker / Compose 開発フロー更新",
+      "status": "pending"
+    },
+    {
+      "phase": 7,
+      "name": "可観測性・重複整理・最終ドキュメント化",
+      "status": "pending"
+    },
+    {
+      "phase": 8,
+      "name": "研究要素の最小導入",
+      "status": "pending"
+    }
+  ]
+}
