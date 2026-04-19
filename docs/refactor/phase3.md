@@ -1,0 +1,21 @@
+## Phase 3 進捗報告（Slice 1: env 分離）
+- 変更概要:
+  - 開発向け/本番相当向けの環境テンプレートを分離し、`env.dev.example` と `env.prod.example` を追加。
+  - `env.example` は互換レイヤとして残しつつ、将来削除予定であることを明記。
+  - README のセットアップ手順を用途別テンプレート参照に更新。
+- 主な変更ファイル:
+  - `env.dev.example`
+  - `env.prod.example`
+  - `env.example`
+  - `README.md`
+  - `docs/refactor/progress.json`
+- 互換性影響:
+  - 既存の `cp env.example .env` でも起動可能だが、推奨フローは `env.dev.example` / `env.prod.example` へ移行。
+- 実行したコマンド:
+  - `bash scripts/setup-python-env.sh`
+  - `. .venv/bin/activate && python -m pytest tests`
+- テスト結果:
+  - 成功（既存回帰の範囲で影響なし）。
+- 残課題:
+  - transport envelope 導入（契約スキーマ追加、Node/Python validator 統一）。
+  - 旧 ad-hoc payload の legacy adapter 化と deprecation ログ整備。

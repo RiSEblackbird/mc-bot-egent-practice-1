@@ -1,6 +1,6 @@
 {
-  "updated_at": "2026-04-18",
-  "current_phase": 2,
+  "updated_at": "2026-04-19",
+  "current_phase": 3,
   "phases": [
     {
       "phase": 0,
@@ -32,7 +32,12 @@
     {
       "phase": 3,
       "name": "設定分離と transport envelope 統一",
-      "status": "pending"
+      "status": "in_progress",
+      "artifacts": [
+        "env.dev.example",
+        "env.prod.example",
+        "docs/refactor/phase3.md"
+      ]
     },
     {
       "phase": 4,
