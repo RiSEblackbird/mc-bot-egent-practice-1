@@ -3,10 +3,12 @@ import asyncio
 import json
 import logging
 import os
+from uuid import uuid4
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import websockets
 
+from runtime.transport_envelope import make_transport_envelope
 from utils import log_structured_event, setup_logger
 
 logger = setup_logger("bridge")
@@ -46,7 +48,18 @@ class BotBridge:
         ユーザーへ再試行/断念の通知を転送できるフックを提供する。
         """
 
-        logger.info(f"WS send: {payload}")
+        trace_id = uuid4().hex
+        run_id = uuid4().hex
+        command_name = str(payload.get("type") or "unknown")
+        envelope = make_transport_envelope(
+            source="python-agent",
+            kind="command",
+            name=command_name,
+            body=payload,
+            trace_id=trace_id,
+            run_id=run_id,
+        )
+        logger.info("WS send trace_id=%s run_id=%s command=%s", trace_id, run_id, command_name)
         for attempt in range(1, self.max_retries + 1):
             stage = "connect"
             try:
@@ -55,7 +68,7 @@ class BotBridge:
                 ) as ws:
                     stage = "send"
                     await asyncio.wait_for(
-                        ws.send(json.dumps(payload, ensure_ascii=False)),
+                        ws.send(json.dumps(envelope, ensure_ascii=False)),
                         timeout=self.send_timeout,
                     )
                     stage = "recv"
@@ -76,7 +89,7 @@ class BotBridge:
                         "stage": stage,
                         "attempt": attempt,
                         "max_retries": self.max_retries,
-                        "payload": payload,
+                        "payload": envelope,
                         "error_type": error_type,
                     },
                     exc_info=error,

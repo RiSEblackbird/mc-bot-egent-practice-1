@@ -191,6 +191,8 @@ docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --bu
 - **`AGENT_WS_HOST` / `AGENT_WS_PORT`**: Python エージェントの **待受**
 - **`AGENT_WS_URL`**: Node（Mineflayer）が接続する **Python 側の接続先**
   - `0.0.0.0` は待受専用です。接続先には `127.0.0.1` / `host.docker.internal` / `python-agent`（Compose）等、到達可能なホスト名を指定してください。
+- transport payload は `contracts/transport-envelope.schema.json` の envelope（`version`, `trace_id`, `run_id`, `message_id`, `kind`, `name`, `body`）を正本として扱います。
+- 旧 `{type, args}` 形式は互換レイヤで受信可能ですが、deprecation ログを出す暫定運用です。
 
 ### Minecraft / Mineflayer
 

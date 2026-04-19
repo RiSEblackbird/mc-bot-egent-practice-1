@@ -19,3 +19,35 @@
 - 残課題:
   - transport envelope 導入（契約スキーマ追加、Node/Python validator 統一）。
   - 旧 ad-hoc payload の legacy adapter 化と deprecation ログ整備。
+
+## Phase 3 完了報告（Slice 2: transport envelope 導入）
+- 変更概要:
+  - `contracts/transport-envelope.schema.json` を追加し、Node/Python 間の message contract を versioned envelope (`v1`) に統一。
+  - Python (`bridge_ws.py`, `runtime/websocket_server.py`) で送受信時の envelope 生成/検証を導入。
+  - Node (`runtime/server.ts`, `runtime/services/chatBridge.ts`, `runtime/agentBridge.ts`) で envelope 検証と legacy payload adapter を導入。
+- 主な変更ファイル:
+  - `contracts/transport-envelope.schema.json`
+  - `python/runtime/transport_envelope.py`
+  - `python/bridge_ws.py`
+  - `python/runtime/websocket_server.py`
+  - `node-bot/runtime/transportEnvelope.ts`
+  - `node-bot/runtime/server.ts`
+  - `node-bot/runtime/services/chatBridge.ts`
+  - `node-bot/runtime/agentBridge.ts`
+  - `README.md`
+- 互換性影響:
+  - 新規送信は envelope 形式に移行。
+  - 旧 `{type,args}` は受信側 adapter で暫定受理し、deprecation log を出力。
+- 実行したコマンド:
+  - `bash scripts/setup-python-env.sh`
+  - `. .venv/bin/activate && python -m pytest tests/test_actions_payloads.py`
+  - `cd node-bot && npm ci`
+  - `cd node-bot && npm test`
+  - `cd node-bot && npm run build`
+- テスト結果:
+  - Python unit test は成功。
+  - Node 系コマンドは実行環境 Node v20.19.6 のため engine 不一致（要求 Node >=22）で失敗。
+- 残課題:
+  - chat 転送の one-shot WebSocket を長寿命接続クライアントへ統合する。
+  - Bridge plugin 経路を含む envelope 適用範囲の拡張。
+

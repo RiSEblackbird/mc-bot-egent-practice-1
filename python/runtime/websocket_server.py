@@ -6,6 +6,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from pydantic import ValidationError
+
+from runtime.transport_envelope import CURRENT_TRANSPORT_VERSION, make_transport_envelope, validate_transport_envelope
+
 from websockets import WebSocketServerProtocol
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -42,9 +46,13 @@ class AgentWebSocketServer:
             self.logger.error("invalid JSON payload=%s", raw)
             return {"ok": False, "error": "invalid json"}
 
-        payload_type = payload.get("type")
-        if payload_type == "chat":
-            args = payload.get("args") or {}
+        envelope = self._parse_envelope(payload)
+        if envelope is None:
+            return {"ok": False, "error": "invalid envelope"}
+
+        body = envelope.body
+        if envelope.kind == "command" and envelope.name == "chat":
+            args = body.get("args") or {}
             username = str(args.get("username", "")).strip() or "Player"
             message = str(args.get("message", "")).strip()
 
@@ -53,12 +61,42 @@ class AgentWebSocketServer:
                 return {"ok": False, "error": "empty message"}
 
             await self.orchestrator.enqueue_chat(username, message)
-            return {"ok": True}
+            return self._ok_response(envelope)
 
-        if payload_type == "agentEvent":
-            args = payload.get("args") or {}
+        if envelope.kind == "event" and envelope.name == "agentEvent":
+            args = body.get("args") or {}
             await self.orchestrator.handle_agent_event(args)
-            return {"ok": True}
+            return self._ok_response(envelope)
 
-        self.logger.error("unsupported payload type=%s", payload_type)
+        self.logger.error("unsupported envelope kind=%s name=%s", envelope.kind, envelope.name)
         return {"ok": False, "error": "unsupported type"}
+
+    def _parse_envelope(self, payload: Dict[str, Any]):
+        try:
+            envelope = validate_transport_envelope(payload)
+            if envelope.version != CURRENT_TRANSPORT_VERSION:
+                self.logger.error("unsupported envelope version=%s", envelope.version)
+                return None
+            return envelope
+        except ValidationError:
+            legacy_type = payload.get("type")
+            if isinstance(legacy_type, str) and isinstance(payload.get("args"), dict):
+                self.logger.warning("legacy payload detected type=%s; wrap into envelope", legacy_type)
+                legacy_kind = "event" if legacy_type == "agentEvent" else "command"
+                wrapped = make_transport_envelope(
+                    source="legacy-node-bot",
+                    kind=legacy_kind,
+                    name=legacy_type,
+                    body={"type": legacy_type, "args": payload.get("args")},
+                )
+                return validate_transport_envelope(wrapped)
+            self.logger.exception("invalid transport envelope payload=%s", payload)
+            return None
+
+    def _ok_response(self, envelope) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "trace_id": envelope.trace_id,
+            "run_id": envelope.run_id,
+            "message_id": envelope.message_id,
+        }

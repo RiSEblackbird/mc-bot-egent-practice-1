@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/contracts/transport-envelope.schema.json",
+  "title": "TransportEnvelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "trace_id",
+    "run_id",
+    "message_id",
+    "timestamp",
+    "source",
+    "kind",
+    "name",
+    "body"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]+$"
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["command", "event", "status", "error"]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "body": {
+      "type": "object"
+    },
+    "auth": {
+      "type": ["object", "null"]
+    }
+  }
+}
