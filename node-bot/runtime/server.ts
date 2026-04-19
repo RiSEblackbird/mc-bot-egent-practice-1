@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { SpanStatusCode, type Tracer } from '@opentelemetry/api';
 
 import { runWithSpan } from './telemetryRuntime.js';
+import { adaptLegacyCommandPayload, validateEnvelope } from './transportEnvelope.js';
 import type { CommandPayload, CommandResponse } from './types.js';
 
 export interface CommandServerConfig {
@@ -19,7 +20,23 @@ export interface CommandServerDependencies {
 
 function parseCommand(raw: RawData): CommandPayload | null {
   try {
-    return JSON.parse(raw.toString()) as CommandPayload;
+    const parsed = JSON.parse(raw.toString()) as unknown;
+    const envelope = validateEnvelope(parsed);
+    if (envelope) {
+      if (envelope.kind !== 'command') {
+        console.warn('[WS] unsupported envelope kind', { kind: envelope.kind, name: envelope.name });
+        return null;
+      }
+      return envelope.body as CommandPayload;
+    }
+
+    const legacy = adaptLegacyCommandPayload(parsed);
+    if (legacy) {
+      console.warn('[WS] legacy payload detected; wrap into transport envelope', { name: legacy.name });
+      return legacy.body as CommandPayload;
+    }
+
+    return null;
   } catch (error) {
     console.error('[WS] invalid payload', error);
     return null;

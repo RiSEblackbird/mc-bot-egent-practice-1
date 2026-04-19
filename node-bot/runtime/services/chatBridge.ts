@@ -1,7 +1,8 @@
 import type { Bot } from 'mineflayer';
 import { WebSocket } from 'ws';
 
-import type { CommandPayload, CommandResponse } from '../types.js';
+import { buildEnvelope } from '../transportEnvelope.js';
+import type { CommandResponse } from '../types.js';
 
 export type ChatBridgeLogger = (level: 'info' | 'warn' | 'error', message: string, context?: Record<string, unknown>) => void;
 
@@ -105,10 +106,15 @@ export class ChatBridge {
    */
   private async forwardChatToAgent(username: string, message: string): Promise<void> {
     return new Promise<void>((resolve) => {
-      const payload = {
-        type: 'chat',
-        args: { username, message },
-      } satisfies CommandPayload;
+      const payload = buildEnvelope({
+        source: 'node-bot',
+        kind: 'command',
+        name: 'chat',
+        body: {
+          type: 'chat',
+          args: { username, message },
+        },
+      });
 
       const ws = this.createWebSocket(this.config.agentControlWebsocketUrl);
       let settled = false;

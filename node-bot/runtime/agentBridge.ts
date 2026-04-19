@@ -2,7 +2,8 @@ import { SpanStatusCode, type Counter, type Tracer } from '@opentelemetry/api';
 import { WebSocket } from 'ws';
 
 import { runWithSpan } from './telemetryRuntime.js';
-import type { AgentBridgeSessionState, AgentEventEnvelope, MultiAgentEventPayload } from './types.js';
+import { buildEnvelope } from './transportEnvelope.js';
+import type { AgentBridgeSessionState, MultiAgentEventPayload } from './types.js';
 
 export type StructuredLogLevel = 'info' | 'warn' | 'error';
 
@@ -225,7 +226,12 @@ export class AgentBridge {
   }
 
   private async sendBatch(batch: MultiAgentEventPayload[]): Promise<void> {
-    const envelope: AgentEventEnvelope = { type: 'agentEvent', args: { events: batch } };
+    const envelope = buildEnvelope({
+      source: 'node-bot',
+      kind: 'event',
+      name: 'agentEvent',
+      body: { type: 'agentEvent', args: { events: batch } },
+    });
     const startedAt = Date.now();
     const maxAttempts = Math.max(1, this.config.maxRetries + 1);
 
@@ -255,7 +261,7 @@ export class AgentBridge {
     }
   }
 
-  private sendThroughActiveSession(payload: AgentEventEnvelope): Promise<void> {
+  private sendThroughActiveSession(payload: Record<string, unknown>): Promise<void> {
     const session = this.socket;
     if (!session || this.state !== 'connected' || session.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('agent bridge is not connected'));
