@@ -114,3 +114,26 @@ async def test_plan_graph_uses_refusal_message_as_controlled_chat_fallback() -> 
     assert plan_out.blocking is True
     assert plan_out.clarification_needed == "confirmation"
     assert any(item.get("label") == "plan_refusal" for item in plan_out.backlog)
+
+
+@pytest.mark.anyio
+async def test_plan_graph_legacy_normalize_coerces_arguments_shape() -> None:
+    plan_out = await _invoke_graph_with_output(
+        '{"plan":["x=10,z=20へ移動"],"resp":"了解","intent":"move",'
+        '"arguments":{"coordinates":{"x":"10","y":"64.0","z":"oops"},'
+        '"notes":"橋の近く","clarification_needed":"unknown"}}'
+    )
+    assert plan_out.plan == ["x=10,z=20へ移動"]
+    assert plan_out.arguments.coordinates == {"x": 10, "y": 64}
+    assert plan_out.arguments.notes == {"text": "橋の近く"}
+    assert plan_out.arguments.clarification_needed == "data_gap"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_legacy_normalize_coerces_top_level_clarification_enum() -> None:
+    plan_out = await _invoke_graph_with_output(
+        '{"plan":["周辺を確認"],"resp":"確認します","intent":"survey",'
+        '"clarification_needed":"manual_review"}'
+    )
+    assert plan_out.plan == ["周辺を確認"]
+    assert plan_out.clarification_needed == "data_gap"
