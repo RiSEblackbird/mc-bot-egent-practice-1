@@ -123,6 +123,23 @@ def extract_output_text(response: Response) -> str:
     return ""
 
 
+def extract_structured_output(response: Response) -> Dict[str, Any] | None:
+    """Responses API の structured output を辞書として取り出す。"""
+
+    parsed = getattr(response, "output_parsed", None)
+    if isinstance(parsed, dict):
+        return parsed
+
+    for item in response.output or []:
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in getattr(item, "content", []):
+            candidate = getattr(content, "parsed", None)
+            if isinstance(candidate, dict):
+                return candidate
+    return None
+
+
 def extract_refusal_text(response: Response) -> str:
     """Responses API の拒否メッセージを安全に抽出する。"""
 
@@ -154,4 +171,5 @@ __all__ = [
     "build_user_prompt",
     "extract_refusal_text",
     "extract_output_text",
+    "extract_structured_output",
 ]

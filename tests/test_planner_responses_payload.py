@@ -40,25 +40,42 @@ def test_build_responses_payload_falls_back_to_json_object_without_schema() -> N
 
 
 class _FakeResponses:
-    def __init__(self, output_text: str, output: list[object] | None = None) -> None:
+    def __init__(
+        self,
+        output_text: str,
+        output: list[object] | None = None,
+        response_attrs: dict[str, object] | None = None,
+    ) -> None:
         self._output_text = output_text
         self._output = output or []
+        self._response_attrs = response_attrs or {}
 
     async def create(self, **_: object) -> object:
-        return type("FakeResponse", (), {"output_text": self._output_text, "output": self._output})()
+        attrs = {"output_text": self._output_text, "output": self._output}
+        attrs.update(self._response_attrs)
+        return type("FakeResponse", (), attrs)()
 
 
 class _FakeAsyncClient:
-    def __init__(self, output_text: str, output: list[object] | None = None) -> None:
-        self.responses = _FakeResponses(output_text, output)
+    def __init__(
+        self,
+        output_text: str,
+        output: list[object] | None = None,
+        response_attrs: dict[str, object] | None = None,
+    ) -> None:
+        self.responses = _FakeResponses(output_text, output, response_attrs)
 
 
-async def _invoke_graph_with_output(output_text: str, output: list[object] | None = None) -> PlanOut:
+async def _invoke_graph_with_output(
+    output_text: str,
+    output: list[object] | None = None,
+    response_attrs: dict[str, object] | None = None,
+) -> PlanOut:
     config = _make_config()
     graph = build_plan_graph(
         config,
         priority_manager=PlanPriorityManager(config),
-        async_client_factory=lambda: _FakeAsyncClient(output_text, output),
+        async_client_factory=lambda: _FakeAsyncClient(output_text, output, response_attrs),
         payload_builder=lambda system_prompt, user_prompt: {
             "model": config.model,
             "input": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
@@ -137,3 +154,21 @@ async def test_plan_graph_legacy_normalize_coerces_top_level_clarification_enum(
     )
     assert plan_out.plan == ["周辺を確認"]
     assert plan_out.clarification_needed == "data_gap"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_prefers_structured_output_without_legacy_normalize() -> None:
+    plan_out = await _invoke_graph_with_output(
+        "not-json",
+        response_attrs={
+            "output_parsed": {
+                "plan": ["丸石を10個掘る"],
+                "resp": "掘ります",
+                "intent": "mine",
+                "clarification_needed": "none",
+            }
+        },
+    )
+    assert plan_out.plan == ["丸石を10個掘る"]
+    assert plan_out.intent == "mine"
+    assert plan_out.resp != "了解しました。"
