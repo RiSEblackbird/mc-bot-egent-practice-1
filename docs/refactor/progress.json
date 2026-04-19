@@ -44,7 +44,13 @@
     {
       "phase": 4,
       "name": "planner を Structured Outputs 化",
-      "status": "pending"
+      "status": "in_progress",
+      "artifacts": [
+        "docs/refactor/phase4.md",
+        "python/planner/__init__.py",
+        "python/planner/graph.py",
+        "tests/test_planner_responses_payload.py"
+      ]
     },
     {
       "phase": 5,

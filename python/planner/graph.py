@@ -300,23 +300,30 @@ def build_plan_graph(
             return result
 
         raw_content = state.get("content") or ""
-        normalized_content = _normalize_plan_json(raw_content)
         try:
-            plan_data = PlanOut.model_validate_json(normalized_content)
-        except Exception as exc:
-            logger.exception("plan graph failed to parse JSON plan")
-            priority = await manager.mark_failure()
-            result = {"parse_error": str(exc), "priority": priority}
-            result.update(
-                record_structured_step(
-                    state,
-                    step_label="parse_plan",
-                    inputs={"content_preview": raw_content[:120]},
-                    outputs={"priority": priority},
-                    error=str(exc),
+            plan_data = PlanOut.model_validate_json(raw_content)
+        except Exception as primary_exc:
+            normalized_content = _normalize_plan_json(raw_content)
+            try:
+                plan_data = PlanOut.model_validate_json(normalized_content)
+                logger.warning(
+                    "plan graph used legacy JSON normalize fallback: %s",
+                    primary_exc.__class__.__name__,
                 )
-            )
-            return result
+            except Exception as secondary_exc:
+                logger.exception("plan graph failed to parse JSON plan")
+                priority = await manager.mark_failure()
+                result = {"parse_error": str(secondary_exc), "priority": priority}
+                result.update(
+                    record_structured_step(
+                        state,
+                        step_label="parse_plan",
+                        inputs={"content_preview": raw_content[:120]},
+                        outputs={"priority": priority},
+                        error=str(secondary_exc),
+                    )
+                )
+                return result
 
         # LLM 出力が空配列の場合は実行フェーズで詰まるため、ここでチャット確認に切り替える。
         if not plan_data.plan:
