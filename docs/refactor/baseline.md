@@ -6,12 +6,11 @@
 
 | コンポーネント | コマンド | 結果 | 補足 |
 |---|---|---|---|
-| Python tests (without setup) | `python -m pytest tests` | ❌ 失敗 | 25 件が import エラーで収集失敗（`agent`, `actions`, `runtime` などの `ModuleNotFoundError`）。 |
-| Python tests (after setup) | `.venv/bin/python -m pytest tests` | ✅ 成功 | `bash scripts/setup-python-env.sh` 実行後は 97 passed。`OTEL_EXPORTER_OTLP_ENDPOINT` 未起動による export warning のみ発生。 |
+| Python tests | `python -m pytest tests` | ❌ 失敗 | 25 件が import エラーで収集失敗（`agent`, `actions`, `runtime` などの `ModuleNotFoundError`）。 |
 | Node tests | `bash scripts/run-node-bot.sh test` | ❌ 失敗 | 実行環境の Node が `v20.19.6` のため、スクリプト要件 (`22+`) で停止。 |
 | Node build | `bash scripts/run-node-bot.sh build` | ❌ 失敗 | 上記と同じく Node 22 未満で停止。 |
 | Bridge build | `bash scripts/build-bridge-plugin.sh` | ✅ 成功 | `shadowJar` まで成功（UP-TO-DATE 含む）。 |
-| Bridge test | `gradle test` (in `bridge-plugin/`) | ✅ 成功 | `:test` タスク成功。 |
+| Bridge test | `gradle -p bridge-plugin test` | ✅ 成功 | `:test` タスク成功。 |
 | Compose config | `docker compose config` | ❌ 失敗 | 実行環境に `docker` コマンド無し。 |
 
 ## 2. 依存と entrypoint の現状一覧
@@ -44,7 +43,7 @@
 - 依存定義: `bridge-plugin/build.gradle.kts`
 - 実行/ビルド entrypoint:
   - `bash scripts/build-bridge-plugin.sh`（`shadowJar`）
-  - `gradle test`（`bridge-plugin/`）
+  - `gradle -p bridge-plugin test`
 - 補足:
   - 現在の baseline では build/test ともに成功。
   - 手置き jar 依存が CI で問題化しないかは Phase 1 継続確認対象。
@@ -112,7 +111,7 @@
 
 ## 5. 既知問題（Phase 0 時点）
 
-- Python テストは依存導入前だと import エラーで失敗するが、`bash scripts/setup-python-env.sh` 後は `.venv/bin/python -m pytest tests` で 97 passed。
+- Python テストは依存導入前だと import エラーで失敗する。
 - Node の baseline 実行は Node 22+ 前提のため、CI/開発環境でのバージョン固定が必須。
 - Compose baseline は実行環境依存（docker 未インストール）で検証不能。
 - Compose の Python サービスに `PYTHONPATH` 依存が残り、package 化方針との整合確認が必要。
@@ -128,15 +127,13 @@
   - ドキュメント更新のみ（実行挙動の変更なし）。
 - 実行したコマンド:
   - `python -m pytest tests`
-  - `bash scripts/setup-python-env.sh`
-  - `.venv/bin/python -m pytest tests`
   - `bash scripts/run-node-bot.sh test`
   - `bash scripts/run-node-bot.sh build`
   - `bash scripts/build-bridge-plugin.sh`
-  - `cd bridge-plugin && gradle test`
+  - `gradle -p bridge-plugin test`
   - `docker compose config`
 - テスト結果:
-  - Python: 条件付き（未セットアップ時は import エラー 25 件 / セットアップ後は 97 passed）
+  - Python: 失敗（import エラー 25 件）
   - Node test/build: 失敗（Node.js 22+ 不足）
   - Bridge build/test: 成功
   - Compose config: 失敗（docker コマンド無し）
