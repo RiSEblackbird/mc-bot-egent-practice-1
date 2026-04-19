@@ -123,6 +123,27 @@ def extract_output_text(response: Response) -> str:
     return ""
 
 
+def extract_refusal_text(response: Response) -> str:
+    """Responses API の拒否メッセージを安全に抽出する。"""
+
+    for item in response.output or []:
+        item_type = getattr(item, "type", None)
+        if item_type == "refusal":
+            candidate = getattr(item, "refusal", "") or getattr(item, "text", "")
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        if item_type == "message":
+            for content in getattr(item, "content", []):
+                content_type = getattr(content, "type", None)
+                if content_type == "refusal":
+                    candidate = getattr(content, "refusal", "") or getattr(content, "text", "")
+                    if isinstance(candidate, str) and candidate.strip():
+                        return candidate.strip()
+
+    return ""
+
+
 __all__ = [
     "BARRIER_SYSTEM",
     "SOCRATIC_REVIEW_SYSTEM",
@@ -131,5 +152,6 @@ __all__ = [
     "build_pre_action_review_prompt",
     "build_responses_input",
     "build_user_prompt",
+    "extract_refusal_text",
     "extract_output_text",
 ]
