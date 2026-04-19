@@ -37,3 +37,21 @@
   - 成功（4 passed）。
 - 残課題:
   - refusal/空文字応答/必須キー欠落のケースをさらに網羅し、legacy normalize 依存領域を縮小する。
+
+## 追加スライス (2026-04-19, 2)
+- 変更概要:
+  - planner プロンプトから JSON フォーマット強制の長大な例示を削除し、schema-first 前提で「計画品質・安全性・説明責務」を明示する方針へ整理。
+  - parse 回帰テストを拡張し、空文字応答と必須キー欠落応答でも制御された safe fallback (`PlanOut(plan=[], resp="了解しました。")`) へ収束することを固定化。
+- 主な変更ファイル:
+  - `python/planner/prompts.py`
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - planner の外部 I/O 契約（`PlanOut` schema）は変更なし。
+  - 不正・不完全レスポンス時のフォールバック挙動を明示的に回帰保証。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（6 passed）。
+- 残課題:
+  - Responses API の refusal シグナル（`response.output` 内の refusal content）に対するハンドリングと回帰テストを追加する。
+  - `_normalize_plan_json()` の適用条件をさらに絞り、legacy state 移行用途へ段階的に限定する。
