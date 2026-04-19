@@ -1,29 +1,32 @@
 # Baseline Report (Phase 0)
 
-最終更新日: 2026-04-18 (UTC)
+最終更新日: 2026-04-19 (UTC)
 
 ## 1. 実行コマンドと結果
 
 | コンポーネント | コマンド | 結果 | 補足 |
 |---|---|---|---|
-| Python tests | `python -m pytest tests` | ✅ 成功 | 88 passed。終了時に OTLP (`localhost:4318`) への span export リトライ警告あり。 |
+| Python tests | `python -m pytest tests` | ❌ 失敗 | 25 件が import エラーで収集失敗（`agent`, `actions`, `runtime` などの `ModuleNotFoundError`）。 |
 | Node tests | `bash scripts/run-node-bot.sh test` | ❌ 失敗 | 実行環境の Node が `v20.19.6` のため、スクリプト要件 (`22+`) で停止。 |
 | Node build | `bash scripts/run-node-bot.sh build` | ❌ 失敗 | 上記と同じく Node 22 未満で停止。 |
 | Bridge build | `bash scripts/build-bridge-plugin.sh` | ✅ 成功 | `shadowJar` まで成功（UP-TO-DATE 含む）。 |
-| Bridge test | `gradle test` (in `bridge-plugin/`) | ❌ 失敗 | 依存解決で `403 Forbidden`（`paperlib`, `jchronic`, `jlibnoise`）。 |
+| Bridge test | `gradle test` (in `bridge-plugin/`) | ✅ 成功 | `:test` タスク成功。 |
 | Compose config | `docker compose config` | ❌ 失敗 | 実行環境に `docker` コマンド無し。 |
 
 ## 2. 依存と entrypoint の現状一覧
 
 ### Python
 
-- 依存定義: ルート `requirements.txt`（固定バージョン pin）
+- 依存定義:
+  - `requirements.txt` + `constraints.txt`（`scripts/setup-python-env.sh` で利用）
+  - `pyproject.toml`（editable install を前提に併用）
 - 実行 entrypoint:
   - `bash scripts/run-python-agent.sh`
-  - `python -m python`（`python/__main__.py`）
+  - `python -m mc_bot_agent_entrypoint`（`scripts/run-python-agent.sh` の実行実体）
+  - `python -m python`（互換エントリとして残存）
 - 補足:
-  - `scripts/run-python-agent.sh` は `PYTHONPATH=$repo_root:$repo_root/python` を設定して実行。
-  - `python/__main__.py` 内で `sys.path.insert(0, pythonディレクトリ)` を行っている。
+  - `scripts/run-python-agent.sh` は `sys.path` hack なしで起動する。
+  - テスト失敗は import パスの互換崩れが示唆される（Phase 2 完了条件の再確認対象）。
 
 ### Node (`node-bot/`)
 
@@ -33,36 +36,42 @@
   - `npm run dev` / `npm start`（`node-bot/package.json`）
 - 補足:
   - スクリプト側で Node.js 22+ を強制チェック。
+  - 初回依存解決は `npm ci`（`node_modules` 不在時）で実行される。
 
 ### Bridge (`bridge-plugin/`)
 
 - 依存定義: `bridge-plugin/build.gradle.kts`
 - 実行/ビルド entrypoint:
   - `bash scripts/build-bridge-plugin.sh`（`shadowJar`）
-  - `gradle test`（wrapper 未同梱のためシステム gradle）
+  - `gradle test`（`bridge-plugin/`）
 - 補足:
-  - `compileOnly(files("libs/CoreProtect-22.0.jar"))` のローカル jar 参照あり。
+  - 現在の baseline では build/test ともに成功。
+  - 手置き jar 依存が CI で問題化しないかは Phase 1 継続確認対象。
 
 ## 3. `.env.example` / README / Compose の差異（Phase 0 観測）
 
-1. `.env` テンプレートは `env.example` 1 枚のみで、dev/prod 分離は未実施。
-2. README は `cp env.example .env` を前提としており、環境分離の導線はない。
-3. `docker-compose.yml` では起動時インストールが残っている。
-   - Node: `npm install && npm run dev`
-   - Python: `pip install -r requirements.txt && watchfiles ...`
-4. Compose 側は `.env` をそのまま参照し、dev/prod 安全デフォルトの切り替え機構は未導入。
+1. 環境テンプレートは `env.dev.example` と `env.prod.example` が追加済みで、`env.example` は互換用として残置されている。
+2. README は `cp env.dev.example .env` を初期導線にし、dev/prod の使い分けを明記している。
+3. `docker-compose.yml` では起動時 install がまだ残っている。
+   - Node: `npm ci && npm run dev`
+   - Python: `pip install -r requirements.txt -c constraints.txt && watchfiles ...`
+4. Compose 側で `PYTHONPATH=/app:/app/python` が設定されており、旧 import 経路との互換レイヤが残存している。
 
 ## 4. 主要実行経路ファイル（差分評価用の参照リスト）
 
 ### Python planner/runtime
 
+- `python/mc_bot_agent_entrypoint.py`
 - `python/__main__.py`
 - `python/runtime/bootstrap.py`
 - `python/runtime/unified_agent_graph.py`
 - `python/runtime/websocket_server.py`
 - `python/runtime/chat_queue.py`
+- `python/planner/graph.py`
 - `python/planner_config.py`
+- `pyproject.toml`
 - `requirements.txt`
+- `constraints.txt`
 
 ### Node bot runtime
 
@@ -71,6 +80,7 @@
 - `node-bot/runtime/server.ts`
 - `node-bot/runtime/agentBridge.ts`
 - `node-bot/runtime/services/chatBridge.ts`
+- `node-bot/runtime/transportEnvelope.ts`
 - `node-bot/runtime/env.ts`
 - `node-bot/package.json`
 - `node-bot/package-lock.json`
@@ -84,19 +94,50 @@
 - `bridge-plugin/src/main/java/com/example/bridge/util/CoreProtectFacade.java`
 - `bridge-plugin/src/main/resources/config.yml`
 
-### 起動/運用共通
+### 契約/起動/運用共通
 
+- `contracts/transport-envelope.schema.json`
 - `scripts/run-python-agent.sh`
+- `scripts/run-python-agent-watch.sh`
+- `scripts/setup-python-env.sh`
 - `scripts/run-node-bot.sh`
 - `scripts/build-bridge-plugin.sh`
 - `docker-compose.yml`
 - `docker-compose.host-services.yml`
 - `README.md`
+- `env.dev.example`
+- `env.prod.example`
 - `env.example`
 
 ## 5. 既知問題（Phase 0 時点）
 
-- Node の baseline 実行は Node 22+ 前提のため、CI/開発環境でバージョン固定戦略が必須。
-- Bridge test は依存レポジトリへのアクセス (`403`) で不安定。
+- Python テストが import エラーで収集段階から失敗し、ベースラインとして不安定。
+- Node の baseline 実行は Node 22+ 前提のため、CI/開発環境でのバージョン固定が必須。
 - Compose baseline は実行環境依存（docker 未インストール）で検証不能。
-- Python 側に `PYTHONPATH` / `sys.path` 依存の import 経路が残っている（Phase 2 対象）。
+- Compose の Python サービスに `PYTHONPATH` 依存が残り、package 化方針との整合確認が必要。
+
+## Phase 0 完了報告
+- 変更概要:
+  - 現時点の実行結果を再採取し、成功/失敗理由を更新。
+  - Python/Node/Bridge の依存・entrypoint・既知リスクを現ツリー基準で棚卸し。
+  - `.env` テンプレート分離済み状態と Compose 実行方式の差分を再確認。
+- 主な変更ファイル:
+  - `docs/refactor/baseline.md`
+- 互換性影響:
+  - ドキュメント更新のみ（実行挙動の変更なし）。
+- 実行したコマンド:
+  - `python -m pytest tests`
+  - `bash scripts/run-node-bot.sh test`
+  - `bash scripts/run-node-bot.sh build`
+  - `bash scripts/build-bridge-plugin.sh`
+  - `cd bridge-plugin && gradle test`
+  - `docker compose config`
+- テスト結果:
+  - Python: 失敗（import エラー 25 件）
+  - Node test/build: 失敗（Node.js 22+ 不足）
+  - Bridge build/test: 成功
+  - Compose config: 失敗（docker コマンド無し）
+- 残課題:
+  - Python import 経路を package 化正本へ揃えるまで、テスト再現性が低い。
+  - Node 実行環境を 22 系に統一する仕組み（CI/開発双方）の継続確認が必要。
+  - Docker 不在環境でも確認可能な代替チェックの整備が必要。
