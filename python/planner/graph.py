@@ -35,6 +35,7 @@ from .prompts import (
     build_pre_action_review_prompt,
     build_responses_input,
     build_user_prompt,
+    extract_refusal_text,
     extract_output_text,
 )
 from .state import UnifiedPlanState, record_recovery_hints, record_structured_step, logger
@@ -221,11 +222,16 @@ def build_plan_graph(
             attributes={"llm.model": config.model},
         ) as span:
 
-            async def _build_failure_payload(reason: str, *, log_as_warning: bool) -> Dict[str, Any]:
+            async def _build_failure_payload(
+                reason: str,
+                *,
+                log_as_warning: bool,
+                fallback_plan: PlanOut | None = None,
+            ) -> Dict[str, Any]:
                 """例外発生時に優先度降格とフォールバックプランを組み立てる。"""
 
                 priority = await manager.mark_failure()
-                fallback = PlanOut(plan=[], resp="了解しました。")
+                fallback = fallback_plan or PlanOut(plan=[], resp="了解しました。")
                 if log_as_warning:
                     logger.warning("plan graph detected LLM timeout: %s", reason)
                 else:
@@ -267,6 +273,26 @@ def build_plan_graph(
                 return await _build_failure_payload(str(exc), log_as_warning=False)
 
             content = extract_output_text(resp)
+            refusal_text = extract_refusal_text(resp)
+            if not content and refusal_text:
+                return await _build_failure_payload(
+                    f"response refusal: {refusal_text[:120]}",
+                    log_as_warning=True,
+                    fallback_plan=PlanOut(
+                        plan=[],
+                        resp=refusal_text,
+                        blocking=True,
+                        next_action="chat",
+                        clarification_needed="confirmation",
+                        backlog=[
+                            {
+                                "type": "plan",
+                                "summary": "モデルが追加確認を要求しました",
+                                "label": "plan_refusal",
+                            }
+                        ],
+                    ),
+                )
             logger.info("LLM raw: %s", content)
             payload = {"response": resp, "content": content}
             payload.update(

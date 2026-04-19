@@ -40,24 +40,25 @@ def test_build_responses_payload_falls_back_to_json_object_without_schema() -> N
 
 
 class _FakeResponses:
-    def __init__(self, output_text: str) -> None:
+    def __init__(self, output_text: str, output: list[object] | None = None) -> None:
         self._output_text = output_text
+        self._output = output or []
 
     async def create(self, **_: object) -> object:
-        return type("FakeResponse", (), {"output_text": self._output_text, "output": []})()
+        return type("FakeResponse", (), {"output_text": self._output_text, "output": self._output})()
 
 
 class _FakeAsyncClient:
-    def __init__(self, output_text: str) -> None:
-        self.responses = _FakeResponses(output_text)
+    def __init__(self, output_text: str, output: list[object] | None = None) -> None:
+        self.responses = _FakeResponses(output_text, output)
 
 
-async def _invoke_graph_with_output(output_text: str) -> PlanOut:
+async def _invoke_graph_with_output(output_text: str, output: list[object] | None = None) -> PlanOut:
     config = _make_config()
     graph = build_plan_graph(
         config,
         priority_manager=PlanPriorityManager(config),
-        async_client_factory=lambda: _FakeAsyncClient(output_text),
+        async_client_factory=lambda: _FakeAsyncClient(output_text, output),
         payload_builder=lambda system_prompt, user_prompt: {
             "model": config.model,
             "input": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
@@ -100,3 +101,16 @@ async def test_plan_graph_returns_safe_fallback_when_required_fields_are_missing
     assert plan_out.resp == "手順が生成できませんでした。もう少し具体的に指示してください。"
     assert plan_out.next_action == "chat"
     assert plan_out.clarification_needed == "data_gap"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_uses_refusal_message_as_controlled_chat_fallback() -> None:
+    refusal_content = type("FakeRefusalContent", (), {"type": "refusal", "refusal": "危険な操作のため確認が必要です"})()
+    refusal_message = type("FakeMessage", (), {"type": "message", "content": [refusal_content]})()
+    plan_out = await _invoke_graph_with_output("", output=[refusal_message])
+    assert plan_out.plan == []
+    assert plan_out.resp == "危険な操作のため確認が必要です"
+    assert plan_out.next_action == "chat"
+    assert plan_out.blocking is True
+    assert plan_out.clarification_needed == "confirmation"
+    assert any(item.get("label") == "plan_refusal" for item in plan_out.backlog)

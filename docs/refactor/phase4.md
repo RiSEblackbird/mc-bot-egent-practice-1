@@ -55,3 +55,23 @@
 - 残課題:
   - Responses API の refusal シグナル（`response.output` 内の refusal content）に対するハンドリングと回帰テストを追加する。
   - `_normalize_plan_json()` の適用条件をさらに絞り、legacy state 移行用途へ段階的に限定する。
+
+## 追加スライス (2026-04-19, 3)
+- 変更概要:
+  - planner の `call_llm` で Responses API の refusal を検知し、空文字応答時でも拒否メッセージを `PlanOut` の制御された chat フォールバックとして返すように更新。
+  - refusal 検知ロジックを `planner/prompts.py` に追加し、`message.content[].type == refusal` と `item.type == refusal` の双方を安全に抽出可能にした。
+  - 回帰テストを追加し、refusal 発生時に `next_action=chat`・`clarification_needed=confirmation`・`plan_refusal` backlog が維持されることを固定化。
+- 主な変更ファイル:
+  - `python/planner/prompts.py`
+  - `python/planner/graph.py`
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - 正常系の schema-first 経路は変更なし。
+  - refusal シグナル時は汎用 `"了解しました。"` ではなく、モデルが返した確認メッセージを優先して返すように改善。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（7 passed）。
+  - OpenTelemetry exporter が `localhost:4318` 未起動のため warning ログが出るが、テスト自体は成功。
+- 残課題:
+  - `_normalize_plan_json()` の適用条件をさらに絞り、legacy state 移行用途へ段階的に限定する。
