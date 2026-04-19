@@ -97,16 +97,22 @@ cd C:\mc\paper
 java -Xms4G -Xmx4G -jar .\paper.jar --nogui
 ```
 
-開発中は `server.properties` の `online-mode=false` を推奨します。
+開発中は `server.properties` の `online-mode=false` を推奨します（本番は `online-mode=true` と `AUTH_MODE=microsoft` を推奨）。
 
 ### 2) `.env` 作成（プロジェクトルート）
 
 ```bash
-cp env.example .env
+cp env.dev.example .env
 ```
 
 最低限 `OPENAI_API_KEY` と、Minecraft 接続先（`MC_HOST` / `MC_PORT`）を設定してください。
-`env.example` の既定値はローカル実行向けに `127.0.0.1` を向いており、Docker Compose 実行時は service 名へ自動で上書きされます。
+`env.dev.example` はローカル開発向け既定値、`env.prod.example` は本番相当の安全側既定値です。Docker Compose 実行時は service 名への上書きが一部適用されます。
+
+### 環境テンプレートの使い分け
+
+- 開発: `cp env.dev.example .env`
+- 本番相当: `cp env.prod.example .env`
+- 互換: `env.example` は過渡期のため残置（将来削除予定）
 
 ### 3) Node（Mineflayer）起動
 
@@ -155,7 +161,7 @@ make build-bridge
 Python と Node を同時にホットリロードで動かしたい場合:
 
 ```bash
-cp env.example .env  # まだ .env が無い場合
+cp env.dev.example .env  # まだ .env が無い場合
 docker compose up --build
 ```
 
@@ -170,7 +176,7 @@ docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --bu
 
 ## 設定（.env）
 
-`.env` は `env.example` を一次情報として扱ってください。ここでは「運用でよく触る項目」と「落とし穴」を要約します。
+`.env` は用途別テンプレートを正本として扱ってください。開発は `env.dev.example`、本番相当は `env.prod.example` を使用します。互換のため `env.example` は暫定的に残しています。
 
 ### OpenAI / プランナー
 
