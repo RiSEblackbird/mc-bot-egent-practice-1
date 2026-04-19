@@ -75,3 +75,19 @@
   - OpenTelemetry exporter が `localhost:4318` 未起動のため warning ログが出るが、テスト自体は成功。
 - 残課題:
   - `_normalize_plan_json()` の適用条件をさらに絞り、legacy state 移行用途へ段階的に限定する。
+
+## 追加スライス (2026-04-19, 4)
+- 変更概要:
+  - planner の legacy normalize 境界に対する回帰テストを追加し、`arguments.coordinates` の数値 coercion・`notes` の辞書化・`clarification_needed` enum 補正を固定化。
+  - top-level `clarification_needed` が不正値でも `data_gap` へ補正され、parse 主経路が制御された挙動を維持することを検証。
+- 主な変更ファイル:
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - 実装変更なし（テスト追加のみ）。
+  - legacy normalize を縮小する際に壊しやすい境界（型揺れ・enum 揺れ）を先に固定。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（9 passed）。
+- 残課題:
+  - `_normalize_plan_json()` の適用範囲を旧 state / 外部 legacy データ境界へ限定し、新規 LLM 出力での常用経路から段階的に除去する。
