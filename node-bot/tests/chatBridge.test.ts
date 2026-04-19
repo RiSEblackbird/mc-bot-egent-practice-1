@@ -44,7 +44,6 @@ describe('ChatBridge', () => {
 
     const handlePromise = chatBridge.handleIncomingChat(bot, 'player', 'いまどこ？');
     mockWebSocket.emit('open');
-    mockWebSocket.emit('message', JSON.stringify({ ok: true }));
     await handlePromise;
 
     expect(chatMessenger.sendChat).toHaveBeenCalledWith('現在位置は X=1 / Y=64 / Z=-4 です。');
@@ -65,7 +64,6 @@ describe('ChatBridge', () => {
 
     const promise = chatBridge.handleIncomingChat(bot, 'alice', 'どこ？');
     mockWebSocket.emit('open');
-    mockWebSocket.emit('message', JSON.stringify({ ok: true }));
     await promise;
 
     expect(mockWebSocket.lastSent).not.toBeNull();
@@ -76,5 +74,30 @@ describe('ChatBridge', () => {
     const messenger = new BotChatMessenger(() => null);
     const result = messenger.sendChat('hello');
     expect(result).toBe(false);
+  });
+
+  it('reuses a long-lived websocket session for consecutive chats', async () => {
+    const sockets: MockWebSocket[] = [];
+    const chatBridge = new ChatBridge(
+      { agentControlWebsocketUrl: 'ws://agent', currentPositionKeywords: [] },
+      {
+        chatMessenger: { sendChat: vi.fn().mockReturnValue(true) },
+        createWebSocket: () => {
+          const socket = new MockWebSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      },
+    );
+    const bot = { username: 'bot', entity: { position: { x: 0, y: 64, z: 0 } } } as unknown as Bot;
+
+    const first = chatBridge.handleIncomingChat(bot, 'alice', 'hello');
+    expect(sockets).toHaveLength(1);
+    sockets[0].emit('open');
+    await first;
+
+    await chatBridge.handleIncomingChat(bot, 'bob', 'world');
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].lastSent).toBeTypeOf('string');
   });
 });

@@ -1,6 +1,6 @@
 {
   "updated_at": "2026-04-19",
-  "current_phase": 3,
+  "current_phase": 4,
   "phases": [
     {
       "phase": 0,
@@ -32,11 +32,13 @@
     {
       "phase": 3,
       "name": "設定分離と transport envelope 統一",
-      "status": "in_progress",
+      "status": "completed",
       "artifacts": [
         "env.dev.example",
         "env.prod.example",
-        "docs/refactor/phase3.md"
+        "docs/refactor/phase3.md",
+        "contracts/transport-envelope.schema.json",
+        "node-bot/runtime/services/chatBridge.ts"
       ]
     },
     {

@@ -51,3 +51,23 @@
   - chat 転送の one-shot WebSocket を長寿命接続クライアントへ統合する。
   - Bridge plugin 経路を含む envelope 適用範囲の拡張。
 
+## Phase 3 完了報告（Slice 3: chat transport の長寿命接続化）
+- 変更概要:
+  - `ChatBridge` を one-shot WebSocket から長寿命セッション管理へ移行し、接続再利用を標準化。
+  - 切断/障害時に指数バックオフ付き再接続待機を行うようにし、接続不安定時のスパイク接続を抑制。
+  - heartbeat envelope (`kind: status`, `name: heartbeat`) を定期送信し、疎通監視を追加。
+  - Vitest に「連続チャット時に同一セッションを再利用する」回帰テストを追加。
+- 主な変更ファイル:
+  - `node-bot/runtime/services/chatBridge.ts`
+  - `node-bot/tests/chatBridge.test.ts`
+  - `docs/refactor/progress.json`
+- 互換性影響:
+  - 既存の chat 転送 payload/envelope 互換は維持。
+  - 応答待ち同期を前提にしない fire-and-forget 配送へ変更し、送信失敗時は構造化ログで検知。
+- 実行したコマンド:
+  - `cd node-bot && npm test -- chatBridge.test.ts`
+- テスト結果:
+  - Node 22 未満（実行環境 `v20.19.6`）のため engine check で未実行。
+- 残課題:
+  - Bridge plugin 経路を含む envelope 適用範囲の拡張。
+  - Phase 4（planner の Structured Outputs 化）へ着手。
