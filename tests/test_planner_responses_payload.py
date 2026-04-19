@@ -1,6 +1,9 @@
 from planner import _build_responses_payload
+from planner.graph import build_plan_graph
 from planner.models import PlanOut
+from planner.priority import PlanPriorityManager
 from planner_config import PlannerConfig
+import pytest
 
 
 def _make_config() -> PlannerConfig:
@@ -34,3 +37,50 @@ def test_build_responses_payload_uses_json_schema_for_planout() -> None:
 def test_build_responses_payload_falls_back_to_json_object_without_schema() -> None:
     payload = _build_responses_payload("system", "user", _make_config())
     assert payload["text"]["format"] == {"type": "json_object"}
+
+
+class _FakeResponses:
+    def __init__(self, output_text: str) -> None:
+        self._output_text = output_text
+
+    async def create(self, **_: object) -> object:
+        return type("FakeResponse", (), {"output_text": self._output_text, "output": []})()
+
+
+class _FakeAsyncClient:
+    def __init__(self, output_text: str) -> None:
+        self.responses = _FakeResponses(output_text)
+
+
+async def _invoke_graph_with_output(output_text: str) -> PlanOut:
+    config = _make_config()
+    graph = build_plan_graph(
+        config,
+        priority_manager=PlanPriorityManager(config),
+        async_client_factory=lambda: _FakeAsyncClient(output_text),
+        payload_builder=lambda system_prompt, user_prompt: {
+            "model": config.model,
+            "input": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            "text": {"format": {"type": "json_schema"}},
+        },
+    )
+
+    result = await graph.ainvoke({"user_msg": "test", "context": {}, "structured_events": []})
+    assert isinstance(result.get("plan_out"), PlanOut)
+    return result["plan_out"]
+
+
+@pytest.mark.anyio
+async def test_plan_graph_handles_empty_plan_as_controlled_chat_fallback() -> None:
+    plan_out = await _invoke_graph_with_output('{"plan":[],"resp":"", "intent":"move"}')
+    assert plan_out.next_action == "chat"
+    assert plan_out.blocking is True
+    assert plan_out.clarification_needed == "data_gap"
+    assert any(item.get("label") == "plan_empty" for item in plan_out.backlog)
+
+
+@pytest.mark.anyio
+async def test_plan_graph_returns_safe_fallback_on_invalid_json() -> None:
+    plan_out = await _invoke_graph_with_output("not-json")
+    assert plan_out.plan == []
+    assert plan_out.resp == "了解しました。"
