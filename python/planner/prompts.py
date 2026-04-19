@@ -73,44 +73,11 @@ def build_user_prompt(user_msg: str, context: Dict[str, Any]) -> str:
 # 直近の状況（要約）
 {ctx}
 
-# 出力フォーマット
-json のみ。例：
-{{
-  "plan": ["畑へ移動", "小麦を収穫", "パンを作る"],
-  "resp": "了解しました。小麦を収穫してパンを作りますね。",
-  "intent": "farm",
-  "arguments": {{
-    "coordinates": {{"x": -10, "y": 64, "z": 20}},
-    "quantity": 12,
-    "target": "wheat",
-    "notes": {{"needs_tools": true}},
-    "confidence": 0.82,
-    "clarification_needed": "none",
-    "detected_modalities": ["text"]
-  }},
-  "blocking": false,
-  "confidence": 0.82,
-  "clarification_needed": "none",
-  "detected_modalities": ["text"],
-  "backlog": [],
-  "next_action": "execute",
-  "goal_profile": {{
-    "summary": "食料不足を解消するための農作業",
-    "category": "farm",
-    "priority": "medium",
-    "success_criteria": ["パンを 6 個以上確保"],
-    "blockers": []
-  }},
-  "constraints": [
-    {{"label": "夜間の敵対モブ", "rationale": "畑周辺が暗い", "severity": "soft"}}
-  ],
-  "recovery_hints": [],
-  "react_trace": [
-    {{"thought": "農作業を開始する準備が必要", "action": "畑へ移動", "observation": ""}},
-    {{"thought": "材料を確保する", "action": "小麦を収穫", "observation": ""}},
-    {{"thought": "食料を用意する", "action": "パンを作る", "observation": ""}}
-  ]
-}}
+# 計画方針
+- 実行可能で安全な手順を、依存関係が分かる順序で提案してください。
+- 情報不足や危険要素がある場合は、曖昧な実行を避けて確認を優先してください。
+- `resp` には、プレイヤーへの短く丁寧な日本語説明を含めてください。
+- `goal_profile`、`constraints`、`react_trace` は推論根拠がある範囲で埋め、不要な推測は避けてください。
 """
 
 

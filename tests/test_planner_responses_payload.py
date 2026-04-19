@@ -84,3 +84,19 @@ async def test_plan_graph_returns_safe_fallback_on_invalid_json() -> None:
     plan_out = await _invoke_graph_with_output("not-json")
     assert plan_out.plan == []
     assert plan_out.resp == "了解しました。"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_returns_safe_fallback_on_empty_output_text() -> None:
+    plan_out = await _invoke_graph_with_output("")
+    assert plan_out.plan == []
+    assert plan_out.resp == "了解しました。"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_returns_safe_fallback_when_required_fields_are_missing() -> None:
+    plan_out = await _invoke_graph_with_output('{"intent":"move"}')
+    assert plan_out.plan == []
+    assert plan_out.resp == "手順が生成できませんでした。もう少し具体的に指示してください。"
+    assert plan_out.next_action == "chat"
+    assert plan_out.clarification_needed == "data_gap"
