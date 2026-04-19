@@ -36,6 +36,7 @@ from .prompts import (
     build_responses_input,
     build_user_prompt,
     extract_refusal_text,
+    extract_structured_output,
     extract_output_text,
 )
 from .state import UnifiedPlanState, record_recovery_hints, record_structured_step, logger
@@ -325,28 +326,48 @@ def build_plan_graph(
             )
             return result
 
+        response = state.get("response")
+        structured_output = extract_structured_output(response) if response is not None else None
         raw_content = state.get("content") or ""
         try:
-            plan_data = PlanOut.model_validate_json(raw_content)
+            if structured_output is not None:
+                plan_data = PlanOut.model_validate(structured_output)
+            else:
+                plan_data = PlanOut.model_validate_json(raw_content)
         except Exception as primary_exc:
-            normalized_content = _normalize_plan_json(raw_content)
-            try:
-                plan_data = PlanOut.model_validate_json(normalized_content)
-                logger.warning(
-                    "plan graph used legacy JSON normalize fallback: %s",
-                    primary_exc.__class__.__name__,
-                )
-            except Exception as secondary_exc:
-                logger.exception("plan graph failed to parse JSON plan")
+            if structured_output is None:
+                normalized_content = _normalize_plan_json(raw_content)
+                try:
+                    plan_data = PlanOut.model_validate_json(normalized_content)
+                    logger.warning(
+                        "plan graph used legacy JSON normalize fallback: %s",
+                        primary_exc.__class__.__name__,
+                    )
+                except Exception as secondary_exc:
+                    logger.exception("plan graph failed to parse JSON plan")
+                    priority = await manager.mark_failure()
+                    result = {"parse_error": str(secondary_exc), "priority": priority}
+                    result.update(
+                        record_structured_step(
+                            state,
+                            step_label="parse_plan",
+                            inputs={"content_preview": raw_content[:120]},
+                            outputs={"priority": priority},
+                            error=str(secondary_exc),
+                        )
+                    )
+                    return result
+            else:
+                logger.exception("plan graph failed to parse structured plan")
                 priority = await manager.mark_failure()
-                result = {"parse_error": str(secondary_exc), "priority": priority}
+                result = {"parse_error": str(primary_exc), "priority": priority}
                 result.update(
                     record_structured_step(
                         state,
                         step_label="parse_plan",
-                        inputs={"content_preview": raw_content[:120]},
+                        inputs={"content_preview": raw_content[:120], "used_structured_output": True},
                         outputs={"priority": priority},
-                        error=str(secondary_exc),
+                        error=str(primary_exc),
                     )
                 )
                 return result

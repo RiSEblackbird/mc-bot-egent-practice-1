@@ -91,3 +91,23 @@
   - 成功（9 passed）。
 - 残課題:
   - `_normalize_plan_json()` の適用範囲を旧 state / 外部 legacy データ境界へ限定し、新規 LLM 出力での常用経路から段階的に除去する。
+
+## 追加スライス (2026-04-19, 5)
+- 変更概要:
+  - planner の parse 経路で Responses API の structured output (`output_parsed` / `content[].parsed`) を優先して検証するように変更し、schema-first の主経路を文字列 JSON parse に依存しない形へ整理。
+  - `structured_output` が取得できる場合は legacy `_normalize_plan_json()` を経由しないようにし、normalize は文字列出力のみの後方互換境界へ限定。
+  - 回帰テストを追加し、`output_text` が壊れていても `output_parsed` が正常なら `PlanOut` を復元できることを固定化。
+- 主な変更ファイル:
+  - `python/planner/prompts.py`
+  - `python/planner/graph.py`
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - schema-first 経路の堅牢性が向上し、structured output を返すモデル応答で JSON repair 依存が減少。
+  - legacy normalize は後方互換（非構造化文字列）に限定され、段階的除去に向けた境界が明確化。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（10 passed）。
+- 残課題:
+  - `structured_output` 自体が schema 不整合だった場合の error taxonomy を planner/domain で明確化する。
+  - `_normalize_plan_json()` の責務を旧 state migration へさらに限定する。
