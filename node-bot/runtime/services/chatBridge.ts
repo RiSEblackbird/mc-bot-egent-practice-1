@@ -26,6 +26,9 @@ export interface ChatMessenger {
 export interface ChatBridgeConfig {
   agentControlWebsocketUrl: string;
   currentPositionKeywords: string[];
+  heartbeatIntervalMs?: number;
+  reconnectBackoffBaseMs?: number;
+  reconnectBackoffMaxMs?: number;
 }
 
 function summarizeCommandResponse(response: CommandResponse): Record<string, unknown> {
@@ -48,6 +51,14 @@ export class ChatBridge {
   private readonly createWebSocket: WebSocketFactory;
 
   private readonly logger: ChatBridgeLogger;
+
+  private socket: MinimalWebSocket | null = null;
+
+  private connectionPromise: Promise<MinimalWebSocket> | null = null;
+
+  private reconnectAttempts = 0;
+
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(config: ChatBridgeConfig, dependencies: { chatMessenger: ChatMessenger; createWebSocket?: WebSocketFactory; logger?: ChatBridgeLogger }) {
     this.config = config;
@@ -105,65 +116,131 @@ export class ChatBridge {
    * Python 側の LangGraph 共有メモリへチャットを転送する。接続が確立できない場合でも Bot の処理をブロックしない。
    */
   private async forwardChatToAgent(username: string, message: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const payload = buildEnvelope({
-        source: 'node-bot',
-        kind: 'command',
-        name: 'chat',
-        body: {
-          type: 'chat',
-          args: { username, message },
-        },
+    const payload = buildEnvelope({
+      source: 'node-bot',
+      kind: 'command',
+      name: 'chat',
+      body: {
+        type: 'chat',
+        args: { username, message },
+      },
+    });
+
+    try {
+      const socket = await this.ensureConnected();
+      socket.send(JSON.stringify(payload));
+    } catch (error) {
+      this.logger('error', '[ChatBridge] failed to forward chat to agent', {
+        message: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
 
-      const ws = this.createWebSocket(this.config.agentControlWebsocketUrl);
-      let settled = false;
-      const timeout = setTimeout(() => {
-        this.logger('warn', '[ChatBridge] agent did not respond within 10s');
-        ws.terminate();
-        cleanup();
-      }, 10_000);
+  private async ensureConnected(): Promise<MinimalWebSocket> {
+    if (this.socket) {
+      return this.socket;
+    }
+    if (this.connectionPromise) {
+      return this.connectionPromise;
+    }
 
-      const cleanup = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        ws.removeAllListeners();
-        resolve();
+    this.connectionPromise = new Promise<MinimalWebSocket>((resolve, reject) => {
+      const delayMs = this.computeBackoffDelayMs();
+      if (delayMs > 0) {
+        this.logger('info', '[ChatBridge] reconnect backoff', { delayMs, attempt: this.reconnectAttempts });
+      }
+      const connect = (): void => {
+        const ws = this.createWebSocket(this.config.agentControlWebsocketUrl);
+        const timeout = setTimeout(() => {
+          ws.terminate();
+          reject(new Error('agent websocket connection timeout'));
+        }, 10_000);
+
+        ws.once('open', () => {
+          clearTimeout(timeout);
+          this.socket = ws;
+          this.connectionPromise = null;
+          this.reconnectAttempts = 0;
+          this.startHeartbeat();
+          resolve(ws);
+        });
+
+        ws.once('message', (data) => {
+          const text = typeof data === 'string' ? data : data?.toString?.() ?? '';
+          try {
+            const parsed = JSON.parse(text) as CommandResponse;
+            if (!parsed.ok) {
+              this.logger('warn', '[ChatBridge] agent reported failure', summarizeCommandResponse(parsed));
+            }
+          } catch {
+            // heartbeat ack や非JSONメッセージは読み飛ばす
+          }
+        });
+
+        const markDisconnected = (reason: string, error?: unknown): void => {
+          clearTimeout(timeout);
+          if (this.socket === ws) {
+            this.socket = null;
+          }
+          this.connectionPromise = null;
+          this.stopHeartbeat();
+          this.reconnectAttempts += 1;
+          this.logger(error ? 'warn' : 'info', `[ChatBridge] ${reason}`, {
+            attempt: this.reconnectAttempts,
+            message: error instanceof Error ? error.message : undefined,
+          });
+        };
+
+        ws.once('close', () => markDisconnected('agent websocket closed'));
+        ws.once('error', (error) => {
+          markDisconnected('agent websocket error', error);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
       };
 
-      ws.once('open', () => {
-        ws.send(JSON.stringify(payload));
-      });
-
-      ws.once('message', (data) => {
-        const text = typeof data === 'string' ? data : data?.toString?.() ?? '';
-        this.logger('info', '[ChatBridge] agent response received', { raw: text });
-        try {
-          const parsed = JSON.parse(text) as CommandResponse;
-          if (!parsed.ok) {
-            this.logger('warn', '[ChatBridge] agent reported failure', summarizeCommandResponse(parsed));
-          }
-        } catch (error) {
-          this.logger('warn', '[ChatBridge] failed to parse agent response', { message: error instanceof Error ? error.message : String(error) });
-        }
-        ws.close();
-        cleanup();
-      });
-
-      ws.once('close', () => {
-        cleanup();
-      });
-
-      ws.once('error', (error) => {
-        this.logger('error', '[ChatBridge] failed to reach agent', { message: error instanceof Error ? error.message : String(error) });
-        cleanup();
-      });
-    }).catch((error) => {
-      this.logger('error', '[ChatBridge] unexpected error', { message: error instanceof Error ? error.message : String(error) });
+      if (delayMs > 0) {
+        setTimeout(connect, delayMs);
+      } else {
+        connect();
+      }
     });
+
+    return this.connectionPromise;
+  }
+
+  private computeBackoffDelayMs(): number {
+    if (this.reconnectAttempts <= 0) {
+      return 0;
+    }
+    const base = this.config.reconnectBackoffBaseMs ?? 500;
+    const max = this.config.reconnectBackoffMaxMs ?? 5_000;
+    const delay = base * (2 ** Math.max(0, this.reconnectAttempts - 1));
+    return Math.min(max, delay);
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    const intervalMs = this.config.heartbeatIntervalMs ?? 15_000;
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.socket) {
+        return;
+      }
+      const heartbeat = buildEnvelope({
+        source: 'node-bot',
+        kind: 'status',
+        name: 'heartbeat',
+        body: { type: 'heartbeat', args: { ts: new Date().toISOString() } },
+      });
+      this.socket.send(JSON.stringify(heartbeat));
+    }, intervalMs);
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeatTimer) {
+      return;
+    }
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 }
 
