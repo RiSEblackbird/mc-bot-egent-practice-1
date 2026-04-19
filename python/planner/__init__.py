@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import openai
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Type
 
 from langgraph.graph.state import CompiledStateGraph
+from pydantic import BaseModel
 
 from llm.client import (
     AsyncOpenAI,
@@ -62,13 +63,30 @@ _ASYNC_CLIENT_FACTORY = _default_async_client_factory
 _PLAN_GRAPH: Optional[CompiledStateGraph] = None
 
 
-def _build_responses_payload(system_prompt: str, user_prompt: str, config: PlannerConfig) -> Dict[str, Any]:
+def _build_responses_payload(
+    system_prompt: str,
+    user_prompt: str,
+    config: PlannerConfig,
+    *,
+    schema_model: Optional[Type[BaseModel]] = None,
+    schema_name: Optional[str] = None,
+) -> Dict[str, Any]:
     """Responses API 呼び出しに共通するペイロードを一元生成する。"""
+
+    if schema_model is None:
+        text_format: Dict[str, Any] = {"type": "json_object"}
+    else:
+        text_format = {
+            "type": "json_schema",
+            "name": schema_name or schema_model.__name__,
+            "schema": schema_model.model_json_schema(),
+            "strict": True,
+        }
 
     payload: Dict[str, Any] = {
         "model": config.model,
         "input": _build_responses_input(system_prompt, user_prompt),
-        "text": {"format": {"type": "json_object"}},
+        "text": {"format": text_format},
     }
 
     temperature = resolve_request_temperature(config)
@@ -93,7 +111,13 @@ def _get_plan_graph() -> CompiledStateGraph:
             _PLANNER_CONFIG,
             priority_manager=_PRIORITY_MANAGER,
             async_client_factory=_ASYNC_CLIENT_FACTORY,
-            payload_builder=lambda system, user: _build_responses_payload(system, user, _PLANNER_CONFIG),
+            payload_builder=lambda system, user: _build_responses_payload(
+                system,
+                user,
+                _PLANNER_CONFIG,
+                schema_model=PlanOut,
+                schema_name="plan_out",
+            ),
         )
     return _PLAN_GRAPH
 
@@ -159,7 +183,13 @@ async def compose_barrier_notification(
     prompt = build_barrier_prompt(step, reason, context)
     logger.info(f"Barrier prompt: {prompt}")
 
-    request_payload = _build_responses_payload(BARRIER_SYSTEM, prompt, _PLANNER_CONFIG)
+    request_payload = _build_responses_payload(
+        BARRIER_SYSTEM,
+        prompt,
+        _PLANNER_CONFIG,
+        schema_model=BarrierNotification,
+        schema_name="barrier_notification",
+    )
 
     try:
         resp = await asyncio.wait_for(
