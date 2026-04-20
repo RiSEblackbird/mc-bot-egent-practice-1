@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help setup-python run-python run-python-dev run-node run-node-dev test-node build-bridge compose-up compose-up-linux-host
+.PHONY: help setup-python run-python run-python-dev run-node run-node-dev test-node build-bridge compose-up compose-up-watch compose-up-linux-host
 
 help:
 	@printf "Available targets:\n"
@@ -12,6 +12,7 @@ help:
 	@printf "  test-node             Run Node unit tests\n"
 	@printf "  build-bridge          Build the Paper AgentBridge plugin\n"
 	@printf "  compose-up            Start the default Docker Compose stack\n"
+	@printf "  compose-up-watch      Start the default Docker Compose stack with --watch\n"
 	@printf "  compose-up-linux-host Start Compose with Linux host-gateway aliases\n"
 
 setup-python:
@@ -37,6 +38,9 @@ build-bridge:
 
 compose-up:
 	docker compose up --build
+
+compose-up-watch:
+	docker compose up --build --watch
 
 compose-up-linux-host:
 	docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --build

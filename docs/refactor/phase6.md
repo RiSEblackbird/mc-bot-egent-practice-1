@@ -1,0 +1,28 @@
+## Phase 6 完了報告
+- 変更概要:
+  - Compose の Node/Python サービスを Dockerfile build 前提へ切り替え、起動時 install（`npm ci` / `pip install`）を除去。
+  - `develop.watch` を導入し、ソース同期と依存ファイル変更時 rebuild を分離して watcher の責務を整理。
+  - `bridge` / `node-bot` / `python-agent` に healthcheck を追加し、`depends_on.condition: service_healthy` で起動順序を明示。
+  - `make compose-up-watch` を追加し、README の Compose 手順を `docker compose up --build --watch` 基準へ更新。
+- 主な変更ファイル:
+  - `docker-compose.yml`
+  - `python/Dockerfile`
+  - `node-bot/Dockerfile`
+  - `Makefile`
+  - `README.md`
+  - `docs/refactor/progress.json`
+- 互換性影響:
+  - Compose 利用時は build で依存解決済みイメージを使うため、初回起動時間は増えるが再起動時の安定性と再現性は向上。
+  - `docker compose up` でも動作するが、開発中のホットリロードは `--watch`（または `make compose-up-watch`）利用を推奨。
+  - Bridge は引き続き `bridge-plugin/build/libs` の jar を mount する運用を維持（Phase 7 以降で監視/運用手順を追加検討）。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_thread_config.py`
+  - `bash scripts/run-node-bot.sh test`
+  - `docker compose config`
+- テスト結果:
+  - Python テストは成功。
+  - Node テストは実行環境が Node 20 のため失敗（要件は Node 22）。
+  - `docker compose config` は実行環境に docker コマンドが無いため未実行。
+- 残課題:
+  - Node 22 / Docker が利用可能な環境で `docker compose up --build --watch` の起動スモークを取り、healthcheck と watch の実挙動を確認する。
+  - Phase 7 で可観測性強化（trace/run/message ID の end-to-end）と architecture 文書更新を実施する。
