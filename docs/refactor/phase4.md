@@ -130,3 +130,21 @@
   - 成功（12 passed）。
 - 残課題:
   - `_normalize_plan_json()` を旧 state migration / 外部 legacy 境界へさらに限定し、主経路から段階的に除去する。
+
+## 追加スライス (2026-04-20, 2)
+- 変更概要:
+  - planner の parse 経路で legacy `_normalize_plan_json()` を発火させる条件を見直し、JSON として壊れている payload (`json_invalid`) では normalize を試みず即時に制御された失敗へ分類するようにした。
+  - `_should_use_legacy_normalize` を追加し、legacy normalize を「schema mismatch を持つ JSON 文字列境界」に限定した。
+  - 回帰テストを追加し、非 JSON payload 時に normalize が呼ばれないことを monkeypatch で固定化した。
+- 主な変更ファイル:
+  - `python/planner/graph.py`
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - schema-first の正常系と既存 fallback (`PlanOut(plan=[], resp="了解しました。")`) は維持。
+  - 非 JSON 文字列に対する不要な normalize 試行がなくなり、legacy fallback の責務が狭まった。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（13 passed）。
+- 残課題:
+  - `_normalize_plan_json()` の責務を、旧 state migration / 外部 legacy boundary coercion のみへさらに限定する。

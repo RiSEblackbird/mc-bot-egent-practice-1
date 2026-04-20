@@ -161,6 +161,23 @@ def _classify_plan_parse_error(exc: Exception, *, used_structured_output: bool) 
         return "plan_json_decode_failed"
     return "plan_parse_unknown"
 
+
+def _should_use_legacy_normalize(raw_content: str, exc: Exception) -> bool:
+    """legacy normalize の適用条件を、旧 JSON 境界に限定する。"""
+
+    if not raw_content.strip():
+        return False
+    if not isinstance(exc, ValidationError):
+        return False
+    try:
+        error_types = {str(item.get("type", "")) for item in exc.errors()}
+    except Exception:  # noqa: BLE001 - 補助判定失敗時は安全側で normalize しない
+        return False
+    if "json_invalid" in error_types:
+        # 文字列自体が JSON として壊れているケースは修理対象にしない。
+        return False
+    return True
+
 def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
     hints: List[str] = []
     context = state.get("context") or {}
@@ -355,19 +372,39 @@ def build_plan_graph(
                 plan_data = PlanOut.model_validate_json(raw_content)
         except Exception as primary_exc:
             if structured_output is None:
-                normalized_content = _normalize_plan_json(raw_content)
-                try:
-                    plan_data = PlanOut.model_validate_json(normalized_content)
-                    logger.warning(
-                        "plan graph used legacy JSON normalize fallback: %s",
-                        primary_exc.__class__.__name__,
-                    )
-                except Exception as secondary_exc:
-                    parse_error_code = _classify_plan_parse_error(secondary_exc, used_structured_output=False)
+                if _should_use_legacy_normalize(raw_content, primary_exc):
+                    normalized_content = _normalize_plan_json(raw_content)
+                    try:
+                        plan_data = PlanOut.model_validate_json(normalized_content)
+                        logger.warning(
+                            "plan graph used legacy JSON normalize fallback: %s",
+                            primary_exc.__class__.__name__,
+                        )
+                    except Exception as secondary_exc:
+                        parse_error_code = _classify_plan_parse_error(secondary_exc, used_structured_output=False)
+                        logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
+                        priority = await manager.mark_failure()
+                        result = {
+                            "parse_error": str(secondary_exc),
+                            "parse_error_code": parse_error_code,
+                            "priority": priority,
+                        }
+                        result.update(
+                            record_structured_step(
+                                state,
+                                step_label="parse_plan",
+                                inputs={"content_preview": raw_content[:120]},
+                                outputs={"priority": priority, "parse_error_code": parse_error_code},
+                                error=str(secondary_exc),
+                            )
+                        )
+                        return result
+                else:
+                    parse_error_code = _classify_plan_parse_error(primary_exc, used_structured_output=False)
                     logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
                     priority = await manager.mark_failure()
                     result = {
-                        "parse_error": str(secondary_exc),
+                        "parse_error": str(primary_exc),
                         "parse_error_code": parse_error_code,
                         "priority": priority,
                     }
@@ -377,7 +414,7 @@ def build_plan_graph(
                             step_label="parse_plan",
                             inputs={"content_preview": raw_content[:120]},
                             outputs={"priority": priority, "parse_error_code": parse_error_code},
-                            error=str(secondary_exc),
+                            error=str(primary_exc),
                         )
                     )
                     return result
