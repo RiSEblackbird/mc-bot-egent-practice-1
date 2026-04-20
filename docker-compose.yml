@@ -1,5 +1,6 @@
 services:
   bridge:
+    profiles: ["paper"]
     # Paper + AgentBridge + CoreProtect をまとめた開発用サーバー
     image: itzg/minecraft-server:java21
     working_dir: /data
@@ -19,17 +20,17 @@ services:
       # /data/plugins は Paper がリマップ用の作業ディレクトリを生成するため書き込み可が必須。
       - ./bridge-plugin/build/libs:/plugins:ro
     ports:
-      # 外部から Paper へ直接入る必要がある場合のみ 25565 を開ける。
-      # - "25566:25565"  # ホスト側ポートをずらす例
-      # - "19071:19071"
-      # ホストで Paper を使い続けたい場合は、Compose 側の公開ポートをずらす（例: "19072:19071"）か、bridge サービスを起動しない運用に切り替えてください。
-      - "19072:19071"
+      # Minecraft クライアント既定接続先。必要に応じて .env の MC_PUBLISHED_PORT で変更可能。
+      - "${MC_PUBLISHED_PORT:-25565}:25565"
+      # AgentBridge HTTP。必要時だけ使用。
+      - "${BRIDGE_PUBLISHED_PORT:-19072}:19071"
     healthcheck:
-      test: ["CMD-SHELL", "bash -lc '</dev/tcp/127.0.0.1/19071'"]
+      # 軽量確認では AgentBridge HTTP ではなく Paper TCP ポートを監視する。
+      test: ["CMD-SHELL", "bash -lc '</dev/tcp/127.0.0.1/25565'"]
       interval: 10s
       timeout: 5s
-      retries: 12
-      start_period: 40s
+      retries: 18
+      start_period: 60s
     restart: unless-stopped
 
   node-bot:
@@ -40,12 +41,15 @@ services:
     working_dir: /app/node-bot
     volumes:
       - ./node-bot:/app/node-bot
+      # bind mount で node_modules が隠れる問題を避ける。
+      - node-bot-modules:/app/node-bot/node_modules
     env_file:
       - .env
     environment:
       # Mineflayer が Paper と揃った既定バージョンで起動するよう docker-compose 側でもフォールバックを指定する。
       MC_VERSION: ${MC_VERSION:-1.21.1}
-      MC_HOST: ${COMPOSE_MC_HOST:-bridge}
+      # host-paper モードの既定。paper モードでは docker-compose.paper.yml 側で bridge へ上書き。
+      MC_HOST: ${COMPOSE_MC_HOST:-host.docker.internal}
       WS_HOST: ${WS_HOST:-0.0.0.0}
       WS_PORT: ${WS_PORT:-8765}
       AGENT_WS_URL: ${COMPOSE_AGENT_WS_URL:-ws://python-agent:${AGENT_WS_PORT:-9000}}
@@ -55,7 +59,7 @@ services:
       OTEL_TRACES_SAMPLER_RATIO: ${OTEL_TRACES_SAMPLER_RATIO:-1.0}
       AGENT_BRIDGE_LOG_LEVEL: ${AGENT_BRIDGE_LOG_LEVEL:-warn}
       AGENT_LOG_LEVEL: ${AGENT_LOG_LEVEL:-warn}
-    command: ["npm", "run", "dev"]
+    command: ["bash", "-lc", "npm ci && npm run dev"]
     ports:
       - "8765:8765"
     healthcheck:
@@ -70,9 +74,6 @@ services:
       start_period: 20s
     stdin_open: true
     tty: true
-    depends_on:
-      bridge:
-        condition: service_healthy
     develop:
       watch:
         - action: sync
@@ -101,7 +102,9 @@ services:
       WS_URL: ${COMPOSE_WS_URL:-ws://node-bot:${WS_PORT:-8765}}
       AGENT_WS_HOST: ${AGENT_WS_HOST:-0.0.0.0}
       AGENT_WS_PORT: ${AGENT_WS_PORT:-9000}
-      BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://bridge:19071}
+      # host-paper モードの既定。paper モードでは docker-compose.paper.yml 側で bridge へ上書き。
+      BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://host.docker.internal:19071}
+      BRIDGE_EVENT_STREAM_ENABLED: ${BRIDGE_EVENT_STREAM_ENABLED:-false}
       WATCHFILES_FORCE_POLLING: "true"
     command:
       - watchfiles
@@ -124,8 +127,6 @@ services:
     stdin_open: true
     tty: true
     depends_on:
-      bridge:
-        condition: service_healthy
       node-bot:
         condition: service_healthy
     develop:
@@ -145,3 +146,6 @@ services:
           path: ./constraints.txt
         - action: rebuild
           path: ./pyproject.toml
+
+volumes:
+  node-bot-modules:

@@ -1,0 +1,19 @@
+services:
+  node-bot:
+    environment:
+      MC_HOST: bridge
+    depends_on:
+      bridge:
+        condition: service_healthy
+
+  python-agent:
+    environment:
+      BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://bridge:19071}
+      # AgentBridge を本格利用する時だけ .env 側で true にする。
+      # 軽い動作確認では false のままにして、SSE 再接続ログのノイズを避ける。
+      BRIDGE_EVENT_STREAM_ENABLED: ${BRIDGE_EVENT_STREAM_ENABLED:-false}
+    depends_on:
+      bridge:
+        condition: service_healthy
+      node-bot:
+        condition: service_healthy

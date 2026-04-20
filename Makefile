@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help setup-python run-python run-python-dev run-node run-node-dev test-node build-bridge compose-up compose-up-watch compose-up-linux-host
+.PHONY: help setup-python run-python run-python-dev run-node run-node-dev test-node build-bridge compose-up compose-up-watch compose-up-linux-host dev dev-host-paper dev-down
 
 help:
 	@printf "Available targets:\n"
@@ -14,6 +14,9 @@ help:
 	@printf "  compose-up            Start the default Docker Compose stack\n"
 	@printf "  compose-up-watch      Start the default Docker Compose stack with --watch\n"
 	@printf "  compose-up-linux-host Start Compose with Linux host-gateway aliases\n"
+	@printf "  dev                   Start Paper + Node + Python via Compose (recommended)\n"
+	@printf "  dev-host-paper        Start Node + Python using host Paper server\n"
+	@printf "  dev-down              Stop Compose dev stack and remove orphans\n"
 
 setup-python:
 	bash scripts/setup-python-env.sh
@@ -44,3 +47,13 @@ compose-up-watch:
 
 compose-up-linux-host:
 	docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --build
+
+
+dev:
+	bash scripts/dev-up.sh paper
+
+dev-host-paper:
+	bash scripts/dev-up.sh host-paper
+
+dev-down:
+	docker compose -f docker-compose.yml -f docker-compose.paper.yml --profile paper down --remove-orphans
