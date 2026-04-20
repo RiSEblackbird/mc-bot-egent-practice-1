@@ -1,6 +1,6 @@
 {
   "updated_at": "2026-04-20",
-  "current_phase": 4,
+  "current_phase": 5,
   "phases": [
     {
       "phase": 0,
@@ -44,7 +44,7 @@
     {
       "phase": 4,
       "name": "planner を Structured Outputs 化",
-      "status": "in_progress",
+      "status": "completed",
       "artifacts": [
         "docs/refactor/phase4.md",
         "python/planner/__init__.py",
@@ -55,7 +55,12 @@
     {
       "phase": 5,
       "name": "LangGraph persistence / interrupt 化",
-      "status": "pending"
+      "status": "in_progress",
+      "artifacts": [
+        "python/planner/__init__.py",
+        "tests/test_planner_thread_config.py",
+        "docs/refactor/phase5.md"
+      ]
     },
     {
       "phase": 6,
