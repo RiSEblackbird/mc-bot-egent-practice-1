@@ -220,6 +220,17 @@ async def _compose_pre_action_follow_up(
     return "作業内容に不確実な点があるため、追加の指示をいただけますか？"
 
 
+def _classify_llm_error_for_parse(error_text: str) -> str:
+    """LLM 呼び出し失敗を parse ノード用の安定コードに分類する。"""
+
+    lowered = (error_text or "").lower()
+    if "timeout" in lowered:
+        return "llm_timeout"
+    if "refusal" in lowered:
+        return "llm_refusal"
+    return "llm_call_failed"
+
+
 def build_plan_graph(
     config: PlannerConfig,
     *,
@@ -347,7 +358,12 @@ def build_plan_graph(
     async def parse_plan(state: UnifiedPlanState) -> Dict[str, Any]:
         if state.get("llm_error"):
             priority = state.get("priority") or await manager.mark_failure()
-            result: Dict[str, Any] = {"parse_error": state["llm_error"], "priority": priority}
+            parse_error_code = _classify_llm_error_for_parse(str(state["llm_error"]))
+            result: Dict[str, Any] = {
+                "parse_error": state["llm_error"],
+                "parse_error_code": parse_error_code,
+                "priority": priority,
+            }
             fallback_plan = state.get("fallback_plan_out")
             if fallback_plan is not None:
                 result["fallback_plan_out"] = fallback_plan
@@ -356,7 +372,7 @@ def build_plan_graph(
                     state,
                     step_label="parse_plan",
                     inputs={"has_llm_error": True},
-                    outputs={"priority": priority},
+                    outputs={"priority": priority, "parse_error_code": parse_error_code},
                     error=state.get("llm_error", ""),
                 )
             )

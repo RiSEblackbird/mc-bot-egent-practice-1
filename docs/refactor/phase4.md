@@ -148,3 +148,22 @@
   - 成功（13 passed）。
 - 残課題:
   - `_normalize_plan_json()` の責務を、旧 state migration / 外部 legacy boundary coercion のみへさらに限定する。
+
+
+## 追加スライス (2026-04-20, 3)
+- 変更概要:
+  - `parse_plan` ノードに LLM 呼び出し失敗時の安定エラー分類を追加し、`parse_error_code` として `llm_call_failed` / `llm_timeout` / `llm_refusal` を返せるようにした。
+  - `record_structured_step` にも同じ `parse_error_code` を記録し、呼び出し失敗時の可観測性を JSON parse 失敗経路と揃えた。
+  - 回帰テストを追加し、LLM 呼び出し timeout 時に `parse_error_code=llm_timeout` が返ることを固定化した。
+- 主な変更ファイル:
+  - `python/planner/graph.py`
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - planner の安全フォールバック (`PlanOut(plan=[], resp=...)`) は維持。
+  - 失敗時に機械可読コードが増え、LLM 呼び出し障害と JSON/schema 障害を分離して集計可能になった。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（14 passed）。
+- 残課題:
+  - `_normalize_plan_json()` の責務を旧 state migration / 外部 legacy boundary coercion へさらに限定する。

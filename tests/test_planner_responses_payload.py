@@ -67,6 +67,16 @@ class _FakeAsyncClient:
         self.responses = _FakeResponses(output_text, output, response_attrs)
 
 
+class _TimeoutResponses:
+    async def create(self, **_: object) -> object:
+        raise TimeoutError("simulated timeout")
+
+
+class _TimeoutAsyncClient:
+    def __init__(self) -> None:
+        self.responses = _TimeoutResponses()
+
+
 async def _invoke_graph_with_output_state(
     output_text: str,
     output: list[object] | None = None,
@@ -211,3 +221,20 @@ async def test_plan_graph_skips_legacy_normalize_for_non_json_payload(monkeypatc
     monkeypatch.setattr(planner_graph, "_normalize_plan_json", _raise_if_called)
     result = await _invoke_graph_with_output_state("not-json")
     assert result.get("parse_error_code") == "plan_json_decode_failed"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_sets_llm_timeout_error_code_when_call_times_out() -> None:
+    config = _make_config()
+    graph = build_plan_graph(
+        config,
+        priority_manager=PlanPriorityManager(config),
+        async_client_factory=lambda: _TimeoutAsyncClient(),
+        payload_builder=lambda system_prompt, user_prompt: {
+            "model": config.model,
+            "input": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            "text": {"format": {"type": "json_schema"}},
+        },
+    )
+    result = await graph.ainvoke({"user_msg": "test", "context": {}, "structured_events": []})
+    assert result.get("parse_error_code") == "llm_timeout"
