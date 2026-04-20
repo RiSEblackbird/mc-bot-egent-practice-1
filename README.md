@@ -162,16 +162,18 @@ Python と Node を同時にホットリロードで動かしたい場合:
 
 ```bash
 cp env.dev.example .env  # まだ .env が無い場合
-docker compose up --build
+docker compose up --build --watch
 ```
 
-- **Node**: `npm ci` 後に `npm run dev`（`tsx`）で自動再起動
-- **Python**: `watchfiles --filter python --ignore-paths .venv -- "python -m mc_bot_agent_entrypoint"` で自動再起動
+- **Node**: `node-bot/Dockerfile` の build 時に `npm ci` で依存を固定し、起動時は `npm run dev` のみ実行
+- **Python**: `python/Dockerfile` の build 時に `pip install -r requirements.txt -c constraints.txt && pip install -e .` を実行し、起動時は `watchfiles ... "python -m mc_bot_agent_entrypoint"` のみ実行
+- Compose の `develop.watch` で `node-bot/` と `python/` を同期し、依存ファイル（`package-lock.json`, `requirements.txt`, `constraints.txt`, `pyproject.toml`）変更時は自動 rebuild
+- `bridge` / `node-bot` / `python-agent` は healthcheck を持ち、`depends_on.condition: service_healthy` で起動順序を制御
 
-Docker Desktop を使う macOS / Windows では上記のままで構いません。Linux で Compose コンテナからホスト上の Paper / OpenTelemetry Collector へ到達させたい場合は、`host-gateway` を追加する override を重ねて起動してください。
+`make compose-up-watch` でも同じ起動が可能です。Docker Desktop を使う macOS / Windows では上記のままで構いません。Linux で Compose コンテナからホスト上の Paper / OpenTelemetry Collector へ到達させたい場合は、`host-gateway` を追加する override を重ねて起動してください。
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --build --watch
 ```
 
 ## 設定（.env）

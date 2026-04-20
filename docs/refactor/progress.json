@@ -1,6 +1,6 @@
 {
   "updated_at": "2026-04-20",
-  "current_phase": 5,
+  "current_phase": 6,
   "phases": [
     {
       "phase": 0,
@@ -55,7 +55,7 @@
     {
       "phase": 5,
       "name": "LangGraph persistence / interrupt 化",
-      "status": "in_progress",
+      "status": "completed",
       "artifacts": [
         "python/planner/__init__.py",
         "tests/test_planner_thread_config.py",
@@ -65,7 +65,14 @@
     {
       "phase": 6,
       "name": "Docker / Compose 開発フロー更新",
-      "status": "pending"
+      "status": "completed",
+      "artifacts": [
+        "docker-compose.yml",
+        "python/Dockerfile",
+        "node-bot/Dockerfile",
+        "docs/refactor/phase6.md",
+        "README.md"
+      ]
     },
     {
       "phase": 7,

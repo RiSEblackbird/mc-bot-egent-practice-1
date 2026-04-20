@@ -24,17 +24,22 @@ services:
       # - "19071:19071"
       # ホストで Paper を使い続けたい場合は、Compose 側の公開ポートをずらす（例: "19072:19071"）か、bridge サービスを起動しない運用に切り替えてください。
       - "19072:19071"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc '</dev/tcp/127.0.0.1/19071'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
     restart: unless-stopped
 
   node-bot:
     # TypeScript ソースをウォッチしながら Mineflayer ボットを再起動する開発用サービス
-    image: node:22
-    # ↑ Mineflayer v4.33.0 以降が要求する Node.js 22 系をベースイメージで確保し、
-    #    古い Node.js で互換バージョン（4.25.0 など）がインストールされることによる
-    #    プロトコル解析失敗（PartialReadError）を防止する。
-    working_dir: /app
+    build:
+      context: .
+      dockerfile: node-bot/Dockerfile
+    working_dir: /app/node-bot
     volumes:
-      - ./:/app
+      - ./node-bot:/app/node-bot
     env_file:
       - .env
     environment:
@@ -50,26 +55,45 @@ services:
       OTEL_TRACES_SAMPLER_RATIO: ${OTEL_TRACES_SAMPLER_RATIO:-1.0}
       AGENT_BRIDGE_LOG_LEVEL: ${AGENT_BRIDGE_LOG_LEVEL:-warn}
       AGENT_LOG_LEVEL: ${AGENT_LOG_LEVEL:-warn}
-    command:
-      - bash
-      - -lc
-      - |
-        cd node-bot \
-        && npm ci \
-        && npm run dev
+    command: ["npm", "run", "dev"]
     ports:
       - "8765:8765"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const net=require('node:net');const s=net.connect({host:'127.0.0.1',port:8765},()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     stdin_open: true
     tty: true
     depends_on:
-      - bridge
+      bridge:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ./node-bot
+          target: /app/node-bot
+          ignore:
+            - node_modules/
+            - dist/
+        - action: rebuild
+          path: ./node-bot/package-lock.json
 
   python-agent:
     # Python エージェントを watchfiles で自動再実行する開発用サービス
-    image: python:3.12
+    build:
+      context: .
+      dockerfile: python/Dockerfile
     working_dir: /app
     volumes:
-      - ./:/app
+      - ./python:/app/python
+      - ./tests:/app/tests
+      - ./contracts:/app/contracts
     env_file:
       - .env
     environment:
@@ -79,17 +103,45 @@ services:
       AGENT_WS_PORT: ${AGENT_WS_PORT:-9000}
       BRIDGE_URL: ${COMPOSE_BRIDGE_URL:-http://bridge:19071}
       WATCHFILES_FORCE_POLLING: "true"
-      PYTHONPATH: ${PYTHONPATH:-/app:/app/python}
     command:
-      - bash
-      - -lc
-      - |
-        # watchfiles CLI ではコマンド全体を 1 引数として渡さないと Python が対話モードで起動してしまい、
-        # エージェントがポートをリッスンしないため明示的にクォートする。プロジェクトルートのまま
-        # python 配下を監視し、モジュール検索パスを /app に残して ModuleNotFound エラーを防ぐ。
-        pip install --no-cache-dir -r requirements.txt -c constraints.txt && \
-        watchfiles --filter python --ignore-paths .venv -- "python -m python"
+      - watchfiles
+      - --filter
+      - python
+      - --ignore-paths
+      - .venv
+      - --
+      - python -m mc_bot_agent_entrypoint
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; s=socket.create_connection(('127.0.0.1', 9000), 2); s.close()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     stdin_open: true
     tty: true
     depends_on:
-      - bridge
+      bridge:
+        condition: service_healthy
+      node-bot:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ./python
+          target: /app/python
+        - action: sync
+          path: ./tests
+          target: /app/tests
+        - action: sync
+          path: ./contracts
+          target: /app/contracts
+        - action: rebuild
+          path: ./requirements.txt
+        - action: rebuild
+          path: ./constraints.txt
+        - action: rebuild
+          path: ./pyproject.toml
