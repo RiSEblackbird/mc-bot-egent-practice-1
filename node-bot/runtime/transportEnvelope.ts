@@ -63,7 +63,7 @@ export function validateEnvelope(input: unknown): TransportEnvelope | null {
     return null;
   }
 
-  return maybe as TransportEnvelope;
+  return maybe as unknown as TransportEnvelope;
 }
 
 export function adaptLegacyCommandPayload(input: unknown): TransportEnvelope | null {
