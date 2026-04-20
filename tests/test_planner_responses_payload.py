@@ -1,4 +1,5 @@
 from planner import _build_responses_payload
+import planner.graph as planner_graph
 from planner.graph import build_plan_graph
 from planner.models import PlanOut
 from planner.priority import PlanPriorityManager
@@ -200,3 +201,13 @@ async def test_plan_graph_sets_json_parse_error_code_on_invalid_output() -> None
     assert result.get("parse_error_code") == "plan_json_decode_failed"
     assert isinstance(result.get("plan_out"), PlanOut)
     assert result["plan_out"].resp == "了解しました。"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_skips_legacy_normalize_for_non_json_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_if_called(_: str) -> str:
+        raise AssertionError("legacy normalize should not run for non-JSON payload")
+
+    monkeypatch.setattr(planner_graph, "_normalize_plan_json", _raise_if_called)
+    result = await _invoke_graph_with_output_state("not-json")
+    assert result.get("parse_error_code") == "plan_json_decode_failed"
