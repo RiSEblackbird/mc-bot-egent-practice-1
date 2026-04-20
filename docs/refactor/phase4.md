@@ -167,3 +167,22 @@
   - 成功（14 passed）。
 - 残課題:
   - `_normalize_plan_json()` の責務を旧 state migration / 外部 legacy boundary coercion へさらに限定する。
+
+## 追加スライス (2026-04-20, 4)
+- 変更概要:
+  - planner の `_should_use_legacy_normalize` 判定を厳格化し、legacy normalize を `arguments` / `constraints` / `backlog` / `clarification_needed` の型揺れ補正に限定した。
+  - `missing` / `extra_forbidden` など構造欠陥は normalize で補修せず、schema-first の `plan_schema_validation_failed` として扱うようにした。
+  - 回帰テストを追加し、必須キー欠落 payload では legacy normalize が呼ばれないことを monkeypatch で固定化した。
+- 主な変更ファイル:
+  - `python/planner/graph.py`
+  - `tests/test_planner_responses_payload.py`
+  - `docs/refactor/phase4.md`
+- 互換性影響:
+  - 正常系と既存の legacy coercion（座標型揺れ補正）は維持。
+  - 構造欠陥を normalize が隠蔽しないため、失敗分類の一貫性が向上。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（15 passed）。
+- 残課題:
+  - `_normalize_plan_json()` の責務を旧 state migration / 外部 legacy boundary coercion へさらに限定する。

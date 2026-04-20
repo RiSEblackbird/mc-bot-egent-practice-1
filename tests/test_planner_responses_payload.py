@@ -224,6 +224,20 @@ async def test_plan_graph_skips_legacy_normalize_for_non_json_payload(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_plan_graph_skips_legacy_normalize_for_missing_required_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise_if_called(_: str) -> str:
+        raise AssertionError("legacy normalize should not run for missing required fields")
+
+    monkeypatch.setattr(planner_graph, "_normalize_plan_json", _raise_if_called)
+    result = await _invoke_graph_with_output_state('{"intent":"move"}')
+    assert result.get("parse_error_code") is None
+    assert isinstance(result.get("plan_out"), PlanOut)
+    assert result["plan_out"].next_action == "chat"
+
+
+@pytest.mark.anyio
 async def test_plan_graph_sets_llm_timeout_error_code_when_call_times_out() -> None:
     config = _make_config()
     graph = build_plan_graph(

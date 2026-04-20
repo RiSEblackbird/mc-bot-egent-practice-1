@@ -170,12 +170,34 @@ def _should_use_legacy_normalize(raw_content: str, exc: Exception) -> bool:
     if not isinstance(exc, ValidationError):
         return False
     try:
-        error_types = {str(item.get("type", "")) for item in exc.errors()}
+        errors = list(exc.errors())
+        error_types = {str(item.get("type", "")) for item in errors}
     except Exception:  # noqa: BLE001 - 補助判定失敗時は安全側で normalize しない
         return False
     if "json_invalid" in error_types:
         # 文字列自体が JSON として壊れているケースは修理対象にしない。
         return False
+    # 欠落フィールドや想定外キーのような構造欠陥は normalize で補修せず、
+    # schema-first の制御された失敗として扱う。
+    if any(error_type in {"missing", "extra_forbidden"} for error_type in error_types):
+        return False
+    allowed_error_prefixes = {
+        "literal_error",
+        "int_type",
+        "int_parsing",
+        "dict_type",
+        "string_type",
+        "list_type",
+    }
+    if any(not any(error_type.startswith(prefix) for prefix in allowed_error_prefixes) for error_type in error_types):
+        return False
+    allowed_legacy_roots = {"arguments", "constraints", "backlog", "clarification_needed"}
+    for item in errors:
+        loc = item.get("loc", ())
+        if not isinstance(loc, (tuple, list)) or not loc:
+            return False
+        if str(loc[0]) not in allowed_legacy_roots:
+            return False
     return True
 
 def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
