@@ -1,0 +1,25 @@
+## Phase 7 進捗報告（Slice 1: architecture 文書化と残課題固定）
+- 変更概要:
+  - `docs/refactor/architecture.md` を追加し、刷新後の責務境界（transport envelope / planner schema-first / interrupt-resume / ID 体系 / env 分離 / CI-Docker 正本）を明文化。
+  - 可観測性強化の残課題（metrics, error taxonomy, redact）を次スライスで実装可能な粒度に切り出し。
+  - `docs/refactor/progress.json` を Phase 7 `in_progress` に更新し、現行フェーズを durable に記録。
+  - `plans/refactor-foundation-phase7-8.md` を追加し、受け入れ条件・検証コマンド・次アクションを固定。
+- 主な変更ファイル:
+  - `docs/refactor/architecture.md`
+  - `docs/refactor/phase7.md`
+  - `docs/refactor/progress.json`
+  - `plans/refactor-foundation-phase7-8.md`
+- 互換性影響:
+  - 実行コードへの直接影響はなし（ドキュメント/進捗管理のみ）。
+  - 次スライスで observability 実装を行う前提を明文化。
+- 実行したコマンド:
+  - `python -m json.tool docs/refactor/progress.json >/dev/null`
+  - `rg -n "Phase 7|trace_id|run_id|message_id|interrupt|thread_id|env.dev.example|env.prod.example" docs/refactor/architecture.md`
+  - `git diff -- docs/refactor/progress.json docs/refactor/architecture.md docs/refactor/phase7.md plans/refactor-foundation-phase7-8.md`
+- テスト結果:
+  - JSON 形式検証と内容 grep は成功。
+  - 本 slice はコード変更なしのため build/test は未実施（次 slice で observability 実装時に実施）。
+- 残課題:
+  - Node/Python/Bridge のログ文脈へ `trace_id` / `run_id` / `message_id` の網羅伝搬。
+  - metrics と error taxonomy の実装。
+  - legacy adapter 以外の重複コード整理。
