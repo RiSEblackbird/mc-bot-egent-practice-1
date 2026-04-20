@@ -1,0 +1,23 @@
+## Phase 8 完了報告
+- 変更概要:
+  - 研究要素の最小導入として、既存実装の `SkillRepository` / `ReflectionStore` / `skills` モデルを正式に Phase 8 成果物として位置付け、基盤刷新の完了状態を文書化した。
+  - 将来の所有者判断が必要な項目を `docs/refactor/owner-decisions.md` に集約し、実装は進めつつ最終値を勝手に固定しない運用境界を明確化した。
+  - `plans/refactor-foundation-phase7-8.md` と `docs/refactor/progress.json` を更新し、Phase 7/8 の durable な完了状態を記録した。
+- 主な変更ファイル:
+  - `docs/refactor/phase8.md`
+  - `docs/refactor/owner-decisions.md`
+  - `docs/refactor/progress.json`
+  - `plans/refactor-foundation-phase7-8.md`
+- 互換性影響:
+  - 実行時コードへの変更はなし（進捗管理・運用ドキュメント更新のみ）。
+  - 既存の `SkillRepository` / `ReflectionStore` / 成功手順再利用土台（`python/skills/seed_library.json`）を正本として継続利用する。
+- 実行したコマンド:
+  - `python -m json.tool docs/refactor/progress.json >/dev/null`
+  - `rg -n "owner-decisions|Phase 8|SkillRepository|ReflectionStore|registry" docs/refactor plans/refactor-foundation-phase7-8.md`
+  - `git diff -- docs/refactor/phase8.md docs/refactor/owner-decisions.md docs/refactor/progress.json plans/refactor-foundation-phase7-8.md`
+- テスト結果:
+  - ドキュメント整合と JSON 形式検証は成功。
+  - 本 Phase の差分はドキュメント限定のため、追加ビルド/テストは未実施。
+- 残課題:
+  - `trace_id` / `run_id` / `message_id` の Node/Python/Bridge 完全横断伝搬を継続監視する。
+  - interrupt/resume の E2E スモーク（実サーバー連携）を CI へ段階導入する。

@@ -1,6 +1,6 @@
 {
   "updated_at": "2026-04-20",
-  "current_phase": 7,
+  "current_phase": 8,
   "phases": [
     {
       "phase": 0,
@@ -77,16 +77,24 @@
     {
       "phase": 7,
       "name": "可観測性・重複整理・最終ドキュメント化",
-      "status": "in_progress",
+      "status": "completed",
       "artifacts": [
         "docs/refactor/architecture.md",
+        "docs/refactor/phase7.md",
         "plans/refactor-foundation-phase7-8.md"
       ]
     },
     {
       "phase": 8,
       "name": "研究要素の最小導入",
-      "status": "pending"
+      "status": "completed",
+      "artifacts": [
+        "docs/refactor/phase8.md",
+        "docs/refactor/owner-decisions.md",
+        "python/services/skill_repository.py",
+        "python/services/reflection_store.py",
+        "python/skills/seed_library.json"
+      ]
     }
   ]
 }
