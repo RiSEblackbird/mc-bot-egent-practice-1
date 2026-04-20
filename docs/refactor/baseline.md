@@ -1,6 +1,6 @@
 # Baseline Report (Phase 0)
 
-最終更新日: 2026-04-19 (UTC)
+最終更新日: 2026-04-20 (UTC)
 
 ## 1. 実行コマンドと結果
 
@@ -10,7 +10,7 @@
 | Node tests | `bash scripts/run-node-bot.sh test` | ❌ 失敗 | 実行環境の Node が `v20.19.6` のため、スクリプト要件 (`22+`) で停止。 |
 | Node build | `bash scripts/run-node-bot.sh build` | ❌ 失敗 | 上記と同じく Node 22 未満で停止。 |
 | Bridge build | `bash scripts/build-bridge-plugin.sh` | ✅ 成功 | `shadowJar` まで成功（UP-TO-DATE 含む）。 |
-| Bridge test | `gradle -p bridge-plugin test` | ✅ 成功 | `:test` タスク成功。 |
+| Bridge test | `cd bridge-plugin && gradle test build` | ✅ 成功 | `:test` と `:build` が成功（`./gradlew` は未配置のため Gradle 本体を利用）。 |
 | Compose config | `docker compose config` | ❌ 失敗 | 実行環境に `docker` コマンド無し。 |
 
 ## 2. 依存と entrypoint の現状一覧
@@ -43,7 +43,7 @@
 - 依存定義: `bridge-plugin/build.gradle.kts`
 - 実行/ビルド entrypoint:
   - `bash scripts/build-bridge-plugin.sh`（`shadowJar`）
-  - `gradle -p bridge-plugin test`
+  - `cd bridge-plugin && gradle test build`
 - 補足:
   - 現在の baseline では build/test ともに成功。
   - 手置き jar 依存が CI で問題化しないかは Phase 1 継続確認対象。
@@ -115,6 +115,7 @@
 - Node の baseline 実行は Node 22+ 前提のため、CI/開発環境でのバージョン固定が必須。
 - Compose baseline は実行環境依存（docker 未インストール）で検証不能。
 - Compose の Python サービスに `PYTHONPATH` 依存が残り、package 化方針との整合確認が必要。
+- `bash scripts/run-python-agent.sh --help` は help オプション未対応のため `mc_bot_agent_entrypoint` 実行に進み、モジュール未解決で終了する。
 
 ## Phase 0 完了報告
 - 変更概要:
@@ -130,12 +131,12 @@
   - `bash scripts/run-node-bot.sh test`
   - `bash scripts/run-node-bot.sh build`
   - `bash scripts/build-bridge-plugin.sh`
-  - `gradle -p bridge-plugin test`
+  - `cd bridge-plugin && gradle test build`
   - `docker compose config`
 - テスト結果:
   - Python: 失敗（import エラー 25 件）
   - Node test/build: 失敗（Node.js 22+ 不足）
-  - Bridge build/test: 成功
+  - Bridge build/test: 成功（Bridge test は `gradle test build` で確認）
   - Compose config: 失敗（docker コマンド無し）
 - 残課題:
   - Python テストは環境セットアップ前提のため、ローカル実行手順を README/CI と常に同期する必要がある。
