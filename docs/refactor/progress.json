@@ -1,6 +1,6 @@
 {
   "updated_at": "2026-04-20",
-  "current_phase": 6,
+  "current_phase": 7,
   "phases": [
     {
       "phase": 0,
@@ -77,7 +77,11 @@
     {
       "phase": 7,
       "name": "可観測性・重複整理・最終ドキュメント化",
-      "status": "pending"
+      "status": "in_progress",
+      "artifacts": [
+        "docs/refactor/architecture.md",
+        "plans/refactor-foundation-phase7-8.md"
+      ]
     },
     {
       "phase": 8,
