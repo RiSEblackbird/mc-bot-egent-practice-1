@@ -111,3 +111,22 @@
 - 残課題:
   - `structured_output` 自体が schema 不整合だった場合の error taxonomy を planner/domain で明確化する。
   - `_normalize_plan_json()` の責務を旧 state migration へさらに限定する。
+
+
+## 追加スライス (2026-04-20)
+- 変更概要:
+  - planner の parse 失敗を可観測化するため、`parse_error_code` を導入し `structured_output_schema_mismatch` / `plan_json_decode_failed` などの安定コードへ分類するように更新。
+  - `parse_plan` ノードの structured output 失敗・JSON 失敗の両経路で同一形式のエラー分類を返し、`record_structured_step` の outputs にも分類コードを記録するようにした。
+  - 回帰テストを追加し、schema 不整合な `output_parsed` と不正 JSON 文字列の双方で `parse_error_code` が期待どおり返ることを固定化した。
+- 主な変更ファイル:
+  - `python/planner/graph.py`
+  - `tests/test_planner_responses_payload.py`
+- 互換性影響:
+  - planner のフォールバック動作（安全な `PlanOut(plan=[], resp="了解しました。")`）は維持。
+  - 失敗時に機械可読な taxonomy を追加したため、後続のメトリクス集計・障害切り分けが容易になった。
+- 実行したコマンド:
+  - `PYTHONPATH=python python -m pytest tests/test_planner_responses_payload.py`
+- テスト結果:
+  - 成功（12 passed）。
+- 残課題:
+  - `_normalize_plan_json()` を旧 state migration / 外部 legacy 境界へさらに限定し、主経路から段階的に除去する。

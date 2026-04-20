@@ -5,6 +5,8 @@ import asyncio
 import json
 from typing import Any, Callable, Dict, List
 
+from pydantic import ValidationError
+
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from opentelemetry.trace import Status, StatusCode
@@ -141,6 +143,23 @@ def _normalize_plan_json(content: str) -> str:
 
     return json.dumps(data, ensure_ascii=False)
 
+
+
+
+def _classify_plan_parse_error(exc: Exception, *, used_structured_output: bool) -> str:
+    """Plan parse 失敗を分類し、可観測性向けの安定コードへ変換する。"""
+
+    if isinstance(exc, ValidationError):
+        try:
+            error_types = {str(item.get("type", "")) for item in exc.errors()}
+        except Exception:  # noqa: BLE001 - エラー分類を失敗させないため防御
+            error_types = set()
+        if "json_invalid" in error_types:
+            return "plan_json_decode_failed"
+        return "structured_output_schema_mismatch" if used_structured_output else "plan_schema_validation_failed"
+    if isinstance(exc, json.JSONDecodeError):
+        return "plan_json_decode_failed"
+    return "plan_parse_unknown"
 
 def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
     hints: List[str] = []
@@ -344,29 +363,39 @@ def build_plan_graph(
                         primary_exc.__class__.__name__,
                     )
                 except Exception as secondary_exc:
-                    logger.exception("plan graph failed to parse JSON plan")
+                    parse_error_code = _classify_plan_parse_error(secondary_exc, used_structured_output=False)
+                    logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
                     priority = await manager.mark_failure()
-                    result = {"parse_error": str(secondary_exc), "priority": priority}
+                    result = {
+                        "parse_error": str(secondary_exc),
+                        "parse_error_code": parse_error_code,
+                        "priority": priority,
+                    }
                     result.update(
                         record_structured_step(
                             state,
                             step_label="parse_plan",
                             inputs={"content_preview": raw_content[:120]},
-                            outputs={"priority": priority},
+                            outputs={"priority": priority, "parse_error_code": parse_error_code},
                             error=str(secondary_exc),
                         )
                     )
                     return result
             else:
-                logger.exception("plan graph failed to parse structured plan")
+                parse_error_code = _classify_plan_parse_error(primary_exc, used_structured_output=True)
+                logger.exception("plan graph failed to parse structured plan (%s)", parse_error_code)
                 priority = await manager.mark_failure()
-                result = {"parse_error": str(primary_exc), "priority": priority}
+                result = {
+                    "parse_error": str(primary_exc),
+                    "parse_error_code": parse_error_code,
+                    "priority": priority,
+                }
                 result.update(
                     record_structured_step(
                         state,
                         step_label="parse_plan",
                         inputs={"content_preview": raw_content[:120], "used_structured_output": True},
-                        outputs={"priority": priority},
+                        outputs={"priority": priority, "parse_error_code": parse_error_code},
                         error=str(primary_exc),
                     )
                 )

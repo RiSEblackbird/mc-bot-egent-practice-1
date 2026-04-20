@@ -66,11 +66,11 @@ class _FakeAsyncClient:
         self.responses = _FakeResponses(output_text, output, response_attrs)
 
 
-async def _invoke_graph_with_output(
+async def _invoke_graph_with_output_state(
     output_text: str,
     output: list[object] | None = None,
     response_attrs: dict[str, object] | None = None,
-) -> PlanOut:
+) -> dict[str, object]:
     config = _make_config()
     graph = build_plan_graph(
         config,
@@ -85,6 +85,15 @@ async def _invoke_graph_with_output(
 
     result = await graph.ainvoke({"user_msg": "test", "context": {}, "structured_events": []})
     assert isinstance(result.get("plan_out"), PlanOut)
+    return result
+
+
+async def _invoke_graph_with_output(
+    output_text: str,
+    output: list[object] | None = None,
+    response_attrs: dict[str, object] | None = None,
+) -> PlanOut:
+    result = await _invoke_graph_with_output_state(output_text, output, response_attrs)
     return result["plan_out"]
 
 
@@ -172,3 +181,22 @@ async def test_plan_graph_prefers_structured_output_without_legacy_normalize() -
     assert plan_out.plan == ["丸石を10個掘る"]
     assert plan_out.intent == "mine"
     assert plan_out.resp != "了解しました。"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_sets_structured_parse_error_code_on_schema_mismatch() -> None:
+    result = await _invoke_graph_with_output_state(
+        "",
+        response_attrs={"output_parsed": {"plan": "move", "resp": "了解"}},
+    )
+    assert result.get("parse_error_code") == "structured_output_schema_mismatch"
+    assert isinstance(result.get("plan_out"), PlanOut)
+    assert result["plan_out"].resp == "了解しました。"
+
+
+@pytest.mark.anyio
+async def test_plan_graph_sets_json_parse_error_code_on_invalid_output() -> None:
+    result = await _invoke_graph_with_output_state("not-json")
+    assert result.get("parse_error_code") == "plan_json_decode_failed"
+    assert isinstance(result.get("plan_out"), PlanOut)
+    assert result["plan_out"].resp == "了解しました。"

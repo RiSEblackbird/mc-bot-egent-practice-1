@@ -20,6 +20,7 @@ class UnifiedPlanState(TypedDict, total=False):
     content: str
     plan_out: Any
     parse_error: str
+    parse_error_code: str
     llm_error: str
     priority: str
     fallback_plan_out: Any
