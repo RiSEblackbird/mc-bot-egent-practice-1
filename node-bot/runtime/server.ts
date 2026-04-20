@@ -18,6 +18,34 @@ export interface CommandServerDependencies {
   executeCommand(payload: CommandPayload): Promise<CommandResponse>;
 }
 
+const SUPPORTED_COMMAND_TYPES: ReadonlySet<CommandPayload['type']> = new Set([
+  'chat',
+  'moveTo',
+  'equipItem',
+  'gatherStatus',
+  'gatherVptObservation',
+  'mineOre',
+  'setAgentRole',
+  'registerSkill',
+  'invokeSkill',
+  'skillExplore',
+  'playVptActions',
+]);
+
+function isCommandPayload(input: unknown): input is CommandPayload {
+  if (!input || typeof input !== 'object') {
+    return false;
+  }
+  const candidate = input as Record<string, unknown>;
+  return (
+    typeof candidate.type === 'string' &&
+    SUPPORTED_COMMAND_TYPES.has(candidate.type as CommandPayload['type']) &&
+    !!candidate.args &&
+    typeof candidate.args === 'object' &&
+    (candidate.meta === undefined || (candidate.meta !== null && typeof candidate.meta === 'object'))
+  );
+}
+
 function parseCommand(raw: RawData): CommandPayload | null {
   try {
     const parsed = JSON.parse(raw.toString()) as unknown;
@@ -27,13 +55,13 @@ function parseCommand(raw: RawData): CommandPayload | null {
         console.warn('[WS] unsupported envelope kind', { kind: envelope.kind, name: envelope.name });
         return null;
       }
-      return envelope.body as CommandPayload;
+      return isCommandPayload(envelope.body) ? envelope.body : null;
     }
 
     const legacy = adaptLegacyCommandPayload(parsed);
     if (legacy) {
       console.warn('[WS] legacy payload detected; wrap into transport envelope', { name: legacy.name });
-      return legacy.body as CommandPayload;
+      return isCommandPayload(legacy.body) ? legacy.body : null;
     }
 
     return null;

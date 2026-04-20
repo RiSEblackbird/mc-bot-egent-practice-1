@@ -49,7 +49,10 @@ describe('ChatBridge', () => {
     expect(chatMessenger.sendChat).toHaveBeenCalledWith('現在位置は X=1 / Y=64 / Z=-4 です。');
     expect(mockWebSocket.lastSent).not.toBeNull();
     const parsed = JSON.parse(mockWebSocket.lastSent ?? '{}');
-    expect(parsed.args).toEqual({ username: 'player', message: 'いまどこ？' });
+    expect(parsed.body).toMatchObject({
+      type: 'chat',
+      args: { username: 'player', message: 'いまどこ？' },
+    });
   });
 
   it('warns when bot entity is missing and still forwards chat', async () => {
@@ -67,7 +70,11 @@ describe('ChatBridge', () => {
     await promise;
 
     expect(mockWebSocket.lastSent).not.toBeNull();
-    expect(JSON.parse(mockWebSocket.lastSent ?? '{}').args.username).toBe('alice');
+    const parsed = JSON.parse(mockWebSocket.lastSent ?? '{}');
+    expect(parsed.body).toMatchObject({
+      type: 'chat',
+      args: { username: 'alice', message: 'どこ？' },
+    });
   });
 
   it('allows BotChatMessenger to handle missing bot gracefully', () => {

@@ -261,7 +261,7 @@ export class AgentBridge {
     }
   }
 
-  private sendThroughActiveSession(payload: Record<string, unknown>): Promise<void> {
+  private sendThroughActiveSession(payload: unknown): Promise<void> {
     const session = this.socket;
     if (!session || this.state !== 'connected' || session.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('agent bridge is not connected'));
