@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import openai
 from typing import Any, Callable, Dict, Optional, Type
+from uuid import uuid4
 
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
@@ -122,6 +123,15 @@ def _get_plan_graph() -> CompiledStateGraph:
     return _PLAN_GRAPH
 
 
+def _resolve_thread_id(context: Dict[str, Any]) -> str:
+    """LangGraph 実行の再開に使う thread_id を決定する。"""
+
+    candidate = context.get("thread_id")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return uuid4().hex
+
+
 async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
     """ユーザーの日本語チャットを Responses API へ投げ、実行プランを復元する。"""
 
@@ -133,7 +143,8 @@ async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
         "context": safe_context,
         "structured_events": [],
     }
-    result = await graph.ainvoke(initial_state)
+    thread_id = _resolve_thread_id(safe_context)
+    result = await graph.ainvoke(initial_state, config={"configurable": {"thread_id": thread_id}})
     plan_out = result.get("plan_out")
 
     def _attach_plan_metadata(plan: PlanOut) -> PlanOut:
