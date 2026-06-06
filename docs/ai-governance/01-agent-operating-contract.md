@@ -87,8 +87,14 @@ AI による novice simulation は実ユーザーテストではない。これ�
 
 - 何を変更したか
 - なぜ変更したか
+- Branch
+- PR URL（リポジトリ変更を伴う作業ではドラフトではない PR）
+- Commit SHA
+- Local verification
+- CI result
 - 実施した検証
 - 実施しなかった検証
 - 既知のリスク
+- Remaining risks
 - 変更ファイル
 - UI/UX が関係する場合は P0/P1/P2 findings
