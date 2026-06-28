@@ -1,81 +1,93 @@
-# Visual Hierarchy and Information Architecture
+# 視覚階層と情報設計
 
-interface は意図的に attention を導く必要がある。
+視覚階層は装飾ではありません。ユーザーの注意、理解、行動選択を支援するための構造です。
 
-## 1. 階層順
+## 1. 基本原則
 
-すべての画面は、次の順序を視覚的に読み取れるようにする。
+- 重要なものを重要に見せる。
+- 関連するものを近くに置く。
+- 異なるものを区別する。
+- 迷う前に次の行動を示す。
+- 情報量を減らすだけでなく、優先度を明確にする。
 
-1. product/page area または screen purpose
-2. current object、filter、mode、scope
-3. primary task または primary action
-4. required input
-5. secondary action
-6. supporting detail
-7. diagnostics、metadata、rare action
+## 2. 3秒確認
 
-## 2. Primary action ルール
+画面を3秒見た前提で、次に答えられる必要があります。
 
-- decision area ごとに primary action は 1 つ。
-- primary action label は結果を表す動詞を含む。
-- primary action を icon-only にしない。
-- destructive primary action には risk に応じた confirmation または recovery を用意する。
-- disabled primary action は、なぜ使えないかを説明する。
+- 何の画面か。
+- 今どこか。
+- 何が重要か。
+- 最初に何をすべきか。
+- どの情報が補助か。
 
-## 3. Grouping ルール
+答えられない場合、視覚階層のP0またはP1です。
 
-proximity、alignment、heading、whitespace で grouping を伝える。
+## 3. 主操作
 
-ユーザーが implementation structure、DOM order、hidden context から関係を推測しなければならない場合は fail とする。
+確認事項:
 
-## 4. Typography ルール
+- 意思決定領域ごとに主操作が明確か。
+- 主操作が複数あって競合していないか。
+- 危険操作が主操作より強く見えていないか。
+- 主操作が画面下部、隅、アイコン、薄いリンクに埋もれていないか。
+- 主操作のラベルは結果を示しているか。
 
-- 読みやすい default size を使う。
-- 長文 text は line height 1.5 前後以上を使う。
-- 長い all-caps text を避ける。
-- 特に日本語では、長い italic text を避ける。
-- 読む量が多い箇所では行長を扱いやすく保つ。
-- logo など不可避な場合を除き、画像化された text を使わない。
+## 4. グルーピング
 
-## 5. Density ルール
+確認事項:
 
-高密度 UI は、次を満たす場合のみ許容する。
+- 関連する情報と操作が近くにあるか。
+- カード、セクション、表、リストの境界が分かるか。
+- どの操作がどの対象に効くか分かるか。
+- フィルタ、検索、件数、タブの対象範囲が明確か。
 
-- primary task がなお明確である。
-- scanning order が明確である。
-- critical action が埋もれていない。
-- 長い content で layout が崩れない。
-- narrow viewport でも使える layout がある。
+## 5. タイポグラフィ
 
-## 6. Visual affordance ルール
+確認事項:
 
-interactive element は interactive に見える必要がある。
+- 見出し、本文、補助情報、メタ情報の差が明確か。
+- 本文が小さすぎないか。
+- 行間が詰まりすぎていないか。
+- 長文の行長が長すぎないか。
+- 日本語の折り返しで意味が取りにくくなっていないか。
+- 数字、単位、日時、件数が読み取りやすいか。
 
-次は reject する。
+## 6. 余白と密度
 
-- body text に見えるが button として動く text
-- 有効なのに disabled に見える button
-- 無効なのに enabled に見える control
-- 重要 action の hover-only affordance
-- 小さく曖昧な icon
+確認事項:
 
-## 7. Information architecture ルール
+- 余白が情報のまとまりを示しているか。
+- 密度が高すぎて主操作が見えなくなっていないか。
+- 低密度すぎて一覧性や熟練者効率を損ねていないか。
+- モバイルや狭幅で余白が崩れていないか。
 
-- navigation label は互いに区別できる。
-- tab、filter、count の scope は明示する。
-- 深い flow または multi-step flow には breadcrumb または同等の orientation を置く。
-- scope が明白でない search は、何を search するかを示す。
-- empty state と no-results state を混同しない。
+## 7. スキャン性
 
-## 8. Content stress test
+ユーザーは画面を上から順に丁寧に読みません。短時間で必要な情報を探します。
 
-次の条件で visual hierarchy を確認する。
+確認事項:
 
-- 0 件、1 件、多数件
-- 長い名前
-- metadata 欠落
-- warning banner と error banner
-- narrow viewport
-- 翻訳された文字列
-- 200% text zoom
-- 高密度の実データ
+- 見出しだけで概要が掴めるか。
+- ラベルや値の対応が分かるか。
+- 状態や件数がすぐ分かるか。
+- 重要な警告やエラーが埋もれていないか。
+
+## 8. 情報設計
+
+確認事項:
+
+- ユーザーの目的に沿った分類になっているか。
+- 開発者都合の構造が画面に漏れていないか。
+- ナビゲーション階層が深すぎないか。
+- 現在地と戻り先が分かるか。
+- 同じ概念に複数の名前を使っていないか。
+
+## 9. 視覚階層の失敗例
+
+- 主操作より補助ボタンが目立つ。
+- 画面タイトルが抽象的すぎる。
+- 空状態が単なる「データがありません」で終わる。
+- タブの対象範囲が分からない。
+- フィルタ件数が全体件数か表示件数か分からない。
+- 危険操作が小さなアイコンだけで置かれている。
+- 重要なエラーが画面上部にだけ出て、入力欄付近にない。

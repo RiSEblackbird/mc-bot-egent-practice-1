@@ -1,27 +1,41 @@
-# Completion Gate Report
+# 完了ゲート報告
 
-| Gate | Result | Evidence | Notes |
-|---|---|---|---|
-| Scope gate | PASS / FAIL |  |  |
-| 初見理解 gate | PASS / FAIL |  |  |
-| State gate | PASS / FAIL |  |  |
-| Accessibility gate | PASS / FAIL |  |  |
-| Visual clarity gate | PASS / FAIL |  |  |
-| Counter-review gate | PASS / FAIL |  |  |
+## 判定
 
-## 実行した command
+- 完了可否: 可 / 不可
+- P0残存: あり / なし
+- P1残存: あり / なし
+- P2残存: あり / なし
 
-```sh
-# command と result を貼る
-```
+## 必須ゲート
 
-## 実行しなかった check
+- [ ] ユーザー価値を説明した。
+- [ ] 初見理解を確認した。
+- [ ] state matrixを作成した。
+- [ ] アクセシビリティを確認した。
+- [ ] 視覚階層を確認した。
+- [ ] コピーを確認した。
+- [ ] 熟練者効率を確認した。
+- [ ] 満足感・信頼感を確認した。
+- [ ] 反証レビューを実施した。
+- [ ] 証跡を提出した。
+- [ ] 未実行検証を明示した。
+- [ ] PR がある場合、CI 完了後に Codex 自動コードレビューと未解決 review thread を確認した。
 
-| Check | Reason | Risk |
+## 実行した検証
+
+| 検証 | 結果 | ログ/証跡 |
 |---|---|---|
 |  |  |  |
 
-## Final result
+## 実行していない検証
 
-- PASS / PASS WITH RISK / FAIL
-- Reason:
+| 検証 | 理由 | 残リスク |
+|---|---|---|
+|  |  |  |
+
+## 残課題
+
+| 優先度 | 内容 | 対応方針 |
+|---|---|---|
+|  |  |  |

@@ -1,50 +1,21 @@
-# Accessibility Checklist
+# アクセシビリティチェックリスト
 
-## Keyboard
-
-- [ ] 主タスクをキーボードだけで完了できる。
-- [ ] focus order が visual/logical order に沿っている。
-- [ ] keyboard trap がない。
-- [ ] modal/menu/popover の focus behavior が正しい。
-
-## Focus
-
-- [ ] focus が見える。
-- [ ] focus が隠れない。
-- [ ] focus style が一貫している。
-- [ ] focus が色だけに依存していない。
-
-## Names and labels
-
-- [ ] control に accessible name がある。
-- [ ] icon button に label がある。
-- [ ] 該当する場合、visible label が accessible name と一致している。
-- [ ] input に永続的な label または同等の説明がある。
-
-## Semantics
-
-- [ ] heading が意味を持ち、順序が正しい。
-- [ ] 該当する場合、landmark/region structure が意味を持つ。
-- [ ] list/table/form/button が適切な semantics を使っている。
-- [ ] status update を知覚できる。
-
-## Visual accessibility
-
-- [ ] text contrast が最低基準を満たす。
-- [ ] 意味のある UI parts の non-text contrast が最低基準を満たす。
-- [ ] target size が十分である。
-- [ ] 意味を色だけで伝えていない。
-- [ ] text resize/reflow ができる。
-
-## Forms and errors
-
-- [ ] required field が分かる。
-- [ ] validation error が field と issue を特定している。
-- [ ] 分かる場合は suggestion/recovery が示されている。
-- [ ] user input が保持される。
-
-## Motion
-
-- [ ] unsafe flashing がない。
-- [ ] critical information の理解に motion が必須ではない。
-- [ ] 関係する場合、reduced motion を尊重している。
+- [ ] キーボードだけで主要タスクを完了できる。
+- [ ] フォーカスが常に見える。
+- [ ] フォーカスが隠れない。
+- [ ] フォーカス順序が自然。
+- [ ] フォーカスが閉じ込められない。
+- [ ] 操作要素にaccessible nameがある。
+- [ ] 表示ラベルと支援技術上の名前が矛盾しない。
+- [ ] アイコンボタンに意味のある名前がある。
+- [ ] 見出し構造が意味を持っている。
+- [ ] ランドマークまたは領域構造が分かる。
+- [ ] エラー箇所が分かる。
+- [ ] エラー修正方法が分かる。
+- [ ] 状態メッセージが伝わる。
+- [ ] 色だけで意味を伝えていない。
+- [ ] コントラストが十分。
+- [ ] 操作対象が小さすぎない。
+- [ ] 文字拡大や狭幅で破綻しない。
+- [ ] 動きや点滅が不要な負担になっていない。
+- [ ] 自動検査の結果と手動確認の両方を報告した。

@@ -1,95 +1,111 @@
-# Accessibility and Inclusive Design
+# アクセシビリティとインクルーシブデザイン
 
-アクセシビリティは任意の polish ではない。ユーザーに見える作業の completion gate である。
+アクセシビリティは後付けではありません。UI/UX変更の完了条件です。
 
-## 1. 基準
+## 1. 基本方針
 
-リポジトリにより厳しい要件がない限り、WCAG 2.2 AA を最低基準にする。WCAG の testable criteria だけでは覆いきれない問題でも、理解を助ける cognitive accessibility guidance を考慮する。
+- 見えるだけでなく、知覚できること。
+- クリックできるだけでなく、操作できること。
+- 文言があるだけでなく、理解できること。
+- 現在状態が見えるだけでなく、支援技術にも伝わること。
+- 一部のユーザーだけでなく、多様な利用環境で使えること。
 
-## 2. 必須確認
+## 2. キーボード操作
 
-### Keyboard
+確認事項:
 
-- 主タスクをキーボードだけで完了できる。
-- focus order が visual order と logical order に合っている。
-- keyboard trap がない。
-- modal、menu、popover、drawer が focus を正しく管理する。
+- 主要タスクをキーボードだけで完了できるか。
+- フォーカス順序が視覚順序・操作順序と一致しているか。
+- フォーカスが閉じ込められないか。
+- モーダルやメニューを開閉できるか。
+- Esc、Enter、Space、Tab、Shift+Tabの挙動が自然か。
 
-### Focus
+P0例:
 
-- focus indicator が見える。
-- focus が sticky header、dialog、overlay の裏に隠れない。
-- focus style が一貫している。
-- focus を色だけで伝えていない。
+- キーボードで主操作に到達できない。
+- フォーカスが見えない。
+- モーダルから抜けられない。
 
-### Names, roles, values
+## 3. 名前・役割・値
 
-- control に accessible name がある。
-- icon button に明示的な label がある。
-- visible label がある場合、必要に応じて accessible name に含まれている。
-- custom control が role、state、value を公開している。
+確認事項:
 
-### Semantics
+- ボタン、リンク、入力、メニューに適切な名前があるか。
+- アイコンボタンに意味のあるラベルがあるか。
+- 表示ラベルと支援技術上の名前が矛盾していないか。
+- 状態を持つ要素は、選択中、展開中、無効などが伝わるか。
+- カスタムUIはネイティブ要素で代替できないか検討したか。
 
-- page と region に意味のある heading がある。
-- heading order が論理的である。
-- 有用な場合は landmark を使う。
-- list、table、form、button が適切な semantics を使う。
+## 4. 見出し・ランドマーク・構造
 
-### Contrast と視覚認識
+確認事項:
 
-- 通常 text contrast は 4.5:1 以上。
-- 大きい text contrast は 3:1 以上。
-- 意味のある icon、boundary、focus indicator は該当する場合 3:1 以上。
-- state を色だけで伝えない。
+- ページや領域に適切な見出しがあるか。
+- 見出しレベルが飛びすぎていないか。
+- ナビゲーション、メイン、補助領域の意味が分かるか。
+- リストや表を見た目だけで作っていないか。
 
-### Target size
+## 5. コントラストと視認性
 
-- pointer target は 24x24 CSS px 以上、または有効な例外を満たす。
-- touch-oriented interface では 44-48 px/dp 以上を推奨する。
-- 隣接する destructive action と safe action には十分な距離を置く。
+確認事項:
 
-### Text と layout
+- 通常テキストのコントラストが十分か。
+- 補助テキスト、placeholder、disabled風の表示が読めるか。
+- アイコン、境界線、入力枠、フォーカスリングなど非テキスト要素のコントラストが十分か。
+- 背景画像やグラデーションの上の文字が読めるか。
 
-- content や機能を失わず text resize できる。
-- 長文 content は読みやすい line height を使う。
-- 読む量が多い content では長すぎる行を避ける。
-- 本当に必要な場合を除き、horizontal scrolling なしで reflow する。
+## 6. ターゲットサイズ
 
-### Motion
+確認事項:
 
-- flashing content を避ける。
-- critical feedback に不要な motion を使わない。
-- motion が存在する場合は reduced-motion preference を尊重する。
+- 操作対象が小さすぎないか。
+- 隣接する操作対象との間隔が十分か。
+- タッチ環境で誤操作しにくいか。
+- 小さいアイコンのみで危険操作を置いていないか。
 
-### Errors と forms
+## 7. 色だけに依存しない
 
-- required field が識別できる。
-- validation error が field と issue を特定している。
-- 分かる場合は suggestion を示す。
-- error 後も user input を保持する。
-- authentication や repeated-entry flow で不要な記憶負荷を避ける。
+確認事項:
 
-## 3. 自動確認
+- エラー、成功、警告、選択中、必須、無効を色だけで表していないか。
+- テキスト、アイコン、形、境界、説明も併用しているか。
 
-利用可能な場合は次の tool を使う。
+## 8. エラーと入力支援
 
-- axe または同等の rendered-DOM checker
-- 関係する場合は eslint accessibility plugin
-- keyboard flow の browser test
-- Storybook accessibility check
-- focus と state snapshot の visual regression
+確認事項:
 
-自動 accessibility check だけでは十分ではない。keyboard review、state review、cognitive walkthrough の代替にはならない。
+- エラー箇所が分かるか。
+- 原因が分かるか。
+- 修正方法が分かるか。
+- 入力例や制約が事前に分かるか。
+- エラー発生後も入力済みデータが保持されるか。
 
-## 4. P0 accessibility failure
+## 9. ステータスメッセージ
 
-- keyboard で主タスクを完了できない。
-- focus が見えない、または隠れている。
-- actionable control に accessible name がない。
-- visible label のない icon-only primary action。
-- essential text または control の contrast が最低基準未満。
-- error message が input と programmatic または visual に関連付いていない。
-- status update を知覚できない。
-- accessible alternative のない drag-only action。
-- accessible alternative のない記憶/パズル要求を含む authentication または verification。
+確認事項:
+
+- 保存完了、送信完了、読み込み中、失敗、再試行などが視覚的に分かるか。
+- 必要な場合、支援技術にも通知されるか。
+- 通知がすぐ消えすぎないか。
+
+## 10. 認知アクセシビリティ
+
+確認事項:
+
+- 画面目的が明確か。
+- 重要タスクを見つけやすいか。
+- 文が短く明確か。
+- 一貫した用語を使っているか。
+- ユーザーに不要な記憶や推測を要求していないか。
+- エラーを避け、修正しやすいか。
+
+## 11. 最低目安
+
+導入先のデザインシステムがある場合はそれを優先します。ない場合は次を目安にします。
+
+- 本文16px以上。
+- 長文の行高1.5以上。
+- 通常テキスト4.5:1以上。
+- 大きい文字・非テキストUI部品3:1以上。
+- 操作対象24×24 CSS px以上を最低目安にし、タッチ中心ではより大きくする。
+- フォーカス表示は視認でき、隠れないこと。

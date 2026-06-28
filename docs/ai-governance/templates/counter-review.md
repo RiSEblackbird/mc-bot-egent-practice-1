@@ -1,27 +1,32 @@
-# Counter-review
+# 反証レビュー
 
-この文書の目的は、弱い UI/UX 作業を却下することである。
+## 目的
 
-## Rejection questions
+このレビューは、実装を正当化するためではなく、完了不可理由を探すために行う。
 
-- 初見ユーザーは何に混乱するか。
-- どの state が欠けているか。
-- どの action の consequence が不明確か。
-- どの visual cue が曖昧か。
-- どの copy が内部用語か。
-- どの accessibility requirement が未証明か。
-- どの evidence が欠けているか。
-- 長い content で何が壊れるか。
-- narrow viewport で何が壊れるか。
-- keyboard-only で何が失敗するか。
+## 反証観点
 
-## Findings
+- ユーザー価値は曖昧ではないか:
+- 初見理解は成立しているか:
+- 主操作は見つかるか:
+- 状態は漏れていないか:
+- エラー回復は十分か:
+- アクセシビリティにP0はないか:
+- 視覚階層は誤誘導していないか:
+- コピーはユーザーを責めていないか:
+- 初心者向け配慮が熟練者効率を壊していないか:
+- 待機・成功・失敗・危険操作が信頼できるか:
+- 証跡は十分か:
+- 未実行検証を成功扱いしていないか:
 
-| Severity | Finding | Evidence | Required fix |
+## 指摘
+
+| 優先度 | 問題 | 根拠 | 修正案 |
 |---|---|---|---|
 |  |  |  |  |
 
-## Decision
+## 結論
 
-- PASS / PASS WITH RISK / FAIL
-- Reason:
+- Pass/Fail:
+- 完了を拒否する理由:
+- 残リスク:

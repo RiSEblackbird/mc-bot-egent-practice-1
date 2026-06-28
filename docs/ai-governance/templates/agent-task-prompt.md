@@ -1,27 +1,28 @@
-# Agent Task Prompt Template
+# AIエージェント向けUI/UX作業プロンプト
 
-AI agent に UI/UX 作業を依頼するときに使う。
+この作業はユーザーに見えるUI/UX変更を含みます。
 
-```md
-あなたは `AGENTS.md` で管理されているリポジトリで作業しています。
+作業前に次を読んでください。
 
-Task:
-[タスクを書く]
+1. `AGENTS.md`
+2. `.agents/skills/ui-ux-review/SKILL.md`
+3. `docs/ai-governance/00-index.md`
+4. `docs/ai-governance/02-uiux-review-framework.md`
+5. `docs/ai-governance/03-evidence-and-completion-gates.md`
 
-Requirements:
-- 最初に `AGENTS.md` を読む。
-- UI/UX に触れる場合、利用可能なら `ui-ux-review` skill を使う。
-- `docs/ai-governance/02-uiux-review-framework.md` と `docs/ai-governance/03-evidence-and-completion-gates.md` を読む。
-- Cursor rules を作らない。
-- 既存の非衝突 project policy を保持する場合を除き、`CLAUDE.md` は `@AGENTS.md` だけにする。
-- state matrix、novice simulation、accessibility review、visual hierarchy review、counter-review、completion gate report を作る。
-- 実行していない verification を実行済みと主張しない。
+作業では、次を必ず提出してください。
 
-Final report must include:
-- files changed
-- P0/P1/P2 findings
-- evidence
-- tests run
-- tests not run
-- remaining risk
-```
+- ユーザー価値評価
+- 初見シミュレーション
+- state matrix
+- アクセシビリティ確認
+- 視覚階層確認
+- コピー確認
+- 熟練者効率確認
+- 満足感・信頼感確認
+- 反証レビュー
+- 証跡
+- 実行した検証
+- 実行していない検証
+
+P0が残る場合、完了扱いしてはいけません。

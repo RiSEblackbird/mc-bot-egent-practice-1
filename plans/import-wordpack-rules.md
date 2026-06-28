@@ -2,61 +2,65 @@
 
 ## Metadata
 - Owner: Codex
-- Branch: codex/import-wordpack-rules
-- Related issue / ticket: なし
-- Last updated (UTC): 2026-06-06
+- Branch: codex/sync-wordpack-governance-rules
+- Related issue / ticket: #166
+- Last updated (UTC): 2026-06-28
 - Source status file（必要時）: なし
 
 ## 1. 目的 (Goal)
-- `RiSEblackbird/wordpack-for-english` の最新ルールを確認し、本リポジトリへ矛盾なく導入できる汎用ルール、運用ルール、UI/UX ガバナンスを反映する。
+- `stillshore-chirp/wordpack-for-english` の最新 `main` にあるエージェント / ハーネス / ガバナンス関連ルールを確認し、本リポジトリへ適用可能なものを全て反映する。
+- 競合する開発ルールは WordPack 側を正として扱い、本リポジトリ固有の技術境界に合わせて矛盾なく統合する。
 
 ## 2. 非目標 (Non-goals)
-- WordPack 固有のアプリ仕様、ディレクトリ構成、起動コマンドを本リポジトリへ移植しない。
-- 実装コード、依存関係、アプリ挙動は変更しない。
-- 作業完了フローで Draft PR を作成しない。
+- WordPack 固有の英語学習アプリ仕様、Firebase / Cloud Run / Firestore 固有手順、フロントエンド構成をそのまま移植しない。
+- Minecraft bot / Python planner / Node bot / Bridge plugin の実装挙動は変更しない。
+- Draft PR を完了成果として扱わない。
 
 ## 3. 対象範囲 (Scope)
-- 変更対象ディレクトリ / モジュール: `AGENTS.md`, `CLAUDE.md`, `.agents/skills/ui-ux-review/`, `docs/agent-principles.md`, `docs/ai-governance/`, `docs/process/task-execution.md`, `plans/TEMPLATE.md`, `plans/import-wordpack-rules.md`, `python/dashboard/AGENTS.md`, `tests/AGENTS.md`, `scripts/verify-ai-governance.sh`
-- 影響を受ける契約 (API, schema, env など): なし。
+- 変更候補: `AGENTS.md`, `CLAUDE.md`, `.agents/skills/ui-ux-review/`, `docs/agent-principles.md`, `docs/ai-governance/`, `docs/process/task-execution.md`, `plans/TEMPLATE.md`, `plans/import-wordpack-rules.md`, サブディレクトリ `AGENTS.md`, `scripts/verify-ai-governance.sh`, GitHub PR / Issue / CI ハーネス文書。
+- 影響を受ける契約 (API, schema, env など): 原則なし。ルール文書・検証ハーネスのみ。
 
 ## 4. マイルストーン
 | ID | マイルストーン | 状態 (Done/Blocked/Cancelled) | メモ |
 | --- | --- | --- | --- |
-| M1 | 外部リポジトリの最新ルールを取得し、現行ルールとの差分を整理する | Done | GitHub の `main` を確認し、浅い clone で `b01e657abaf0c5a62b9aa4c31facdf02d502c14a` を取得した。 |
-| M2 | 矛盾なく導入できるルールを本リポジトリのスコープへ合わせて反映する | Done | WordPack 固有のアプリ仕様・コマンドは除外し、hard gate、信頼境界、UI/UX governance、品質原則、検証スクリプトを導入した。 |
-| M3 | 文書整合性を確認し、検証結果を記録する | Done | ガバナンス検証、差分チェック、末尾空白検索、参照一覧確認を実施した。 |
-| M4 | WordPack 側の「ドラフトではない PR」完了条件を弱めず反映する | Done | 作業完了フローでは Draft PR を作成しない条件と、外部 publish workflow より本リポジトリルールを優先する条件を明記した。 |
+| M1 | WordPack 最新ルールを取得し、現行ルールとの差分を整理する | Done | `stillshore-chirp/wordpack-for-english` `main` を `459bd3d001b8c6b73cf6cf0c485fd65841d4375a` として取得し、governance core は source と一致（reports/evidence は除外）。 |
+| M2 | 適用可能なルールを本リポジトリへ反映する | Done | WordPack 固有のプロダクト / インフラ手順は除外し、開発・完了・レビュー・UI/UX・公開安全性ゲート、Issue/PR templates、V4 governance を反映した。 |
+| M3 | 文書・ハーネス整合性を検証する | Done | `bash scripts/verify-ai-governance.sh` と `git diff --check` が PASS。WordPack 固有語は計画の比較元説明以外に残存なし。 |
+| M4 | 完了ゲートを確認する | pending | commit / push / 通常 PR / CI / review 状態を確認する。 |
 
 ## 5. 優先度付き小タスク
-- [x] P0: 最新ルールの取得元と対象ファイルを確認する。
-- [x] P0: ルート `AGENTS.md` を hard gate と正本定義中心へ再整理する。
-- [x] P0: UI/UX ガバナンス文書、skill、検証スクリプトを導入する。
-- [x] P1: 計画テンプレートとタスク実行フローを最新運用へ同期する。
-- [x] P1: `python/dashboard/` と `tests/` の領域固有ルールへ関連補強を入れる。
-- [x] P1: WordPack 側の「ドラフトではない PR」完了条件を本リポジトリへ弱めず導入する。
-- [x] P2: `CLAUDE.md` を薄い入口として追加する。
+- [x] P0: target repo の cwd / branch / worktree / 直近履歴を確認する。
+- [x] P0: target `main` を `origin/main` へ fast-forward 済みであることを確認する。
+- [x] P0: ユーザー指定の WordPack repo から最新 `main` を取得する。
+- [x] P0: `AGENTS.md`, `docs/agent-principles.md`, `docs/ai-governance/`, `.agents/skills/`, `scripts/verify-ai-governance.sh`, PR / Issue ハーネスの差分を棚卸しする。
+- [x] P0: WordPack 側が正となる完了報告ゲート、Issue-first、review thread、PR title、公開安全性ルールを反映する。
+- [x] P1: UI/UX governance V4 の不足ファイル、テンプレート、チェックリスト、検証 script map を反映する。
+- [x] P1: 本リポジトリ固有の Python / Node / Bridge / Minecraft ルールと衝突しないようルート規約へ統合する。
+- [x] P2: README / docs / gitignore / AGENTS の更新要否を確認する。
 
 ## 6. 受け入れ条件 (Acceptance Criteria)
-- [x] WordPack 側の最新 `AGENTS.md` と関連するルール入口を確認している。
-- [x] 本リポジトリ固有の Python / Node bot / Bridge / Minecraft 運用と矛盾する内容を移植していない。
-- [x] 導入対象のルールが重複しすぎず、既存ルールと優先順位が分かる形で `AGENTS.md` に反映されている。
-- [x] WordPack 側の「作業完了時はドラフトではない PR」を弱めずに反映している。
-- [x] README / docs / gitignore / AGENTS の更新要否を確認している。
+- [x] WordPack 最新 `main` のエージェント / ハーネス関連ファイルを実ファイル名ベースで確認している。
+- [x] 適用可能な汎用ルールが本リポジトリへ反映されている。
+- [x] WordPack 固有のアプリ仕様やクラウド運用を、本リポジトリの仕様として誤って移植していない。
+- [x] 競合する完了・PR・CI・レビュー・Issue ルールは WordPack 側の強い条件へ揃っている。
+- [x] 検証スクリプトが新しいファイル構成を確認している。
+- [x] README / docs / gitignore / AGENTS の更新要否を確認済み。
 
 ## 7. 検証コマンド (Verification)
-- [x] `sh scripts/verify-ai-governance.sh`（PASS）
+- [x] `bash scripts/verify-ai-governance.sh`（PASS）
 - [x] `git diff --check`（PASS）
-- [x] `rg -n "[ \t]$" ...`（対象ファイルに末尾空白なし）
-- [x] `markdownlint` / `markdownlint-cli2` の有無確認（どちらも未導入のため未実行）
+- [x] WordPack 固有語 / 旧 `10-maintenance-policy.md` / conflict marker の grep 確認
 
 ## 8. 基本スモークテスト
-- 手順: 追加したガバナンス検証スクリプトを実行し、必須ファイル、薄い入口、Cursor rules 不在、skill metadata を確認する。
+- 手順: ガバナンス検証スクリプトを実行し、必須ファイル、薄い入口、Cursor rules 不在、skill metadata、UI/UX governance map を確認する。
 - 期待結果: `AI governance verification: PASS`
 - 結果: PASS
 
 ## 9. 再開コマンド
 - `git status --short`
-- `sh scripts/verify-ai-governance.sh`
+- `git diff --stat`
+- `git -C /Users/Taishi/Documents/GitHub/wordpack-for-english rev-parse FETCH_HEAD`
+- `bash scripts/verify-ai-governance.sh`
 - `git diff --check`
 
 ## 10. 既知 Blocker
@@ -64,17 +68,20 @@
 
 ## 11. Feature Flag / Rollback（必要時のみ）
 - Flag: なし
-- Rollback 手順: この変更で追加・編集した Markdown / shell ファイルを元に戻す。
+- Rollback 手順: この変更で追加・編集した Markdown / shell / GitHub template ファイルを元に戻す。
 
 ## 12. ステータスログ
-- 2026-06-06: 作業計画を作成。外部ルール取得と差分整理から開始した。
-- 2026-06-06: WordPack 最新 `main` の `b01e657abaf0c5a62b9aa4c31facdf02d502c14a` を取得し、`AGENTS.md`, `CLAUDE.md`, `.agents/skills/ui-ux-review/SKILL.md`, `docs/agent-principles.md`, `docs/ai-governance/`, `scripts/verify-ai-governance.sh` を確認した。
-- 2026-06-06: WordPack 固有のアプリ仕様・コマンドを除外し、本リポジトリ向けに `AGENTS.md`、詳細原則、UI/UX governance、計画テンプレート、実行フロー、サブディレクトリ規約を更新した。
-- 2026-06-06: `sh scripts/verify-ai-governance.sh` と `git diff --check` が PASS。`markdownlint` / `markdownlint-cli2` は未導入のため未実行。
-- 2026-06-06: Draft PR を完了成果として扱わない条件が弱くなっていたため、`AGENTS.md` と `docs/process/task-execution.md` を WordPack 側の「作業完了時はドラフトではない PR」条件へ合わせて補正した。
+- 2026-06-28: 作業分類をガバナンス変更 / 文書・ハーネス設定変更として開始。
+- 2026-06-28: target repo は `main` clean、`origin/main` へ fast-forward 済み。作業ブランチ `codex/sync-wordpack-governance-rules` を作成。
+- 2026-06-28: ユーザー指定の `stillshore-chirp/wordpack-for-english` `main` を取得し、`459bd3d001b8c6b73cf6cf0c485fd65841d4375a` を比較元に設定。
+- 2026-06-28: `docs/ai-governance/` core を WordPack V4 へ同期。`reports/` と `evidence/` は WordPack 固有証跡のため除外した。
+- 2026-06-28: Issue-first、PR title、非 draft PR、CI後 code review / review thread 確認、公開安全性ゲートを `AGENTS.md` と GitHub templates へ反映した。
+- 2026-06-28: `docs/documentation-structure.md` と `docs/security-publication-checklist.md` を target 向けに追加し、検証スクリプトの file map を更新した。
+- 2026-06-28: `bash scripts/verify-ai-governance.sh` と `git diff --check` が PASS。conflict marker なし、WordPack 固有語は計画内の比較元説明だけ。
+- 2026-06-28: Issue-first ルールに従い、GitHub Issue #166 を作成。
 
 ## 13. 停止時の最終状態
-- 最終状態: Done
+- 最終状態: in_progress
 - 停止理由（Blocked/Cancelled の場合は必須）:
-- 再開条件: 追加レビューや CI 修正が必要になった場合。
-- 次の最短アクション: 必要なら差分を確認して追加 commit / push し、ドラフトではない PR と CI を確認する。
+- 再開条件: 差分棚卸しから継続。
+- 次の最短アクション: WordPack の governance / harness ファイル一覧を target と比較し、適用可能な不足分を反映する。

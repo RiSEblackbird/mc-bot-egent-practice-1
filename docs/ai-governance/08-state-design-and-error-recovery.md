@@ -1,100 +1,114 @@
-# State Design and Error Recovery
+# 状態設計とエラー回復
 
-state design は必須である。happy path 以外の状態が設計されるまで、UI は完了ではない。
+UIは通常状態だけで成立してはいけません。ユーザーが困るのは、多くの場合、読み込み中、空、失敗、無効、権限不足、部分データの時です。
 
-## 1. 必須 state
+## 1. 状態を混ぜない
 
-変更された画面/コンポーネントごとに、次の state を分類する。
+次の状態は区別してください。
 
-| State | 必須? | Notes |
-|---|---:|---|
-| 通常 | yes | 通常の利用可能状態 |
-| 読み込み中 | async の場合 | progress または skeleton を示す。可能な限り layout jump を避ける |
-| 空 | data が存在しない可能性がある場合 | なぜ空か、次に何をするかを説明する |
-| 該当なし | search/filter がある場合 | scope と広げ方を説明する |
-| 部分データ | あり得る場合 | 利用可能なものと失敗したものを示す |
-| 成功 | action が data を変える場合 | 結果と次の行動を確認できる |
-| 警告 | risk がある場合 | action 前に consequence を説明する |
-| エラー | operation が失敗し得る場合 | cause、impact、recovery を示す |
-| バリデーションエラー | input がある場合 | field-specific message と suggestion を示す |
-| 無効 | control が使えない場合 | reason と enabling condition を示す |
-| 権限なし | permission がある場合 | permission boundary と、該当する場合は request path を説明する |
-| オフライン/利用不可 | network または service に依存する場合 | retry と preservation behavior を示す |
+- 初回の空
+- 検索結果なし
+- フィルタ結果なし
+- 読み込み中
+- 部分データ
+- 通信エラー
+- 権限不足
+- 入力エラー
+- 無効
+- メンテナンスまたは利用不可
+- オフライン
 
-## 2. 読み込み中 state
+これらをすべて「データがありません」で済ませるのは禁止です。
 
-次に答える。
+## 2. state matrix
 
-- 何を読み込んでいるか。
-- system はまだ動いているか。
-- user は cancel できるか、または別の場所で作業を続けられるか。
-- user input は保持されるか。
+各状態で次を記録します。
 
-長い処理で context のない indefinite spinner を避ける。
+- ユーザーが見るもの
+- ユーザーが理解できること
+- 次にできる行動
+- 回復手段
+- アクセシビリティ上の通知
+- 証跡
+- 判定
 
-## 3. 空 state
+## 3. 読み込み中
 
-次に答える。
+確認事項:
 
-- これは想定どおりか。
-- ここにはどんな data が表示されるか。
-- user が最初に何をできるか。
-- permission または setup requirement があるか。
+- 読み込み中であることが分かるか。
+- どの領域が読み込み中か分かるか。
+- 既存データを消して不安を与えていないか。
+- 長い待機では進行状況や代替行動を示しているか。
+- 再試行やキャンセルが必要な場合に提供されているか。
 
-## 4. 該当なし state
+## 4. 空状態
 
-empty state と同じ見え方にしない。
+確認事項:
 
-次に答える。
+- 初回利用の空か、条件による空か分かるか。
+- 次に何をすればよいか分かるか。
+- 主操作があるか。
+- サンプル、説明、作成導線が必要か。
+- 空状態がエラーや権限不足を隠していないか。
 
-- どの query/filter の結果が 0 件だったか。
-- どの scope を search したか。
-- user はどう広げる、または filter を clear できるか。
+## 5. 検索結果なし
 
-## 5. Error state
+確認事項:
 
-次に答える。
+- 検索語やフィルタ条件が表示されているか。
+- 条件をリセットできるか。
+- 検索対象範囲が分かるか。
+- スペル、表記ゆれ、条件過多の可能性を示すべきか。
 
-- 何が失敗したか。
-- 何がまだ安全か。
-- 何を retry できるか。
-- どの data が失われる可能性があるか。
-- retry が失敗する場合、どこで助けを得られるか。
+## 6. エラー
 
-## 6. Disabled state
+エラーには次を含めます。
 
-説明のない disabled は usability failure である。
+- 何が起きたか。
+- 何に影響するか。
+- 入力や作業内容は保持されているか。
+- ユーザーができる回復手段。
+- 再試行、戻る、保存、問い合わせ、詳細確認などの導線。
 
-次を使う。
+## 7. 入力エラー
 
-- visible helper text
-- inline reason
-- accessible tooltip pattern
-- validation guidance
-- permission explanation
+確認事項:
 
-hover-only explanation に依存しない。
+- エラー箇所が分かるか。
+- エラー内容が入力欄の近くにあるか。
+- 修正例や条件が分かるか。
+- 送信後に入力内容が消えないか。
+- 複数エラー時に全体と個別の両方で把握できるか。
 
-## 7. Permission denied
+## 8. disabled
 
-次に答える。
+disabledは慎重に使います。
 
-- どの permission が足りないか。
-- permission がなくても何が見えるか。
-- 分かる場合、誰が access を付与できるか。
-- まだ利用できる action は何か。
+確認事項:
 
-## 8. Error recovery severity
+- 押せない理由が分かるか。
+- どうすれば有効になるか分かるか。
+- ツールチップだけに依存していないか。
+- キーボードやタッチで理由を確認できるか。
+- そもそもdisabledより、押下後に具体的理由を出す方がよくないか。
 
-risk に応じた recovery を使う。
+## 9. 権限不足
 
-| Risk | 必須 recovery |
-|---|---|
-| Low | retry または undo |
-| Medium | confirmation、input 保持、impact の説明 |
-| High | explicit confirmation、強い warning、関係する場合は audit trail |
-| Irreversible | 明確な object/consequence/reversibility statement を必須にする |
+確認事項:
 
-## 9. State matrix requirement
+- 権限がないことが分かるか。
+- 何をする権限が不足しているか分かるか。
+- 誰に依頼すればよいか、またはどこで設定するか分かるか。
+- セキュリティ上見せてはいけない情報を漏らしていないか。
 
-すべての UI/UX review は state matrix を含める。`templates/state-matrix.md` を使う。
+## 10. 危険操作と回復
+
+削除、送信、公開、課金、権限変更、データ上書きでは、次を確認します。
+
+- 対象が明確か。
+- 件数や範囲が明確か。
+- 影響が明確か。
+- 取り消し可否が明確か。
+- 確認が過剰でも不足でもないか。
+- 成功後に結果が分かるか。

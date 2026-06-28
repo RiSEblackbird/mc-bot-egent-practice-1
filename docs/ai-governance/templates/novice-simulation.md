@@ -1,35 +1,32 @@
-# Novice Simulation
+# 初見シミュレーション
 
-## Persona assumption
+## 前提
 
-- User:
-- Prior knowledge:
-- Goal:
-- Constraints:
+- 対象ユーザー:
+- 利用文脈:
+- ユーザー目的:
+- 事前知識として許可するもの:
+- 事前知識として許可しないもの:
 
-## 3 秒後の first impression
+## 3秒確認
 
-- 何のための画面に見えるか:
-- 何が click できそうに見えるか:
-- 何が重要に見えるか:
-- 何が混乱を招くか:
+- 何の画面か:
+- 今どこか:
+- 最初に何をすべきか:
+- 主操作はどれか:
+- 不明点:
 
-## Task attempt
+## タスク試行
 
-| Step | Expected user thought | Expected action | UI feedback | Risk/confusion |
-|---|---|---|---|---|
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
+| ステップ | ユーザーの予測 | 見つけたUI | 実行する操作 | 結果理解 | 迷い |
+|---|---|---|---|---|---|
+| 1 |  |  |  |  |  |
+| 2 |  |  |  |  |  |
 
-## Recovery
+## 判定
 
-- user が間違えた場合:
-- data が空の場合:
-- network が失敗した場合:
-- permission が足りない場合:
-
-## Result
-
-- PASS / PASS WITH RISK / FAIL
-- Reason:
+- Pass/Fail:
+- P0:
+- P1:
+- P2:
+- 修正案:

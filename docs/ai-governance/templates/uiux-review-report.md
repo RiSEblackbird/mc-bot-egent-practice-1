@@ -1,85 +1,122 @@
-# UI/UX Review Report
+# UI/UXレビュー報告
 
-## Summary
+## 1. 概要
 
-- Result: PASS / PASS WITH RISK / FAIL
-- Changed screens/components:
-- Primary user goal:
-- First meaningful action:
-- Reviewer:
-- Date:
+- 対象PR / 作業:
+- 変更した画面・コンポーネント:
+- 判定: Pass / Fail
+- P0件数:
+- P1件数:
+- P2件数:
 
-## P0/P1/P2 Findings
+## 2. ユーザー価値
 
-| Severity | Location | Issue | User impact | Evidence | Recommended fix | Status |
-|---|---|---|---|---|---|---|
-|  |  |  |  |  |  |  |
+- 対象ユーザー:
+- 利用文脈:
+- ユーザー目的:
+- 支援するタスク:
+- このUIが助ける理解・判断・行動:
+- このUIがなければ困る点:
+- 削るべき情報・操作:
+- 検証仮説・成功指標:
 
-## Screen Purpose
+## 3. 初見理解
 
-| Screen/component | Purpose | First-time user | First meaningful action | Current scope indicator | Pass/Fail |
+- 何の画面か分かるか:
+- 今どこか分かるか:
+- 何ができるか分かるか:
+- 最初の有意味な行動:
+- 操作結果を予測できるか:
+- 失敗時に戻れるか:
+
+## 4. state matrix
+
+`templates/state-matrix.md` を埋める。
+
+## 5. アクセシビリティ確認
+
+- キーボード:
+- フォーカス:
+- 名前・ラベル:
+- 見出し・構造:
+- コントラスト:
+- ターゲットサイズ:
+- エラー・ステータス:
+- 自動検査:
+- 手動確認:
+
+## 6. 視覚階層
+
+- 主操作:
+- 情報優先度:
+- グルーピング:
+- 余白・密度:
+- 読みやすさ:
+- 狭幅・文字拡大:
+
+## 7. コピー
+
+- 用語:
+- ボタン・リンク:
+- エラー文:
+- 空状態:
+- disabled:
+- トーン:
+
+## 8. 熟練者効率
+
+- 主要反復タスク:
+- 手数:
+- 再入力・再選択:
+- 近道:
+- 初心者向け説明の影響:
+- 判定:
+
+## 9. 満足感・信頼感
+
+- 待機中:
+- 成功時:
+- 失敗時:
+- 危険操作:
+- データ・権限・個人情報:
+- トーン:
+- 判定:
+
+## 10. 反証レビュー
+
+- 実装を落とす観点で見つけた問題:
+- P0候補:
+- 証跡不足:
+- 残リスク:
+
+## 11. 指摘一覧
+
+| 優先度 | 箇所 | 問題 | 影響 | 修正案 | 状態 |
 |---|---|---|---|---|---|
-|  |  |  |  |  |  |
+| P0/P1/P2 |  |  |  |  | 未対応/対応済 |
 
-## State Matrix
+## 12. 証跡
 
-state matrix への link、または内容をここに貼る。
+- スクリーンショット:
+- トレース:
+- テスト結果:
+- 手動確認:
+- 取得できなかった証跡と理由:
 
-## Cognitive Walkthrough
+## 13. 実行した検証
 
-- Task:
-- First impression:
-- Expected first action:
-- Confusions:
-- Recovery path:
-- Result:
+- [ ] lint
+- [ ] typecheck
+- [ ] unit test
+- [ ] integration / e2e
+- [ ] accessibility check
+- [ ] keyboard check
+- [ ] responsive check
+- [ ] visual regression
+- [ ] その他:
 
-## Accessibility Review
+## 14. 実行していない検証
 
-- Keyboard:
-- Focus:
-- Names/labels:
-- Semantics:
-- Contrast:
-- Target size:
-- Forms/errors:
-- Motion:
-- Result:
-
-## Visual Hierarchy Review
-
-- Primary action visibility:
-- Grouping:
-- Density:
-- Typography:
-- Responsive/content stress:
-- Result:
-
-## Copy Review
-
-- Terminology:
-- Action labels:
-- Error messages:
-- Empty/disabled states:
-- Result:
-
-## Counter-review
-
-- Rejection attempt:
-- Hidden risks found:
-- Evidence gaps:
-- Result:
-
-## Evidence
-
-- Screenshots/traces:
-- Commands run:
-- Files inspected:
-- Tests run:
-- Tests not run:
-
-## Final Decision
-
-- Result:
-- Remaining risks:
-- Required follow-up:
+| 未実行検証 | 理由 | 残リスク | 後続対応 |
+|---|---|---|---|
+|  |  |  |  |
