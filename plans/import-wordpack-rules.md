@@ -26,7 +26,7 @@
 | M1 | WordPack 最新ルールを取得し、現行ルールとの差分を整理する | Done | `stillshore-chirp/wordpack-for-english` `main` を `459bd3d001b8c6b73cf6cf0c485fd65841d4375a` として取得し、governance core は source と一致（reports/evidence は除外）。 |
 | M2 | 適用可能なルールを本リポジトリへ反映する | Done | WordPack 固有のプロダクト / インフラ手順は除外し、開発・完了・レビュー・UI/UX・公開安全性ゲート、Issue/PR templates、V4 governance を反映した。 |
 | M3 | 文書・ハーネス整合性を検証する | Done | `bash scripts/verify-ai-governance.sh` と `git diff --check` が PASS。WordPack 固有語は計画の比較元説明以外に残存なし。 |
-| M4 | 完了ゲートを確認する | Done | commit `584dd6f148bf0eb92852210dc1d618a2daaf64c7` を push し、通常 PR #167 を作成。CI 3 checks は PASS、review / reviewThreads / comments は未検出。 |
+| M4 | 完了ゲートを確認する | Done | 通常 PR #167 を作成。最新 head の CI 3 checks は PASS、review / reviewThreads / comments は未検出。 |
 
 ## 5. 優先度付き小タスク
 - [x] P0: target repo の cwd / branch / worktree / 直近履歴を確認する。
@@ -79,7 +79,7 @@
 - 2026-06-28: `docs/documentation-structure.md` と `docs/security-publication-checklist.md` を target 向けに追加し、検証スクリプトの file map を更新した。
 - 2026-06-28: `bash scripts/verify-ai-governance.sh` と `git diff --check` が PASS。conflict marker なし、WordPack 固有語は計画内の比較元説明だけ。
 - 2026-06-28: Issue-first ルールに従い、GitHub Issue #166 を作成。
-- 2026-06-28: commit `584dd6f148bf0eb92852210dc1d618a2daaf64c7` を push し、draft ではない PR #167 を作成。CI は Python test / Node test/build / Bridge test/build が PASS。GraphQL `reviewThreads` は空、flat reviews/comments も空。
+- 2026-06-28: draft ではない PR #167 を作成。最新 head の CI は Python test / Node test/build / Bridge test/build が PASS。GraphQL `reviewThreads` は空、flat reviews/comments も空。
 
 ## 13. 停止時の最終状態
 - 最終状態: Done
