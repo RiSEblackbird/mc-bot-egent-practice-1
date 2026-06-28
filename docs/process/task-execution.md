@@ -4,12 +4,16 @@
 
 ## 1. 開始前
 
-1. 対応ブランチを確認する。
-2. `plans/<task-id>.md` を作成または更新する（`plans/TEMPLATE.md` を利用）。
-3. `目的`、`非目標`、`対象範囲`、`マイルストーン`、`優先度付き小タスク`、`受け入れ条件`、`検証コマンド`、`基本スモークテスト`、`再開コマンド`、`既知 Blocker` を埋める。
-4. 作業を UI/UX、アクセシビリティ、フロントエンド挙動、バックエンド/API、データ/モデル、ドキュメント、テスト/ツール、ガバナンス/ルール、セキュリティ/プライバシーへ分類する。
-5. 影響範囲の `AGENTS.md`（ルート + サブディレクトリ）を確認する。
-6. UI/UX が関係する場合は `.agents/skills/ui-ux-review/SKILL.md` と `docs/ai-governance/` の必須文書を確認する。
+1. 作業ディレクトリ、現在ブランチ、作業ツリー、直近の git 履歴を確認する。
+2. スレッド最初のリポジトリ変更作業では `main` にいることを確認し、`git fetch origin` と `git merge --ff-only origin/main` で最新化する。
+3. 最新の `main` から `codex/<目的>` 形式の作業ブランチを作成してチェックアウトする。
+4. 関連 Issue を特定する。該当 Issue がなく、Issue-first 例外にも当たらない場合は新規 Issue の作成または作成不能理由を記録する。
+5. `plans/<task-id>.md` を作成または更新する（`plans/TEMPLATE.md` を利用）。
+6. `目的`、`非目標`、`対象範囲`、`マイルストーン`、`優先度付き小タスク`、`受け入れ条件`、`検証コマンド`、`基本スモークテスト`、`再開コマンド`、`既知 Blocker` を埋める。
+7. 作業を UI/UX、アクセシビリティ、フロントエンド挙動、コピー/文言、状態/エラー/ローディング、バックエンド/API、データ/モデル、テスト/ツール、文書のみ、ガバナンス変更、セキュリティ/プライバシーへ分類する。
+8. 影響範囲の `AGENTS.md`（ルート + サブディレクトリ）を確認する。
+9. UI/UX が関係する場合は `.agents/skills/ui-ux-review/SKILL.md` と `docs/ai-governance/` の必須文書を確認する。
+10. git に push される文書が変わる場合は `docs/security-publication-checklist.md` を確認する。
 
 ## 2. 実行中
 
@@ -19,7 +23,8 @@
 - 進捗は Markdown の自由文だけへ閉じず、checklist、JSON、key-value など機械更新しやすい形も必要に応じて併用する。
 - 中間共有は計画ファイル更新、チェックリスト更新、ローカルコミットを基本とする。
 - PR は受け入れ条件達成後に作成または更新し、完了時はドラフトではない状態にする。
-- UI/UX 変更では state matrix、novice simulation、accessibility review、visual hierarchy review、counter-review、検証証跡を残す。
+- UI/UX 変更では state matrix、novice simulation、ユーザー価値評価、accessibility review、visual hierarchy review、熟練者効率確認、満足感・信頼感確認、counter-review、検証証跡を残す。
+- 実環境の不具合や運用調査では、実ログや実データを確認した範囲と、コード上の仮説を分ける。
 
 ## 3. 停止してよい条件
 
@@ -36,9 +41,15 @@
 - マイルストーン状態を `Done / Blocked / Cancelled` のいずれかにする（`pending` / `in_progress` を残さない）。
 - `Blocked` の場合は停止理由と再開条件を明記する。
 - 「次の最短アクション」を 1 行で残す。
+- 実施した検証、未実行検証、残るリスクを記録する。
 
 ## 5. 完了
 
-- 受け入れ条件をすべて満たし、必要な検証コマンドが通過したら完了とする。
-- リポジトリ変更を伴う作業では、作業ブランチ、commit、push、ドラフトではない PR URL、最新 head の CI 状態まで確認してから完了とする。
+- 受け入れ条件をすべて満たし、必要な検証コマンドが通過したら、作業内容としては完了候補とする。
+- リポジトリ変更を伴う作業では、作業ブランチ、commit、push、ドラフトではない PR URL、最新 head の CI 状態を確認する。
+- CI が失敗中または未確認なら完了扱いにしない。失敗 check 名、ログ上の根拠、試した修正、未完了範囲、次の最短アクションを記録する。
+- CI 成功後、PR 上の Codex 自動コードレビュー、review thread、review comment を確認する。
+- 対応が必要な review thread がある場合は、修正、commit、push、CI 再確認、thread 解決まで行う。
 - 調査、質問回答、レビューなどリポジトリ変更を伴わない作業では、PR URL / Commit SHA / CI result を `N/A` として扱い、変更作業と誤認される完了表現を避ける。
+
+最終報告には `Issue`、`Branch`、`PR URL`、`Commit SHA`、`Local verification`、`CI result`、`Code review result`、`Remaining risks` を含める。

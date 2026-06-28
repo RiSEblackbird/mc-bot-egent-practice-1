@@ -1,17 +1,16 @@
-# Cognitive Walkthrough Checklist
+# 認知的ウォークスルーチェックリスト
 
-変更された画面/コンポーネントごとに確認する。
-
-- [ ] user goal が visible UI から見える、または推測できる。
-- [ ] first meaningful action が見える。
-- [ ] action label が結果を予測させる。
-- [ ] user が documentation を必要としない。
-- [ ] user が隠れた prior information を覚える必要がない。
-- [ ] current location/scope が見える。
-- [ ] action 後の feedback が見える。
-- [ ] error recovery が見える。
-- [ ] empty state が next step を示す。
-- [ ] disabled state が何をすれば有効になるかを説明する。
-- [ ] advanced options が beginner path を妨げない。
-- [ ] copy が user terminology を使っている。
-- [ ] 中断後も UI を理解できる。
+- [ ] 対象ユーザーを説明できる。
+- [ ] ユーザー目的を説明できる。
+- [ ] 画面目的を初見で説明できる。
+- [ ] 現在地を説明できる。
+- [ ] 最初の有意味な行動を説明できる。
+- [ ] 主操作が見つかる。
+- [ ] 操作結果を予測できる。
+- [ ] 失敗時の回復手段が分かる。
+- [ ] 内部用語に依存していない。
+- [ ] 前画面の記憶に依存していない。
+- [ ] 選択肢が多すぎない。
+- [ ] 高度な設定が必要に応じて段階的に出る。
+- [ ] 初心者向け説明がある。
+- [ ] 熟練者が説明を読み飛ばせる。

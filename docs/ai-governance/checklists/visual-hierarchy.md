@@ -1,16 +1,15 @@
-# Visual Hierarchy Checklist
+# 視覚階層チェックリスト
 
-- [ ] screen title または purpose が明確。
-- [ ] current object/scope/filter/mode が明確。
-- [ ] decision area で primary action が 1 つだけ支配的。
-- [ ] secondary action が視覚的に secondary である。
-- [ ] destructive action が視覚的に区別され、risk に合っている。
-- [ ] 関連 item が group 化されている。
-- [ ] alignment が scanning を助けている。
-- [ ] whitespace が region を分けている。
-- [ ] metadata が task-critical content と競合していない。
-- [ ] count/badge/status indicator が scope を説明している。
-- [ ] 長い label で layout が壊れない。
-- [ ] narrow viewport でも利用できる。
-- [ ] text が想定 size で読める。
-- [ ] layout が empty、many、error state に耐える。
+- [ ] 3秒で画面目的が分かる。
+- [ ] 3秒で主操作が分かる。
+- [ ] 主操作と副操作の強弱が明確。
+- [ ] 危険操作が不用意に強調されていない。
+- [ ] 見出し、本文、補助情報、操作が階層化されている。
+- [ ] 関連する情報と操作が近くにある。
+- [ ] 操作対象の範囲が分かる。
+- [ ] 検索、タブ、フィルタ、件数の対象範囲が分かる。
+- [ ] 余白がまとまりを示している。
+- [ ] 情報密度が高すぎない。
+- [ ] 情報密度が低すぎて効率を落としていない。
+- [ ] 長文、日本語、数値、日時、件数が読みやすい。
+- [ ] 狭幅や文字拡大で階層が崩れない。
