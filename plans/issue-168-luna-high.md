@@ -26,7 +26,7 @@
 | M1 | 固定設定と旧環境変数廃止 | Done | 単一正本と fail-fast を実装 |
 | M2 | 全 LLM 経路の payload/schema/観測統一 | Done | plan/replan/review/barrier を共通化 |
 | M3 | 文書・テスト・静的確認 | Done | 119テストとローカル代表シナリオを完了 |
-| M4 | commit / push / PR / CI / review | In progress | 非ドラフト PR の完了ゲートを進行中 |
+| M4 | commit / push / PR / CI / review | Done | PR #169、初回headのCI成功、review thread 0件を確認 |
 
 ## 5. 優先度付き小タスク
 - [x] P0: Luna High 固定値を単一箇所へ定義し、旧モデル環境変数を fail-fast する。
@@ -35,7 +35,7 @@
 - [x] P0: plan / replan / pre_action_review / barrier_notification の観測情報を統一する。
 - [x] P1: 回帰テスト、静的検索、代表シナリオを実行する。
 - [x] P1: README、環境テンプレート、技術文書を同期する。
-- [ ] P2: PR、CI、Codex review thread を確認する。
+- [x] P2: PR、CI、Codex review thread を確認する。
 
 ## 6. 受け入れ条件 (Acceptance Criteria)
 - [x] 全 Responses API 呼び出しが固定モデル、固定 reasoning、固定 verbosity を利用し、temperature / pro mode を送信しない。
@@ -72,9 +72,10 @@
 - 2026-07-31: Issue、ルート/サブディレクトリ規約、OpenAI 公式モデル仕様と Responses API schema、既存コード・テストを確認。
 - 2026-07-31: 固定設定、旧環境変数 fail-fast、専用 schema、共通観測処理、再計画深度の伝播を実装。
 - 2026-07-31: README・環境テンプレート・技術文書を同期。119テスト、代表5シナリオ、静的確認が成功。
+- 2026-07-31: commit `606ad52` を pushし、非ドラフト PR #169 を作成。Bridge / Node / Python CI 成功、review / thread / comment 0件を確認。
 
 ## 13. 停止時の最終状態
-- 最終状態: 作業中
+- 最終状態: Done
 - 停止理由（Blocked/Cancelled の場合は必須）: N/A
 - 再開条件: N/A
-- 次の最短アクション: commit / push / PR / CI / review 確認
+- 次の最短アクション: PR #169 のマージ判断
