@@ -25,7 +25,7 @@
 | --- | --- | --- | --- |
 | M1 | 固定設定と旧環境変数廃止 | Done | 単一正本と fail-fast を実装 |
 | M2 | 全 LLM 経路の payload/schema/観測統一 | Done | plan/replan/review/barrier を共通化 |
-| M3 | 文書・テスト・静的確認 | Done | 119テストとローカル代表シナリオを完了 |
+| M3 | 文書・テスト・静的確認 | Blocked | 自動検証は完了。実API代表シナリオは外部送信の明示承認待ち |
 | M4 | commit / push / PR / CI / review | Done | PR #169、初回headのCI成功、review thread 0件を確認 |
 
 ## 5. 優先度付き小タスク
@@ -43,7 +43,7 @@
 - [x] PlanOut / BarrierNotification / PreActionReview の出力契約が呼び出し payload と一致する。
 - [x] timeout / refusal / parse failure / barrier / 最大2回の再計画の既存安全策を維持する。
 - [x] 用途、モデル、推論強度、verbosity、usage、latency、outcome、replan depth を観測できる。
-- [x] 必須テスト、代表5シナリオ、静的検索が成功する。
+- [ ] 必須テスト、実API代表5シナリオ、静的検索が成功する（自動テストとfake 5シナリオ、静的検索は成功。実APIは未実行）。
 
 ## 7. 検証コマンド (Verification)
 - [x] `python -m pytest tests/test_agent_config.py`
@@ -52,6 +52,7 @@
 - [x] `python -m pytest tests`
 - [x] `git diff --check`
 - [x] 旧モデル文字列と固定 payload の `rg` 静的確認
+- [ ] 実 OpenAI API の代表5シナリオと usage / latency 確認
 
 ## 8. 基本スモークテスト
 - 手順: OpenAI 呼び出しを fake client へ差し替え、単純移動、数量付き採掘、確認要求、再計画、障壁通知の5シナリオを実行する。
@@ -62,7 +63,8 @@
 - `python -m pytest tests/test_planner_responses_payload.py tests/test_langgraph_scenarios.py tests/test_agent_replan.py`
 
 ## 10. 既知 Blocker
-- なし
+- リポジトリ内 SYSTEM prompt を OpenAI API へ送信する実検証は、外部エグレスの明示承認が必要なため未実行。
+- 再開条件: ユーザーが、OpenAI API へ SYSTEM prompt と代表シナリオ入力を送信することを明示承認する。
 
 ## 11. Feature Flag / Rollback（必要時のみ）
 - Flag: なし。Issue 要件により旧モデルへのランタイム切り戻しは実装しない。
@@ -73,9 +75,10 @@
 - 2026-07-31: 固定設定、旧環境変数 fail-fast、専用 schema、共通観測処理、再計画深度の伝播を実装。
 - 2026-07-31: README・環境テンプレート・技術文書を同期。119テスト、代表5シナリオ、静的確認が成功。
 - 2026-07-31: commit `606ad52` を pushし、非ドラフト PR #169 を作成。Bridge / Node / Python CI 成功、review / thread / comment 0件を確認。
+- 2026-07-31: 実 API の単純移動シナリオ送信は外部エグレスの権限レビューで拒否。回避せず、実API 5シナリオを Blocked として訂正。
 
 ## 13. 停止時の最終状態
-- 最終状態: Done
-- 停止理由（Blocked/Cancelled の場合は必須）: N/A
-- 再開条件: N/A
-- 次の最短アクション: PR #169 のマージ判断
+- 最終状態: Blocked
+- 停止理由（Blocked/Cancelled の場合は必須）: 実 API 代表シナリオの送信に明示承認が必要。
+- 再開条件: OpenAI API へリポジトリ内 SYSTEM prompt と代表入力を送信することへのユーザー承認。
+- 次の最短アクション: 承認後、実API 5シナリオを実行し、usage / latency / schema / 日本語品質をPRへ追記する。
