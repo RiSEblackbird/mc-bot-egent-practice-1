@@ -52,7 +52,7 @@ graph TD
     end
 
     %% 外部 LLM / API
-    OpenAI["OpenAI Responses API<br/>(gpt-5-mini など)"]
+    OpenAI["OpenAI Responses API<br/>GPT-5.6 Luna High"]
 
     %% 経路
     Player -->|"チャット（日本語）"| Paper
@@ -148,7 +148,7 @@ graph LR
 
     %% 外部サービス / モデル
     subgraph External["外部サービス / モデル"]
-        OpenAI_API["OpenAI Responses API<br/>(gpt-5-mini など)"]
+        OpenAI_API["OpenAI Responses API<br/>GPT-5.6 Luna High"]
         MineDojoSvc["MineDojo API / データセット"]
         VPTModel["VPT モデル<br/>(HuggingFace Hub / PyTorch)"]
     end
@@ -235,7 +235,7 @@ Paper 側でプロアクティブに危険通知やジョブ状況を配信し�
 | `orchestrator.plan_executor.PlanExecutor` | LangGraph → Mineflayer | directive ごとに `executor`（`mineflayer` / `minedojo` / `chat`）を参照し、`Actions` へ meta 付きでディスパッチ |
 | Node Telemetry | `node-bot/runtime/telemetry.ts` | `command.meta.directive_id` / `directive.executor` を span 属性とメトリクス（`mineflayer.directive.received`）に記録 |
 
-- **Goal Profile**: gpt-5-mini から返された `goal_profile` は「誰のための作業か」「成功条件は何か」「優先度は？」を LangGraph 側で可視化するために用います。`docs/minedojo_integration.md` と同じ `mission_id` / `tags` がここにも含まれます。
+- **Goal Profile**: GPT-5.6 Luna から返された `goal_profile` は「誰のための作業か」「成功条件は何か」「優先度は？」を LangGraph 側で可視化するために用います。`docs/minedojo_integration.md` と同じ `mission_id` / `tags` がここにも含まれます。
 - **ActionDirective**: `directives[n]` は plan ステップと 1:1 で紐づき、`category`・`executor`・`args.coordinates` を明示します。Python 側は directive が指定された場合にヒューリスティックを飛ばし、Mineflayer / MineDojo / チャットのいずれかへ直行します。
 - **Recovery Hints**: `recovery_hints` は `langgraph_state.record_recovery_hints()` でステートに残り、再計画プロンプトと `memory.recovery_hints` の双方に同期されます。障壁が多発するステップを directive レベルで切り分けられるため、次のチャットに答える前に再計画ポリシーを切り替えられます。
 
@@ -332,4 +332,3 @@ if not result.ok and result.error_detail:
         "採掘地点への移動", f"移動に失敗しました: {result.error_detail}",
     )
 ```
-

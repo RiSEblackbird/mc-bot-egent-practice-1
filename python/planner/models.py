@@ -185,7 +185,13 @@ class BarrierNotificationTimeout(BarrierNotificationError):
 class BarrierNotification(BaseModel):
     """障壁通知用のメッセージをパースするためのスキーマ。"""
 
-    message: str = ""
+    message: str
+
+
+class PreActionReview(BaseModel):
+    """低確信度プランの確認質問を受け取る専用スキーマ。"""
+
+    message: str
 
 
 def normalize_directives(plan_out: PlanOut) -> None:
@@ -215,6 +221,7 @@ __all__ = [
     "GoalProfile",
     "PlanArguments",
     "PlanOut",
+    "PreActionReview",
     "ReActStep",
     "normalize_directives",
 ]

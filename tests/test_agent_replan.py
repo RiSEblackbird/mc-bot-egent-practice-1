@@ -163,9 +163,11 @@ def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None
         return f"障壁: {step} / {reason}"
 
     replan_prompts: List[str] = []
+    replan_contexts: List[Dict[str, Any]] = []
 
     async def fake_plan(message: str, context: Dict[str, Any]) -> PlanOut:
         replan_prompts.append(message)
+        replan_contexts.append(context)
         return PlanOut(
             plan=["渡されたツルハシを装備する"],
             resp="代替プランで進めます。",
@@ -191,6 +193,7 @@ def test_mining_failure_triggers_replan(monkeypatch: pytest.MonkeyPatch) -> None
     assert actions.say_messages[0].startswith("障壁")
     assert any(msg == "代替プランで進めます。" for msg in actions.say_messages)
     assert replan_prompts and "失敗" in replan_prompts[0]
+    assert replan_contexts[0]["_replan_depth"] == 1
 
 def test_equip_failure_refreshes_inventory_and_requests_replan(
     monkeypatch: pytest.MonkeyPatch,
@@ -268,6 +271,7 @@ def test_equip_failure_refreshes_inventory_and_requests_replan(
     assert actions.say_messages[-1] == "在庫不足を確認しました。"
     assert replan_messages and "失敗" in replan_messages[0]
     assert replan_contexts and replan_contexts[0]["inventory_detail"] == second_snapshot
+    assert replan_contexts[0]["_replan_depth"] == 1
     assert memory.get("inventory_detail") == second_snapshot
     assert barrier_contexts and barrier_contexts[0]["queue_backlog"] == 0
 

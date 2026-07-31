@@ -236,10 +236,10 @@ docker compose -f docker-compose.yml -f docker-compose.host-services.yml up --bu
 ### OpenAI / プランナー
 
 - **`OPENAI_API_KEY`**: 必須
-- **`OPENAI_MODEL`**: 既定は gpt-5 系（例: `gpt-5-mini`）
-- **`OPENAI_TEMPERATURE`**: 温度固定モデルの場合は送信を抑止します（[Tips](#openai-設定で温度を変更したい場合)）
-- **`OPENAI_REASONING_EFFORT` / `OPENAI_VERBOSITY`**: Responses API の推論/冗長度
+- モデル設定は `gpt-5.6-luna` / reasoning effort `high` / text verbosity `low` に固定されています。モデル、推論強度、verbosity、temperature を環境変数では変更できません。
+- 廃止されたモデル設定環境変数が `.env` に残っている場合は、移行漏れを明示する起動エラーになります。
 - **`LLM_TIMEOUT_SECONDS`**: タイムアウト（既定 30 秒）
+- 各呼び出しは `openai_response_call` 構造化ログへ用途、固定モデル設定、input/cached/output/reasoning token、latency、outcome、再計画深度を記録します。API 単価はコードへ保持しません。
 
 ### Python ↔ Node WebSocket（混同しやすい）
 
@@ -350,12 +350,6 @@ Mineflayer 側の低レベル操作を逐次再生する経路です（環境に
 2. **Python エージェント**: `WS send/recv`、`queue chat`、`plan_step ...`、`execution barrier detected` 等が出るか
 
 これにより「チャット受信→転送→LLM→コマンド送信→応答」のどこで止まったかを切り分けられます。
-
-### OpenAI 設定で温度を変更したい場合
-
-一部モデルは API 側で温度固定です。`OPENAI_TEMPERATURE` を設定しても、温度変更不可モデルでは **送信を抑止**し、理由をログへ出します。
-
-- 対応: 温度可変モデルへ切替、または `.env` の値とモデルの組み合わせを見直してください。
 
 ### 自動移動が「到達したのに失敗」になりやすい
 
