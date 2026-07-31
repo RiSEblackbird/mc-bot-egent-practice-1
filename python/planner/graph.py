@@ -1,9 +1,8 @@
 """プランナーの LangGraph 構築と関連ステート管理を担当するモジュール。"""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import ValidationError
 
@@ -11,7 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from opentelemetry.trace import Status, StatusCode
 
-from llm.client import AsyncOpenAI
+from llm.client import AsyncOpenAI, call_responses_api, log_response_outcome
 from planner_config import PlannerConfig
 from utils import span_context
 
@@ -25,6 +24,7 @@ from .models import (
     GoalProfile,
     PlanArguments,
     PlanOut,
+    PreActionReview,
     ReActStep,
     normalize_directives,
 )
@@ -212,13 +212,25 @@ def _extract_recovery_hints_from_context(state: UnifiedPlanState) -> List[str]:
     return hints
 
 
+def _extract_replan_depth_from_context(state: UnifiedPlanState) -> int:
+    """内部コンテキストから非負の再計画深度を復元する。"""
+
+    context = state.get("context") or {}
+    raw_depth = context.get("_replan_depth", 0)
+    try:
+        return max(0, int(raw_depth))
+    except (TypeError, ValueError):
+        return 0
+
+
 async def _compose_pre_action_follow_up(
     plan_out: PlanOut,
     reason: str,
     *,
     client_factory: Callable[[], AsyncOpenAI],
     payload_builder: Callable[[str, str], Dict[str, Any]],
-    timeout_seconds: float,
+    config: PlannerConfig,
+    replan_depth: int,
 ) -> str:
     """Responses API を利用してソクラテス式のフォローアップ文を生成する。"""
 
@@ -226,13 +238,37 @@ async def _compose_pre_action_follow_up(
     prompt = build_pre_action_review_prompt(plan_out, reason)
     payload = payload_builder(SOCRATIC_REVIEW_SYSTEM, prompt)
     try:
-        resp = await asyncio.wait_for(
-            client.responses.create(**payload),
-            timeout=timeout_seconds,
+        resp, observation = await call_responses_api(
+            client,
+            payload,
+            config=config,
+            purpose="pre_action_review",
+            replan_depth=replan_depth,
         )
         text = extract_output_text(resp).strip()
-        if text:
-            return text
+        refusal_text = extract_refusal_text(resp)
+        if not text and refusal_text:
+            log_response_outcome(observation, "refusal")
+            return "作業内容に不確実な点があるため、追加の指示をいただけますか？"
+
+        structured_output = extract_structured_output(resp)
+        try:
+            if structured_output is not None:
+                review = PreActionReview.model_validate(structured_output)
+            else:
+                review = PreActionReview.model_validate_json(text)
+            if not review.message.strip():
+                raise ValueError("pre-action review message is empty")
+        except Exception as exc:
+            log_response_outcome(
+                observation,
+                "schema_validation_failure",
+                error=exc.__class__.__name__,
+            )
+            raise
+
+        log_response_outcome(observation, "success")
+        return review.message.strip()
     except Exception as exc:  # pragma: no cover - LLM 障害はログのみに留める
         logger.warning(
             "pre_action_review compose failed (%s): %s",
@@ -259,10 +295,12 @@ def build_plan_graph(
     priority_manager: PlanPriorityManager,
     async_client_factory: Callable[[], AsyncOpenAI],
     payload_builder: Callable[[str, str], Dict[str, Any]],
+    review_payload_builder: Optional[Callable[[str, str], Dict[str, Any]]] = None,
 ) -> CompiledStateGraph:
     """Plan 用 LangGraph を構築してコンパイルする。"""
 
     manager = priority_manager
+    effective_review_payload_builder = review_payload_builder or payload_builder
     graph: StateGraph = StateGraph(UnifiedPlanState)
 
     async def prepare_payload(state: UnifiedPlanState) -> Dict[str, Any]:
@@ -327,11 +365,16 @@ def build_plan_graph(
 
             try:
                 client = async_client_factory()
-                resp = await asyncio.wait_for(
-                    client.responses.create(**state["payload"]),
-                    timeout=config.llm_timeout_seconds,
+                replan_depth = _extract_replan_depth_from_context(state)
+                call_purpose = "replan" if replan_depth > 0 else "plan"
+                resp, observation = await call_responses_api(
+                    client,
+                    state["payload"],
+                    config=config,
+                    purpose=call_purpose,
+                    replan_depth=replan_depth,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timeout_reason = f"timeout after {config.llm_timeout_seconds:.1f} seconds"
                 if span.is_recording():
                     span.set_attribute("llm.timeout_seconds", config.llm_timeout_seconds)
@@ -345,6 +388,7 @@ def build_plan_graph(
             content = extract_output_text(resp)
             refusal_text = extract_refusal_text(resp)
             if not content and refusal_text:
+                log_response_outcome(observation, "refusal")
                 return await _build_failure_payload(
                     f"response refusal: {refusal_text[:120]}",
                     log_as_warning=True,
@@ -364,7 +408,13 @@ def build_plan_graph(
                     ),
                 )
             logger.info("LLM raw: %s", content)
-            payload = {"response": resp, "content": content}
+            payload = {
+                "response": resp,
+                "content": content,
+                "llm_observation": observation,
+                "call_purpose": call_purpose,
+                "replan_depth": replan_depth,
+            }
             payload.update(
                 record_structured_step(
                     state,
@@ -419,6 +469,11 @@ def build_plan_graph(
                             primary_exc.__class__.__name__,
                         )
                     except Exception as secondary_exc:
+                        log_response_outcome(
+                            state["llm_observation"],
+                            "schema_validation_failure",
+                            error=secondary_exc.__class__.__name__,
+                        )
                         parse_error_code = _classify_plan_parse_error(secondary_exc, used_structured_output=False)
                         logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
                         priority = await manager.mark_failure()
@@ -438,6 +493,11 @@ def build_plan_graph(
                         )
                         return result
                 else:
+                    log_response_outcome(
+                        state["llm_observation"],
+                        "schema_validation_failure",
+                        error=primary_exc.__class__.__name__,
+                    )
                     parse_error_code = _classify_plan_parse_error(primary_exc, used_structured_output=False)
                     logger.exception("plan graph failed to parse JSON plan (%s)", parse_error_code)
                     priority = await manager.mark_failure()
@@ -457,6 +517,11 @@ def build_plan_graph(
                     )
                     return result
             else:
+                log_response_outcome(
+                    state["llm_observation"],
+                    "schema_validation_failure",
+                    error=primary_exc.__class__.__name__,
+                )
                 parse_error_code = _classify_plan_parse_error(primary_exc, used_structured_output=True)
                 logger.exception("plan graph failed to parse structured plan (%s)", parse_error_code)
                 priority = await manager.mark_failure()
@@ -478,6 +543,7 @@ def build_plan_graph(
 
         # LLM 出力が空配列の場合は実行フェーズで詰まるため、ここでチャット確認に切り替える。
         if not plan_data.plan:
+            log_response_outcome(state["llm_observation"], "success")
             fallback_message = plan_data.resp.strip() or "手順が生成できませんでした。もう少し具体的に指示してください。"
             plan_data.blocking = True
             plan_data.next_action = "chat"
@@ -500,6 +566,7 @@ def build_plan_graph(
             return result
 
         priority = await manager.mark_success()
+        log_response_outcome(state["llm_observation"], "success")
         recovery_hints = _extract_recovery_hints_from_context(state)
         if recovery_hints:
             plan_data.recovery_hints = recovery_hints
@@ -558,8 +625,9 @@ def build_plan_graph(
             plan_out,
             evaluation.get("reason", ""),
             client_factory=async_client_factory,
-            payload_builder=payload_builder,
-            timeout_seconds=config.llm_timeout_seconds,
+            payload_builder=effective_review_payload_builder,
+            config=config,
+            replan_depth=_extract_replan_depth_from_context(state),
         )
         plan_out.next_action = "chat"
         plan_out.resp = follow_up_message or plan_out.resp
@@ -723,6 +791,7 @@ __all__ = [
     "GoalProfile",
     "PlanArguments",
     "PlanOut",
+    "PreActionReview",
     "PlanPriorityManager",
     "ReActStep",
     "UnifiedPlanState",
@@ -739,4 +808,6 @@ __all__ = [
     "_extract_output_text",
     "build_responses_input",
     "extract_output_text",
+    "extract_refusal_text",
+    "extract_structured_output",
 ]

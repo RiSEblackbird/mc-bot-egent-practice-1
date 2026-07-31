@@ -161,6 +161,7 @@ class RecoveryCoordinator:
         context = self.status_service.build_context_snapshot(
             current_role_id=self.role_perception.current_role
         )
+        context["_replan_depth"] = replan_depth + 1
         inventory_detail = self.memory.get("inventory_detail")
         if inventory_detail is not None:
             context["inventory_detail"] = inventory_detail

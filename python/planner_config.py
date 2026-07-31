@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Set
+from typing import Mapping, Optional
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -13,21 +13,30 @@ from utils import setup_logger
 
 logger = setup_logger("planner.config")
 
+OPENAI_MODEL = "gpt-5.6-luna"
+OPENAI_REASONING_EFFORT = "high"
+OPENAI_VERBOSITY = "low"
+
+_REMOVED_MODEL_ENV_VARS = (
+    "OPENAI_MODEL",
+    "OPENAI_REASONING_EFFORT",
+    "OPENAI_VERBOSITY",
+    "OPENAI_TEMPERATURE",
+)
+
 
 @dataclass(frozen=True)
 class PlannerConfig:
     """プランナーで利用する OpenAI 関連設定と閾値を保持する。"""
 
-    model: str
-    default_temperature: float
-    temperature_locked_models: Set[str] = field(default_factory=set)
-    allowed_verbosity_levels: Set[str] = field(default_factory=set)
-    allowed_reasoning_effort: Set[str] = field(default_factory=set)
     plan_confidence_review_threshold: float = 0.55
     plan_confidence_critical_threshold: float = 0.35
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     llm_timeout_seconds: float = 30.0
+    model: str = field(default=OPENAI_MODEL, init=False)
+    reasoning_effort: str = field(default=OPENAI_REASONING_EFFORT, init=False)
+    verbosity: str = field(default=OPENAI_VERBOSITY, init=False)
 
 
 def _normalize_base_url(raw_base_url: Optional[str]) -> Optional[str]:
@@ -79,15 +88,26 @@ def _parse_threshold(raw_value: Optional[str], default: float, *, env_key: str) 
 def load_planner_config(env: Mapping[str, str] | None = None) -> PlannerConfig:
     """環境変数と config.load_agent_config の結果を統合した PlannerConfig を生成する。"""
 
-    load_dotenv()
-    source = env or os.environ
+    if env is None:
+        load_dotenv()
+        source = os.environ
+    else:
+        source = env
+
+    removed_keys = [key for key in _REMOVED_MODEL_ENV_VARS if key in source]
+    if removed_keys:
+        joined_keys = ", ".join(removed_keys)
+        raise ValueError(
+            f"廃止されたモデル設定環境変数を削除してください: {joined_keys}. "
+            f"Responses API は {OPENAI_MODEL} / reasoning={OPENAI_REASONING_EFFORT} / "
+            f"verbosity={OPENAI_VERBOSITY} に固定されています。"
+        )
 
     agent_config_result = load_agent_config(source)
     for warning in agent_config_result.warnings:
         logger.warning("agent config warning: %s", warning)
 
     base_url = _normalize_base_url(source.get("OPENAI_BASE_URL"))
-    model = source.get("OPENAI_MODEL", "gpt-5-mini")
     api_key = source.get("OPENAI_API_KEY")
 
     review_threshold = _parse_threshold(
@@ -102,11 +122,6 @@ def load_planner_config(env: Mapping[str, str] | None = None) -> PlannerConfig:
     )
 
     return PlannerConfig(
-        model=model,
-        default_temperature=0.3,
-        temperature_locked_models={"gpt-5-mini"},
-        allowed_verbosity_levels={"low", "medium", "high"},
-        allowed_reasoning_effort={"low", "medium", "high"},
         plan_confidence_review_threshold=review_threshold,
         plan_confidence_critical_threshold=critical_threshold,
         base_url=base_url,
@@ -115,4 +130,10 @@ def load_planner_config(env: Mapping[str, str] | None = None) -> PlannerConfig:
     )
 
 
-__all__ = ["PlannerConfig", "load_planner_config"]
+__all__ = [
+    "OPENAI_MODEL",
+    "OPENAI_REASONING_EFFORT",
+    "OPENAI_VERBOSITY",
+    "PlannerConfig",
+    "load_planner_config",
+]

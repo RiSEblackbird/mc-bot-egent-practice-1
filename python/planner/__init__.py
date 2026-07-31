@@ -6,20 +6,18 @@ planner.graph へ分離したステート・ノード定義をここから呼び
 """
 from __future__ import annotations
 
-import asyncio
 import openai
 from typing import Any, Callable, Dict, Optional, Type
 from uuid import uuid4
 
 from langgraph.graph.state import CompiledStateGraph
+from openai.lib._pydantic import to_strict_json_schema
 from pydantic import BaseModel
 
 from llm.client import (
     AsyncOpenAI,
-    create_async_openai_client,
-    resolve_gpt5_reasoning_effort,
-    resolve_gpt5_verbosity,
-    resolve_request_temperature,
+    call_responses_api,
+    log_response_outcome,
 )
 from .graph import (
     ActionDirective,
@@ -29,6 +27,7 @@ from .graph import (
     BarrierNotificationTimeout,
     PlanArguments,
     PlanOut,
+    PreActionReview,
     PlanPriorityManager,
     UnifiedPlanState,
     build_barrier_prompt,
@@ -38,6 +37,8 @@ from .graph import (
     record_structured_step,
     _build_responses_input,
     _extract_output_text,
+    extract_refusal_text,
+    extract_structured_output,
 )
 from planner_config import PlannerConfig, load_planner_config
 from utils import setup_logger
@@ -80,28 +81,19 @@ def _build_responses_payload(
         text_format = {
             "type": "json_schema",
             "name": schema_name or schema_model.__name__,
-            "schema": schema_model.model_json_schema(),
+            "schema": to_strict_json_schema(schema_model),
             "strict": True,
         }
 
     payload: Dict[str, Any] = {
         "model": config.model,
         "input": _build_responses_input(system_prompt, user_prompt),
-        "text": {"format": text_format},
+        "reasoning": {"effort": config.reasoning_effort},
+        "text": {
+            "verbosity": config.verbosity,
+            "format": text_format,
+        },
     }
-
-    temperature = resolve_request_temperature(config)
-    if temperature is not None:
-        payload["temperature"] = temperature
-
-    verbosity = resolve_gpt5_verbosity(config)
-    if verbosity:
-        payload.setdefault("text", {})["verbosity"] = verbosity
-
-    reasoning_effort = resolve_gpt5_reasoning_effort(config)
-    if reasoning_effort:
-        payload["reasoning"] = {"effort": reasoning_effort}
-
     return payload
 
 
@@ -119,6 +111,13 @@ def _get_plan_graph() -> CompiledStateGraph:
                 schema_model=PlanOut,
                 schema_name="plan_out",
             ),
+            review_payload_builder=lambda system, user: _build_responses_payload(
+                system,
+                user,
+                _PLANNER_CONFIG,
+                schema_model=PreActionReview,
+                schema_name="pre_action_review",
+            ),
         )
     return _PLAN_GRAPH
 
@@ -130,6 +129,16 @@ def _resolve_thread_id(context: Dict[str, Any]) -> str:
     if isinstance(candidate, str) and candidate.strip():
         return candidate.strip()
     return uuid4().hex
+
+
+def _resolve_replan_depth(context: Dict[str, Any]) -> int:
+    """内部コンテキストから非負の再計画深度を復元する。"""
+
+    raw_depth = context.get("_replan_depth", 0)
+    try:
+        return max(0, int(raw_depth))
+    except (TypeError, ValueError):
+        return 0
 
 
 async def plan(user_msg: str, context: Dict[str, Any]) -> PlanOut:
@@ -202,12 +211,16 @@ async def compose_barrier_notification(
         schema_name="barrier_notification",
     )
 
+    replan_depth = _resolve_replan_depth(context)
     try:
-        resp = await asyncio.wait_for(
-            client.responses.create(**request_payload),
-            timeout=_PLANNER_CONFIG.llm_timeout_seconds,
+        resp, observation = await call_responses_api(
+            client,
+            request_payload,
+            config=_PLANNER_CONFIG,
+            purpose="barrier_notification",
+            replan_depth=replan_depth,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         message = f"barrier notification timed out after {_PLANNER_CONFIG.llm_timeout_seconds:.1f} seconds"
         logger.warning(
             "barrier notification request timed out (step=%s): %s",
@@ -226,11 +239,27 @@ async def compose_barrier_notification(
     content = _extract_output_text(resp)
     logger.info(f"Barrier raw: {content}")
 
+    refusal_text = extract_refusal_text(resp)
+    if not content and refusal_text:
+        log_response_outcome(observation, "refusal")
+        return "問題を確認しました。状況を共有いただけますか？"
+
     try:
-        parsed = BarrierNotification.model_validate_json(content)
-        if parsed.message.strip():
-            return parsed.message.strip()
-    except Exception:
+        structured_output = extract_structured_output(resp)
+        if structured_output is not None:
+            parsed = BarrierNotification.model_validate(structured_output)
+        else:
+            parsed = BarrierNotification.model_validate_json(content)
+        if not parsed.message.strip():
+            raise ValueError("barrier notification message is empty")
+        log_response_outcome(observation, "success")
+        return parsed.message.strip()
+    except Exception as exc:
+        log_response_outcome(
+            observation,
+            "schema_validation_failure",
+            error=exc.__class__.__name__,
+        )
         logger.exception("failed to parse barrier notification JSON")
 
     # LLM 応答がパースできない場合は従来の短縮メッセージを返す。

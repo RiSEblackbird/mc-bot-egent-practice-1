@@ -22,6 +22,9 @@ class UnifiedPlanState(TypedDict, total=False):
     parse_error: str
     parse_error_code: str
     llm_error: str
+    llm_observation: Dict[str, Any]
+    call_purpose: str
+    replan_depth: int
     priority: str
     fallback_plan_out: Any
 

@@ -257,7 +257,10 @@ def test_low_confidence_triggers_pre_action_review(monkeypatch: pytest.MonkeyPat
         }
     )
     follow_up = "作業開始前に、現在位置や危険物の有無をもう一度教えてください。"
-    queue: List[DummyResponse] = [DummyResponse(plan_payload), DummyResponse(follow_up)]
+    queue: List[DummyResponse] = [
+        DummyResponse(plan_payload),
+        DummyResponse(json.dumps({"message": follow_up}, ensure_ascii=False)),
+    ]
 
     monkeypatch.setattr(
         sys.modules["planner"].openai,  # type: ignore[index]
