@@ -1,72 +1,101 @@
 # ガバナンス保守方針
 
-この文書は、AIエージェント向けルールを保守するための方針です。
+この文書は、AIエージェント向けルールとUI/UXガバナンスを保守するための方針です。Codex・Claude Code・Cursorを同時に支援する全体構成は [`docs/agent-harness.md`](../agent-harness.md) を正本とします。
 
-## 1. 正本の位置
+## 正本
 
-- ルールの原点は `AGENTS.md`。
-- 詳細正本は `docs/ai-governance/`。
-- UI/UXレビューの実行手順は `.agents/skills/ui-ux-review/SKILL.md`。
-- `CLAUDE.md` は `@AGENTS.md` のみを原則とする。
-- Cursor専用ルールは作らない。
+- 共通の常時読込契約: `AGENTS.md`
+- 領域固有契約: 対象に最も近いnested `AGENTS.md`
+- task固有手順: `.agents/skills/<name>/SKILL.md`
+- UI/UX詳細: `docs/ai-governance/`
+- 公開安全性詳細: `docs/security-publication-checklist.md`
+- Claude Code adapter: `.claude/rules/`, `.claude/skills/`
+- Cursor adapter: `.cursor/rules/`
+- 機械検証: `scripts/verify-agent-harness.sh`, `scripts/verify-ai-governance.sh`
 
-## 2. 重複禁止
+`CLAUDE.md` は `@AGENTS.md` だけを原則とします。tool adapterは正本を参照するだけで、新しい判断基準を持ちません。
 
-同じルール本文を複数箇所へコピーしてはいけません。
+## 変更時の3製品確認
 
-良い:
+ルール、Skill、adapter、検証scriptを変更する場合は、同じPRで次を確認します。
 
-```txt
-AGENTS.md から docs/ai-governance を参照する
-Skill から docs/ai-governance を参照する
+### Codex
+
+- rootとnested `AGENTS.md`から必要な規則へ到達できる。
+- task手順が常時読込へ混入せず、`.agents/skills/`へ分離されている。
+- rootとnestedの合計がinstruction budgetを満たす。
+
+### Claude Code
+
+- `CLAUDE.md`が共通核を一重にimportしている。
+- path固有の規則が`.claude/rules/`の`paths`で必要時だけ案内される。
+- task手順が`.claude/skills/`の薄いadapterから共有Skillへ接続される。
+- adapterへ長文の本文をcopyしていない。
+
+### Cursor
+
+- root `AGENTS.md`と`.cursor/rules/`が競合せず、MDC ruleは`alwaysApply: false`と適切な`globs`を持つ。
+- task手順は`.agents/skills/`を正本として利用できる。
+- `.cursor` directoryの存在を禁止しない。
+- ruleへ共通核やSkill本文を複製していない。
+
+## ルール追加の判断
+
+1. 全作業で必要ならroot `AGENTS.md`。
+2. 特定pathだけならnested `AGENTS.md`と薄いtool adapter。
+3. 特定taskだけなら`.agents/skills/`と必要なadapter。
+4. 機械判定できるならscript、test、lint、CI。
+5. 既存正本へ統合できる場合は新規文書を増やさない。
+
+詳細手順をrootへ追加する変更は、他の配置では成立しない理由をIssueとPRへ書きます。
+
+## 重複禁止
+
+同じhard gate、checklist、workflow本文を複数箇所で正本化しません。
+
+良い構造:
+
+```text
+AGENTS.md -> task Skill -> 詳細正本
+Claude / Cursor adapter -> 同じAGENTSまたはSkill
 ```
 
-悪い:
+避ける構造:
 
-```txt
-AGENTS.md、Skill、ツール専用ルールに同じ長文をコピーする
+```text
+AGENTS.md、Skill、docs、tool専用ruleに同じ長文を複製
 ```
 
-## 3. ルール更新時の確認
+表現を少し変えた意味上の重複も対象です。indexは入口、Skillは実行順序、詳細docsは判定基準として責務を分けます。
 
-更新時は次を確認します。
+## Hard gateとheuristic
 
-- UI/UXの本質から外れていないか。
-- ユーザー価値、初見理解、アクセシビリティ、状態設計、熟練者効率、信頼感のバランスが崩れていないか。
-- 実行可能なPass/Failになっているか。
-- 証跡提出につながるか。
-- P0/P1/P2が妥当か。
-- AIが理論名だけを並べて終わる構造になっていないか。
-- 実ユーザーテストとAIシミュレーションを混同していないか。
+- P0、secret、証跡捏造、data破壊、公開契約、権限境界はhard gateとして明確にする。
+- DRY、KISS、SRP、OCP、行数、重複回数、test配分はheuristicとして扱う。
+- heuristicを数値だけのFail条件へ変えない。
+- P0を格下げする場合は、完了不可ではない根拠を記録する。
 
-## 4. 研究・標準の取り込み
+## Review収束
 
-新しい研究やガイドラインを取り込む時は、次の階層で扱います。
+- latest meaningful changeに対するCIと利用可能なreviewを確認する。
+- 指摘対応でheadが変わった時だけ再確認する。
+- 変更のないheadに対するclean reviewを複数回要求しない。
+- 特定製品のreview名を3製品共通の完了条件へしない。
+- merge、closeは別の明示指示がある場合だけ行う。
 
-1. 標準・仕様: P0や数値基準に使いやすい。
-2. 長く使われているHCI原則: レビュー観点として安定している。
-3. 認知アクセシビリティ指針: 初見理解、記憶負荷、回復性に使う。
-4. 最新研究: 新しい観点の追加や既存ルールの補強に使う。
-5. 単発研究: 強制ルール化せず、仮説または任意チェックとして扱う。
+## 研究・標準
 
-## 5. 日本語ルール方針
+新しい研究やguidelineを取り込む時は、標準・仕様、長く使われるHCI原則、認知accessibility指針、最新研究、単発研究の順に強制力を判断します。単発研究や製品固有の一時的挙動を、根拠なくhard gateへしません。
 
-このキットのルール本文は日本語で保守します。
+公式仕様が変わった場合は、3製品の現行仕様を確認し、adapterと検証scriptを同時に更新します。
 
-技術用語、ファイル名、標準名、コマンド、コード識別子は英語表記を許可します。ただし、判断基準や作業指示は日本語で書きます。
+## 検証
 
-英語用語を増やす場合は、必要に応じて `glossary.md` に日本語の意味を追加します。英語だけの本文を正本として追加してはいけません。
-
-## 6. P0の格下げ禁止
-
-P0をP1やP2へ格下げする場合は、なぜ完了不可ではないのかを明示してください。根拠なしの格下げは禁止です。
-
-## 7. 検証
-
-ルール構成を変更したら、次を実行します。
+変更後は次を実行します。
 
 ```bash
+bash scripts/verify-agent-harness.sh
 bash scripts/verify-ai-governance.sh
 ```
 
-検証できない場合は理由を報告してください。
+加えて、変更したshellの`bash -n` / `shellcheck`、YAML / frontmatter、link、公開安全性を確認します。検証できない項目は理由と残るリスクを報告します。

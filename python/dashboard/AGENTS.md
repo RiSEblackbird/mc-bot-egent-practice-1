@@ -3,30 +3,31 @@
 ## 適用範囲
 
 - このファイルは `python/dashboard/` 以下に適用する。
+- `python/AGENTS.md` のPython共通契約も併せて適用する。
 
-## タスク進行ポリシー（ルート方針との整合）
+## 作業進行
 
-- 長大タスクの進め方、計画ファイル運用、PR 作成条件、停止条件はルート `AGENTS.md` の「長大タスク運用ルール」に従う。
-- UI/UX、アクセシビリティ、画面文言、読み込み/空/エラー/無効状態を変える場合は、ルート `AGENTS.md` の UI/UX ガバナンスと `.agents/skills/ui-ux-review/SKILL.md` に従う。
-- このファイルでは主に当該ディレクトリ固有の実装規約・検証観点を定義し、進行原則をルート方針と矛盾させない。
+- 共通の進行、GitHub配送、公開安全性、完了報告はルート `AGENTS.md` と発動したtask Skillに従う。
+- UI/UX、アクセシビリティ、画面文言、loading / empty / error / disabled状態を変える場合は `.agents/skills/ui-ux-review/SKILL.md` を発動する。
+- このファイルはdashboard固有の実装規約と検証観点だけを正本化する。
 
 ## このディレクトリの前提
 
-- `server.py` は依存を極力増やさない軽量 HTTP サーバー。
-- `frontend.tsx` は人が読みやすい UI ソース。
-- `static/app.js` は実際に配信されるフロントエンド資産。
+- `server.py` は依存を極力増やさない軽量HTTP server。
+- `frontend.tsx` は人が読みやすいUI source。
+- `static/app.js` は実際に配信されるfrontend asset。
 
 ## 実装ルール
 
-- ダッシュボードは内部状態の可視化専用とし、読み取り中心の設計を保つ。副作用を持つ操作系エンドポイントを安易に増やさない。
-- 初見の運用者が画面の目的、現在の対象、状態の意味、次に取れる行動を判断できる表示を保つ。内部状態名をそのまま出す場合は、画面上で意味が追える補助情報を添える。
-- `frontend.tsx` の挙動を変えた場合は、同じ変更で `static/app.js` も同期する。片方だけ直して配信資産を放置しない。
-- まだ正式なフロントエンド build pipeline は入っていないため、重い bundler や複雑な依存を持ち込む前に費用対効果を確認する。
-- `frontend.tsx` / `static/app.js` はグローバルな `React` / `ReactDOM` 前提で動いている。bundler 前提の import や runtime を当然視しない。
-- API payload の shape を変える場合は `server.py`、`frontend.tsx`、`static/app.js` の 3 点を同時に揃える。
-- 認証は `DASHBOARD_ACCESS_TOKEN` 前提の Bearer または query token 互換を維持し、公開環境で無防備にならないようにする。
+- dashboardは内部状態の可視化専用とし、読み取り中心の設計を保つ。副作用を持つ操作endpointを安易に増やさない。
+- 初見の運用者が画面目的、対象、状態の意味、次に取れる行動を判断できる表示を保つ。内部状態名を出す場合は意味を追える補助情報を添える。
+- `frontend.tsx` の挙動を変えた場合は、同じ変更で `static/app.js` も同期する。片方だけ直して配信assetを放置しない。
+- 正式なfrontend build pipelineは未導入である。重いbundlerや複雑な依存を持ち込む前に費用対効果を確認する。
+- `frontend.tsx` / `static/app.js` はglobalな `React` / `ReactDOM` 前提で動く。bundler前提のimportやruntimeを当然視しない。
+- API payload shapeを変える場合は `server.py`、`frontend.tsx`、`static/app.js` を同時に揃える。
+- 認証は `DASHBOARD_ACCESS_TOKEN` 前提のBearerまたはquery token互換を維持し、公開環境で無防備にしない。
 
 ## コメントと保守
 
-- ダッシュボードはキャッチアップ用途が強いため、画面項目や JSON payload の意味が追いにくい箇所には現行仕様を補うコメントを付ける。
-- 過去の改修経緯や一時運用メモはコードコメントへ残さない。
+- 画面項目やJSON payloadの意味が追いにくい箇所には、現行仕様を補うcommentを付ける。
+- 過去の改修経緯や一時運用メモはcode commentへ残さない。

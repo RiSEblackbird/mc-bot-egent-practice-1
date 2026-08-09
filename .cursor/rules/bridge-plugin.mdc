@@ -1,0 +1,7 @@
+---
+description: "Paper bridge plugin固有ルールを必要な時だけ読み込むrouter"
+globs: "bridge-plugin/**"
+alwaysApply: false
+---
+
+Bridge pluginを扱う前に、@AGENTS.md と @bridge-plugin/AGENTS.md を読んで適用してください。このruleへ品質基準を複製しません。
