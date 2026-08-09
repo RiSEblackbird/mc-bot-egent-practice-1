@@ -1,0 +1,7 @@
+---
+description: "Python agent固有ルールを必要な時だけ読み込むrouter"
+globs: "python/**"
+alwaysApply: false
+---
+
+Python実装を扱う前に、@AGENTS.md と @python/AGENTS.md を読んで適用してください。`python/dashboard/` では @python/dashboard/AGENTS.md も読みます。このruleへ品質基準を複製しません。

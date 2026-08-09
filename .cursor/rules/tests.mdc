@@ -1,0 +1,7 @@
+---
+description: "Python test固有ルールを必要な時だけ読み込むrouter"
+globs: "tests/**"
+alwaysApply: false
+---
+
+`tests/` を扱う前に、@AGENTS.md と @tests/AGENTS.md を読んでください。Python実装に対応するtestでは @python/AGENTS.md も適用します。

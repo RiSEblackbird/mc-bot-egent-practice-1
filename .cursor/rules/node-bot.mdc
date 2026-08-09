@@ -1,0 +1,7 @@
+---
+description: "Node bot固有ルールを必要な時だけ読み込むrouter"
+globs: "node-bot/**"
+alwaysApply: false
+---
+
+Node botを扱う前に、@AGENTS.md と @node-bot/AGENTS.md を読んで適用してください。このruleへ品質基準を複製しません。

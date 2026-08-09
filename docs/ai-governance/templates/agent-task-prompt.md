@@ -1,28 +1,10 @@
 # AIエージェント向けUI/UX作業プロンプト
 
-この作業はユーザーに見えるUI/UX変更を含みます。
+この作業はアプリ本体UI、またはリポジトリが制御する独自UIの変更を含みます。
 
-作業前に次を読んでください。
+1. ルート `AGENTS.md` と変更対象に最も近い `AGENTS.md` を読んでください。
+2. `.agents/skills/ui-ux-review/SKILL.md` を発動してください。
+3. Skillの対象面分類に従い、`02-uiux-review-framework.md`、`03-evidence-and-completion-gates.md`、変更内容に直接関係する詳細正本だけを読んでください。
+4. 実装、検証、証跡作成、反証reviewまで完遂してください。
 
-1. `AGENTS.md`
-2. `.agents/skills/ui-ux-review/SKILL.md`
-3. `docs/ai-governance/00-index.md`
-4. `docs/ai-governance/02-uiux-review-framework.md`
-5. `docs/ai-governance/03-evidence-and-completion-gates.md`
-
-作業では、次を必ず提出してください。
-
-- ユーザー価値評価
-- 初見シミュレーション
-- state matrix
-- アクセシビリティ確認
-- 視覚階層確認
-- コピー確認
-- 熟練者効率確認
-- 満足感・信頼感確認
-- 反証レビュー
-- 証跡
-- 実行した検証
-- 実行していない検証
-
-P0が残る場合、完了扱いしてはいけません。
+P0が残る場合、必要な前後screenshotを取得できない場合、実施していない検証しか根拠がない場合は、UI/UX作業を完了扱いにしないでください。

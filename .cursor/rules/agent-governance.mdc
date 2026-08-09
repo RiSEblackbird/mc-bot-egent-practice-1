@@ -1,0 +1,9 @@
+---
+description: "エージェントルール・Skill・adapter・検証scriptの変更を3エージェント互換性reviewへ送る"
+globs: "AGENTS.md,CLAUDE.md,.agents/**,.claude/**,.cursor/**,docs/agent-principles.md,docs/ai-governance/**,scripts/verify-ai-governance.sh"
+alwaysApply: false
+---
+
+@docs/ai-governance/13-maintenance-policy.md と @docs/ai-governance/15-agent-harness-compatibility.md を適用してください。
+
+Codex、Claude Code、Cursorの発見方法、scope、fallback、instruction budget、adapter整合を確認します。正本のルール本文はこのadapterへ複製しません。
