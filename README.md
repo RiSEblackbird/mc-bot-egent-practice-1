@@ -1,5 +1,13 @@
 # Minecraft 自律ボット（Python LLM + Node(Mineflayer) + Paper）
 
+# 廃止済み
+
+このリポジトリは、設計・実装を継ぎ足す過程で一部の責務や契約が形骸化し、レイヤー間の不整合や十分に機能していない統合が残るなど、全体構成が複雑化・一部破綻したため廃止しました。
+
+---
+
+---
+
 Minecraft Java Edition（既定: **1.21.1 + Paper**）上で動作する **日本語対応の LLM 自律ボット**です。  
 プレイヤーのチャットを起点に、Python 側（LLM / LangGraph）が意図解析とタスク分解を行い、Node.js 側（Mineflayer）がゲーム内アクションを実行します。必要に応じて Paper プラグイン（AgentBridge）が保護領域チェックや継続採掘の評価 API / 危険通知を提供します。
 
